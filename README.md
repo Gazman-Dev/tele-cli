@@ -43,6 +43,12 @@ Dockerfile.linux-test
 python -m pip install -e .
 ```
 
+One-line install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bash
+```
+
 ## Commands
 
 ```bash

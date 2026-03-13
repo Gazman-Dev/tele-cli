@@ -6,6 +6,12 @@
 python -m pip install -e .
 ```
 
+Or:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bash
+```
+
 ## First Run
 
 ```bash
