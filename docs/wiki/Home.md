@@ -1,0 +1,17 @@
+# minic Wiki
+
+`minic` is a single-operator Codex and Telegram bridge with explicit setup recovery and runtime ownership controls.
+
+## Pages
+
+- [Getting Started](Getting-Started)
+- [Operations](Operations)
+- [Architecture](Architecture)
+
+## Core Ideas
+
+- One operator
+- One Telegram bot
+- One authorized chat
+- One Codex session
+- Explicit recovery instead of silent cleanup
