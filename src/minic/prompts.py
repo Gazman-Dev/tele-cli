@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from typing import Optional
 
-def ask_choice(message: str, choices: list[str], default: str | None = None) -> str:
+
+def ask_choice(message: str, choices: list[str], default: Optional[str] = None) -> str:
     choice_set = {item.lower() for item in choices}
     prompt = "/".join(choices)
     suffix = f" [{default}]" if default else ""

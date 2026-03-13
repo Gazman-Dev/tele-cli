@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, Optional, TypeVar
 
 T = TypeVar("T")
 
 
-def load_json(path: Path, factory: Callable[[dict], T]) -> T | None:
+def load_json(path: Path, factory: Callable[[dict], T]) -> Optional[T]:
     if not path.exists():
         return None
     data = json.loads(path.read_text(encoding="utf-8"))

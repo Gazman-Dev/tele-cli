@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from .json_store import load_json, save_json
 from .models import LockMetadata
@@ -13,14 +14,14 @@ class LockInspection:
     exists: bool
     live: bool = False
     same_app: bool = False
-    metadata: LockMetadata | None = None
+    metadata: Optional[LockMetadata] = None
 
 
 class LockFile:
     def __init__(self, path: Path):
         self.path = path
 
-    def read(self) -> LockMetadata | None:
+    def read(self) -> Optional[LockMetadata]:
         return load_json(self.path, LockMetadata.from_dict)
 
     def write(self, metadata: LockMetadata) -> None:

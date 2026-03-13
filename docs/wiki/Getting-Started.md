@@ -12,6 +12,8 @@ Or:
 curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bash
 ```
 
+That installer will install or update the app, run setup if needed, and register a background service that is restarted on later install runs.
+
 ## First Run
 
 ```bash

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,7 @@ def default_state_dir() -> Path:
     return Path.home().joinpath(".tele-cli")
 
 
-def build_paths(state_dir: Path | None = None) -> AppPaths:
+def build_paths(state_dir: Optional[Path] = None) -> AppPaths:
     root = (state_dir or default_state_dir()).expanduser().resolve()
     return AppPaths(
         root=root,

@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 from .models import LockMetadata, utc_now
 
@@ -39,7 +40,7 @@ def process_exists(pid: int) -> bool:
     return True
 
 
-def read_process_command(pid: int) -> str | None:
+def read_process_command(pid: int) -> Optional[str]:
     if sys.platform.startswith("linux"):
         path = Path("/proc") / str(pid) / "cmdline"
         if path.exists():
@@ -58,7 +59,7 @@ def read_process_command(pid: int) -> str | None:
     return command or None
 
 
-def process_started_at(pid: int) -> str | None:
+def process_started_at(pid: int) -> Optional[str]:
     try:
         result = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],

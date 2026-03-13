@@ -4,6 +4,7 @@ import platform
 import shutil
 import subprocess
 from dataclasses import dataclass
+from typing import Optional
 
 
 class InstallerError(RuntimeError):
@@ -12,12 +13,12 @@ class InstallerError(RuntimeError):
 
 @dataclass
 class InstallPlan:
-    manager: str | None
+    manager: Optional[str]
     command: list[str]
 
 
 class InstallerStrategy:
-    def detect_package_manager(self) -> str | None:
+    def detect_package_manager(self) -> Optional[str]:
         raise NotImplementedError
 
     def install_npm(self, allow_homebrew_install: bool = False) -> InstallPlan:
@@ -33,7 +34,7 @@ class InstallerStrategy:
 
 
 class LinuxInstallerStrategy(InstallerStrategy):
-    def detect_package_manager(self) -> str | None:
+    def detect_package_manager(self) -> Optional[str]:
         for name in ("apt", "dnf", "yum", "pacman", "zypper"):
             if shutil.which(name):
                 return name
@@ -55,7 +56,7 @@ class LinuxInstallerStrategy(InstallerStrategy):
 
 
 class MacOSInstallerStrategy(InstallerStrategy):
-    def detect_package_manager(self) -> str | None:
+    def detect_package_manager(self) -> Optional[str]:
         return "brew" if shutil.which("brew") else None
 
     def install_npm(self, allow_homebrew_install: bool = False) -> InstallPlan:

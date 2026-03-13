@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from typing import Optional
 
 from . import APP_VERSION
 from .codex_runtime import CodexSession
@@ -163,7 +164,7 @@ def _handle_service_conflict(paths: AppPaths, app_lock: LockFile) -> None:
             raise SystemExit(1)
 
 
-def _is_owned_codex(pid: int, cwd: str | None) -> bool:
+def _is_owned_codex(pid: int, cwd: Optional[str]) -> bool:
     command = read_process_command(pid)
     if not command or "codex" not in command:
         return False

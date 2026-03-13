@@ -49,6 +49,14 @@ One-line install:
 curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bash
 ```
 
+The installer now:
+
+- installs or updates Tele Cli
+- runs setup immediately if the app is not configured yet
+- installs a managed background service
+- starts or restarts that service on every install run
+- avoids duplicate service ownership through the service manager and runtime lock checks
+
 ## Commands
 
 ```bash

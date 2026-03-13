@@ -4,6 +4,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Optional
 
 from .models import AuthState, utc_now
 
@@ -17,7 +18,7 @@ class TelegramClient:
         self.token = token
         self.base_url = f"https://api.telegram.org/bot{token}"
 
-    def _request(self, method: str, params: dict | None = None) -> dict:
+    def _request(self, method: str, params: Optional[dict] = None) -> dict:
         url = f"{self.base_url}/{method}"
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
@@ -33,7 +34,7 @@ class TelegramClient:
     def validate(self) -> dict:
         return self._request("getMe")
 
-    def get_updates(self, offset: int | None = None, timeout: int = 20) -> list[dict]:
+    def get_updates(self, offset: Optional[int] = None, timeout: int = 20) -> list[dict]:
         params = {"timeout": timeout}
         if offset is not None:
             params["offset"] = offset

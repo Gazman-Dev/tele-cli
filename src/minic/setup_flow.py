@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from typing import Optional
 
 from . import APP_VERSION
 from .installer import current_installer
@@ -15,7 +16,7 @@ from .prompts import ask_choice, ask_text
 from .telegram import TelegramClient
 
 
-def load_setup_state(paths: AppPaths) -> SetupState | None:
+def load_setup_state(paths: AppPaths) -> Optional[SetupState]:
     return load_json(paths.setup_lock, SetupState.from_dict)
 
 

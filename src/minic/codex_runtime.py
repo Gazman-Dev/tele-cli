@@ -3,13 +3,14 @@ from __future__ import annotations
 import subprocess
 import threading
 from collections.abc import Callable
+from typing import Optional
 
 
 class CodexSession:
     def __init__(self, command: list[str], on_output: Callable[[str, str], None]):
         self.command = command
         self.on_output = on_output
-        self.process: subprocess.Popen[str] | None = None
+        self.process = None  # type: Optional[subprocess.Popen]
         self.state = "STOPPED"
         self._threads: list[threading.Thread] = []
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Optional
 
 
 def utc_now() -> str:
@@ -14,13 +14,13 @@ class LockMetadata:
     pid: int
     hostname: str
     username: str
-    started_at: str | None
+    started_at: Optional[str]
     mode: str
     timestamp: str
     app_version: str
-    child_codex_pid: int | None = None
+    child_codex_pid: Optional[int] = None
     command: list[str] = field(default_factory=list)
-    cwd: str | None = None
+    cwd: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -51,13 +51,13 @@ class SetupState:
 @dataclass
 class AuthState:
     bot_token: str
-    telegram_user_id: int | None = None
-    telegram_chat_id: int | None = None
-    pairing_code: str | None = None
-    paired_at: str | None = None
-    pending_user_id: int | None = None
-    pending_chat_id: int | None = None
-    pending_issued_at: str | None = None
+    telegram_user_id: Optional[int] = None
+    telegram_chat_id: Optional[int] = None
+    pairing_code: Optional[str] = None
+    paired_at: Optional[str] = None
+    pending_user_id: Optional[int] = None
+    pending_chat_id: Optional[int] = None
+    pending_issued_at: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -90,9 +90,9 @@ class RuntimeState:
     telegram_state: str
     recorder_state: str
     debug_state: str
-    codex_pid: int | None = None
+    codex_pid: Optional[int] = None
     started_at: str = field(default_factory=utc_now)
-    last_output_at: str | None = None
+    last_output_at: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
