@@ -9,7 +9,7 @@ from .setup_flow import run_setup
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="minic")
+    parser = argparse.ArgumentParser(prog="tele-cli")
     parser.add_argument("--state-dir", default=None)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("setup")

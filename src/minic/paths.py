@@ -21,7 +21,7 @@ def default_state_dir() -> Path:
     custom = os.environ.get("MINIC_STATE_DIR")
     if custom:
         return Path(custom).expanduser().resolve()
-    return Path.home().joinpath(".minic")
+    return Path.home().joinpath(".tele-cli")
 
 
 def build_paths(state_dir: Path | None = None) -> AppPaths:

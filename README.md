@@ -1,6 +1,6 @@
-# minic
+# Tele Cli
 
-`minic` is a single-operator terminal bridge for Codex and Telegram.
+`Tele Cli` is a single-operator terminal bridge for Codex and Telegram.
 
 It is designed for Linux and macOS and focuses on one local operator, one Telegram bot, one authorized Telegram chat, one Codex session, and explicit recovery behavior when stale or conflicting runtime state is detected.
 
@@ -46,12 +46,14 @@ python -m pip install -e .
 ## Commands
 
 ```bash
-minic setup
-minic service
-minic reset-auth
+tele-cli setup
+tele-cli service
+tele-cli reset-auth
 ```
 
-Use `--state-dir` if you want state files somewhere other than `~/.minic`.
+`minic` remains available as a compatibility alias, but `tele-cli` is the primary command.
+
+Use `--state-dir` if you want state files somewhere other than `~/.tele-cli`.
 
 ## Docker Linux Test
 
@@ -67,7 +69,7 @@ powershell -File scripts/run_docker_tests.ps1
 
 ## State Files
 
-`minic` stores runtime state under `~/.minic` by default:
+`Tele Cli` stores runtime state under `~/.tele-cli` by default:
 
 - `app.lock`
 - `setup.lock`
@@ -79,4 +81,4 @@ powershell -File scripts/run_docker_tests.ps1
 
 ## License
 
-Apache License 2.0, copyright Gazman Dev LLC and Ilya Gazman.
+Apache License 2.0, copyright Gazman Dev LLC.

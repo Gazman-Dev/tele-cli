@@ -1,6 +1,6 @@
-# minic Wiki
+# Tele Cli Wiki
 
-`minic` is a single-operator Codex and Telegram bridge with explicit setup recovery and runtime ownership controls.
+`Tele Cli` is a single-operator Codex and Telegram bridge with explicit setup recovery and runtime ownership controls.
 
 ## Pages
 

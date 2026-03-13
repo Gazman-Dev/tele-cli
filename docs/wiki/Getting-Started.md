@@ -9,14 +9,14 @@ python -m pip install -e .
 ## First Run
 
 ```bash
-minic setup
-minic service
+tele-cli setup
+tele-cli service
 ```
 
 ## Reset Telegram Pairing
 
 ```bash
-minic reset-auth
+tele-cli reset-auth
 ```
 
 ## Linux Validation In Docker

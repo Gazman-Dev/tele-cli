@@ -2,7 +2,7 @@
 
 ## Default State Directory
 
-`~/.minic`
+`~/.tele-cli`
 
 Contents:
 
@@ -16,7 +16,7 @@ Contents:
 
 ## Recovery Behavior
 
-`minic` prompts before taking recovery actions when it finds:
+`Tele Cli` prompts before taking recovery actions when it finds:
 
 - live conflicting instances
 - stale runtime locks

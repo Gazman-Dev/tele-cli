@@ -66,7 +66,7 @@ def run_setup(paths: AppPaths) -> None:
         save_json(paths.config, config.to_dict())
         append_recovery_log(paths.recovery_log, "setup completed")
         app_lock.clear()
-        print("Setup complete. Run `minic service` to start the bridge.")
+        print("Setup complete. Run `tele-cli service` to start the bridge.")
     except Exception:
         setup_state.status = "failed"
         save_setup_state(paths, setup_state)
