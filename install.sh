@@ -147,7 +147,7 @@ is_configured() {
 
 install_or_upgrade_package() {
   echo "Installing ${PROJECT_NAME} from ${REPO_URL}"
-  "$PYTHON_BIN" -m pip install --upgrade "git+$REPO_URL"
+  "$PYTHON_BIN" -m pip install --upgrade --force-reinstall --no-cache-dir "git+$REPO_URL"
 }
 
 run_setup_if_needed() {
