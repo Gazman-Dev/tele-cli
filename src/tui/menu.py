@@ -4,15 +4,15 @@ import shutil
 import sys
 from dataclasses import dataclass
 
-from .. import APP_VERSION
-from ..core.json_store import load_json
-from ..core.locks import LockFile
-from ..core.models import AuthState, Config, RuntimeState, SetupState
-from ..core.paths import AppPaths
-from ..integrations.telegram import TelegramClient, describe_pairing, has_pending_pairing
-from ..runtime.service import reset_auth, run_service
-from ..setup.admin import run_uninstall, run_update
-from ..setup.setup_flow import complete_pending_pairing, run_setup
+from app_meta import APP_VERSION
+from core.json_store import load_json
+from core.locks import LockFile
+from core.models import AuthState, Config, RuntimeState, SetupState
+from core.paths import AppPaths
+from integrations.telegram import TelegramClient, describe_pairing, has_pending_pairing
+from runtime.service import reset_auth, run_service
+from setup.admin import run_uninstall, run_update
+from setup.setup_flow import complete_pending_pairing, run_setup
 
 
 @dataclass

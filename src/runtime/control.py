@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .. import APP_VERSION
-from ..core.json_store import load_json, save_json
-from ..core.locks import LockFile
-from ..core.logging_utils import append_recovery_log
-from ..core.models import AuthState, Config, RuntimeState
-from ..core.paths import AppPaths
-from ..core.process import describe_process, make_lock_metadata, process_exists, read_process_command, safe_kill
-from ..core.prompts import ask_choice
-from ..integrations.telegram import TelegramClient
+from app_meta import APP_VERSION
+from core.json_store import load_json, save_json
+from core.locks import LockFile
+from core.logging_utils import append_recovery_log
+from core.models import AuthState, Config, RuntimeState
+from core.paths import AppPaths
+from core.process import describe_process, make_lock_metadata, process_exists, read_process_command, safe_kill
+from core.prompts import ask_choice
+from integrations.telegram import TelegramClient
 from .codex_runtime import CodexSession
 from .runtime import ServiceRuntime
 

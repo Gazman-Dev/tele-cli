@@ -4,12 +4,12 @@ import os
 import shutil
 
 from .installer import current_installer
-from ..core.json_store import load_json, save_json
-from ..core.logging_utils import append_recovery_log
-from ..core.models import AuthState, Config
-from ..core.paths import AppPaths
-from ..core.prompts import ask_text
-from ..integrations.telegram import TelegramClient, is_auth_paired
+from core.json_store import load_json, save_json
+from core.logging_utils import append_recovery_log
+from core.models import AuthState, Config
+from core.paths import AppPaths
+from core.prompts import ask_text
+from integrations.telegram import TelegramClient, is_auth_paired
 from .pairing import complete_pending_pairing, pair_authorized_operator
 from .recovery import handle_existing_setup as _handle_existing_setup
 from .recovery import initialize_setup

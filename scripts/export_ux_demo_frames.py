@@ -13,7 +13,7 @@ def build_frames() -> list[dict[str, object]]:
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
 
-    from tele_cli.ux_demo import Colors as DemoColors, TeleCliUxDemo
+    from demo_ui import Colors as DemoColors, TeleCliUxDemo
 
     global Colors
     Colors = DemoColors

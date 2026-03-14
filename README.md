@@ -16,7 +16,7 @@ It is designed for Linux and macOS and focuses on one local operator, one Telegr
 ## Project Layout
 
 ```text
-src/tele_cli/
+src/
   cli.py
   setup_flow.py
   service.py

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..core.models import RuntimeState
+from core.models import RuntimeState
 
 
 class ServiceRuntime:

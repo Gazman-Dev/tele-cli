@@ -10,7 +10,7 @@ def main() -> None:
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
 
-    from tele_cli.ux_demo import main as demo_main
+    from demo_ui import main as demo_main
 
     demo_main()
 

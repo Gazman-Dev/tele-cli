@@ -3,14 +3,14 @@ from __future__ import annotations
 import argparse
 import platform
 
-from .core.json_store import load_json
-from .core.models import AuthState
-from .core.paths import build_paths
-from .integrations.telegram import TelegramClient
-from .runtime.service import reset_auth, run_service
-from .setup.admin import run_uninstall, run_update
-from .setup.setup_flow import complete_pending_pairing, run_setup
-from .tui.menu import run_main_menu
+from core.json_store import load_json
+from core.models import AuthState
+from core.paths import build_paths
+from integrations.telegram import TelegramClient
+from runtime.service import reset_auth, run_service
+from setup.admin import run_uninstall, run_update
+from setup.setup_flow import complete_pending_pairing, run_setup
+from tui.menu import run_main_menu
 
 
 def build_parser() -> argparse.ArgumentParser:

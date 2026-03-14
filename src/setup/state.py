@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ..core.json_store import load_json, save_json
-from ..core.models import SetupState
-from ..core.paths import AppPaths
+from core.json_store import load_json, save_json
+from core.models import SetupState
+from core.paths import AppPaths
 
 
 def load_setup_state(paths: AppPaths) -> Optional[SetupState]:

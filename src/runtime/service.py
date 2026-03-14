@@ -4,12 +4,12 @@ import time
 import uuid
 
 from .debug_mirror import DebugMirror
-from ..core.json_store import load_json, save_json
-from ..core.logging_utils import append_recovery_log
-from ..core.models import AuthState, Config, RuntimeState, utc_now
-from ..core.paths import AppPaths
-from ..integrations.telegram import TelegramClient, has_pending_pairing, is_auth_paired, register_pairing_request
-from ..setup.setup_flow import complete_pending_pairing
+from core.json_store import load_json, save_json
+from core.logging_utils import append_recovery_log
+from core.models import AuthState, Config, RuntimeState, utc_now
+from core.paths import AppPaths
+from integrations.telegram import TelegramClient, has_pending_pairing, is_auth_paired, register_pairing_request
+from setup.setup_flow import complete_pending_pairing
 from .control import isatty, prepare_service_lock, reset_auth, start_codex_session
 from .recorder import Recorder
 from .runtime import ServiceRuntime

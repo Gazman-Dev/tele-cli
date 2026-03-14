@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from .. import APP_VERSION
-from ..core.locks import LockFile
-from ..core.logging_utils import append_recovery_log
-from ..core.models import SetupState, utc_now
-from ..core.paths import AppPaths
-from ..core.process import describe_process, make_lock_metadata, process_exists, safe_kill
-from ..core.prompts import ask_choice
+from app_meta import APP_VERSION
+from core.locks import LockFile
+from core.logging_utils import append_recovery_log
+from core.models import SetupState, utc_now
+from core.paths import AppPaths
+from core.process import describe_process, make_lock_metadata, process_exists, safe_kill
+from core.prompts import ask_choice
 from .state import load_setup_state, save_setup_state
 
 

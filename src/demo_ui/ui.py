@@ -4,7 +4,7 @@ import sys
 import time
 from typing import Optional
 
-from .. import APP_VERSION
+from app_meta import APP_VERSION
 from .state import Colors, DemoExit, terminal_size, visible_len
 
 

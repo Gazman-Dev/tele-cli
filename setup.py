@@ -10,8 +10,8 @@ setup(
     python_requires=">=3.9",
     entry_points={
         "console_scripts": [
-            "tele-cli=tele_cli.cli:main",
-            "tele-cli-ux-demo=tele_cli.ux_demo:main",
+            "tele-cli=cli:main",
+            "tele-cli-ux-demo=demo_ui:main",
         ]
     },
 )

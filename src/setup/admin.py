@@ -7,8 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ..core.paths import AppPaths
-from ..core.prompts import ask_text
+from core.paths import AppPaths
+from core.prompts import ask_text
 
 REPO_URL = "https://github.com/Gazman-Dev/tele-cli.git"
 USER_BIN_DIR = Path.home() / ".local" / "bin"

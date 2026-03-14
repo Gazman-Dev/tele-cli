@@ -180,7 +180,7 @@ write_launcher() {
   ensure_dir "$USER_BIN_DIR"
   cat > "${USER_BIN_DIR}/tele-cli" <<EOF
 #!/usr/bin/env bash
-exec "$PYTHON_BIN" -m tele_cli.cli "\$@"
+exec "$PYTHON_BIN" -m cli "\$@"
 EOF
   chmod +x "${USER_BIN_DIR}/tele-cli"
 }
@@ -256,7 +256,7 @@ run_setup_if_needed() {
 
   echo
   log "Starting ${PROJECT_NAME} setup..."
-  "$PYTHON_BIN" -m tele_cli.cli setup
+  "$PYTHON_BIN" -m cli setup
 }
 
 install_launchd_service() {
@@ -277,7 +277,7 @@ install_launchd_service() {
     <array>
       <string>${PYTHON_BIN}</string>
       <string>-m</string>
-      <string>tele_cli.cli</string>
+      <string>cli</string>
       <string>service</string>
     </array>
     <key>RunAtLoad</key>
@@ -320,7 +320,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${PYTHON_BIN} -m tele_cli.cli service
+ExecStart=${PYTHON_BIN} -m cli service
 WorkingDirectory=${HOME}
 Restart=always
 RestartSec=5
@@ -343,7 +343,7 @@ install_fallback_service() {
 
   cat > "$runner" <<EOF
 #!/usr/bin/env bash
-exec "${PYTHON_BIN}" -m tele_cli.cli service >> "${STATE_DIR}/service.stdout.log" 2>> "${STATE_DIR}/service.stderr.log"
+exec "${PYTHON_BIN}" -m cli service >> "${STATE_DIR}/service.stdout.log" 2>> "${STATE_DIR}/service.stderr.log"
 EOF
   chmod +x "$runner"
 

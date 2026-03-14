@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..core.models import utc_now
+from core.models import utc_now
 
 
 class Recorder:

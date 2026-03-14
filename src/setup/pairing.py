@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import time
 
-from ..core.json_store import save_json
-from ..core.logging_utils import append_recovery_log
-from ..core.models import AuthState
-from ..core.paths import AppPaths
-from ..core.prompts import ask_text
-from ..integrations.telegram import (
+from core.json_store import save_json
+from core.logging_utils import append_recovery_log
+from core.models import AuthState
+from core.paths import AppPaths
+from core.prompts import ask_text
+from integrations.telegram import (
     TelegramClient,
     confirm_pairing_code,
     has_pending_pairing,

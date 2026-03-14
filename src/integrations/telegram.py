@@ -6,7 +6,7 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
-from ..core.models import AuthState, utc_now
+from core.models import AuthState, utc_now
 
 
 class TelegramError(RuntimeError):
