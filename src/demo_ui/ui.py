@@ -52,21 +52,35 @@ class TerminalUI:
         return left_margin, inner_width
 
     def print_header(self) -> list[str]:
-        top_rule = f"{Colors.muted}{'.' * 18}{Colors.reset} {Colors.green_dim}{'=' * 10}{Colors.reset} {Colors.cyan}{'=' * 10}{Colors.reset} {Colors.muted}{'.' * 18}{Colors.reset}"
-        return[
+        top_rule = (
+            f"{Colors.muted}{'.' * 16}{Colors.reset} "
+            f"{Colors.green_dim}{'=' * 12}{Colors.reset} "
+            f"{Colors.cyan}{'=' * 12}{Colors.reset} "
+            f"{Colors.muted}{'.' * 16}{Colors.reset}"
+        )
+        return [
             self.center(top_rule),
-            self.center(f"{Colors.muted}::: {Colors.reset}{Colors.bold}{Colors.green}TELE-CLI{Colors.reset} {Colors.muted}:::{Colors.reset}"),
-            self.center(f"{Colors.bold}{Colors.text}The Bridge{Colors.reset} {Colors.muted}|{Colors.reset} {Colors.green_dim}Operator Console{Colors.reset} {Colors.muted}|{Colors.reset} {Colors.cyan}v{APP_VERSION}{Colors.reset}"),
-            self.center(f"{Colors.muted}telegram interface  {Colors.green_dim}<->{Colors.reset}  ai orchestration  {Colors.cyan}<->{Colors.reset}  local service{Colors.reset}"),
+            self.center(
+                f"{Colors.muted}::: {Colors.reset}"
+                f"{Colors.bold}{Colors.green}TELE-CLI{Colors.reset}"
+                f"{Colors.muted} :::{Colors.reset}"
+            ),
+            self.center(
+                f"{Colors.bold}{Colors.text}The Bridge{Colors.reset} "
+                f"{Colors.muted}|{Colors.reset} "
+                f"{Colors.green_dim}Operator Console{Colors.reset} "
+                f"{Colors.muted}|{Colors.reset} "
+                f"{Colors.cyan}v{APP_VERSION}{Colors.reset}"
+            ),
             "",
         ]
 
     def system_strip(
-            self,
-            service_state: str,
-            codex_state: str,
-            telegram_state: str,
-            summary: str,
+        self,
+        service_state: str,
+        codex_state: str,
+        telegram_state: str,
+        summary: str,
     ) -> list[str]:
         telegram_running = telegram_state.lower() in {"paired", "running", "connected"}
         codex_running = codex_state.lower() in {"authenticated", "running"}
@@ -80,20 +94,22 @@ class TerminalUI:
         def cell(text: str) -> str:
             return text + (" " * max(0, 22 - visible_len(text)))
 
-        rows =[
+        rows = [
             f"{Colors.muted}System overview{Colors.reset}",
             "",
-            "  ".join([
-                cell(f"{Colors.blue}{Colors.bold}Telegram{Colors.reset}"),
-                cell(f"{Colors.green}{Colors.bold}AI Engine{Colors.reset}"),
-                cell(f"{Colors.cyan}{Colors.bold}Tele Cli Service{Colors.reset}"),
-            ]
+            "  ".join(
+                [
+                    cell(f"{Colors.blue}{Colors.bold}Telegram{Colors.reset}"),
+                    cell(f"{Colors.green}{Colors.bold}AI Engine{Colors.reset}"),
+                    cell(f"{Colors.cyan}{Colors.bold}Tele Cli Service{Colors.reset}"),
+                ]
             ),
-            "  ".join([
-                cell(status_value(telegram_running)),
-                cell(status_value(codex_running)),
-                cell(status_value(service_running)),
-            ]
+            "  ".join(
+                [
+                    cell(status_value(telegram_running)),
+                    cell(status_value(codex_running)),
+                    cell(status_value(service_running)),
+                ]
             ),
             "",
             f"{Colors.muted}{summary}{Colors.reset}",
@@ -106,11 +122,15 @@ class TerminalUI:
             title_text = f" {title} "
             left = max(1, (inner_width - visible_len(title_text)) // 2)
             right = max(1, inner_width - visible_len(title_text) - left)
-            top = f"{Colors.border}+{'-' * left}{Colors.text}{Colors.bold}{title_text}{Colors.reset}{Colors.border}{'-' * right}+{Colors.reset}"
+            top = (
+                f"{Colors.border}+{'-' * left}{Colors.text}{Colors.bold}{title_text}"
+                f"{Colors.reset}{Colors.border}{'-' * right}+{Colors.reset}"
+            )
         else:
             top = f"{Colors.border}+{'-' * inner_width}+{Colors.reset}"
         bottom = f"{Colors.border}+{'-' * inner_width}+{Colors.reset}"
-        rendered =[self.center(top)]
+
+        rendered = [self.center(top)]
         for line in lines:
             content_width = max(1, inner_width - 2)
             space = max(0, content_width - visible_len(line))
@@ -120,23 +140,43 @@ class TerminalUI:
                 content = (" " * left_pad) + line + (" " * right_pad)
             else:
                 content = line + (" " * space)
-            rendered.append(self.center(f"{Colors.border}|{Colors.reset} {content} {Colors.border}|{Colors.reset}"))
+            rendered.append(
+                self.center(f"{Colors.border}|{Colors.reset} {content} {Colors.border}|{Colors.reset}")
+            )
         rendered.append(self.center(bottom))
         return rendered
 
-    def input_section(self, prompt: str, panel_width: int, typed: str = "", title: str = "Input") -> list[str]:
+    def input_section(
+        self,
+        prompt: str,
+        panel_width: int,
+        typed: str = "",
+        title: str = "Input",
+    ) -> list[str]:
         _, inner_width = self.panel_geometry(panel_width)
         title_text = f" {title} "
         left = max(1, (inner_width - visible_len(title_text)) // 2)
         right = max(1, inner_width - visible_len(title_text) - left)
-        top = f"{Colors.border}+{'-' * left}{Colors.text}{Colors.bold}{title_text}{Colors.reset}{Colors.border}{'-' * right}+{Colors.reset}"
+        top = (
+            f"{Colors.border}+{'-' * left}{Colors.text}{Colors.bold}{title_text}"
+            f"{Colors.reset}{Colors.border}{'-' * right}+{Colors.reset}"
+        )
         bottom = f"{Colors.border}+{'-' * inner_width}+{Colors.reset}"
         prompt_space = max(0, inner_width - visible_len(prompt) - 1)
         typed_space = max(0, inner_width - visible_len(typed) - 3)
-        return[
+        return [
             self.center(top),
-            self.center(f"{Colors.border}|{Colors.reset} {Colors.muted}{prompt}{Colors.reset}" + (" " * prompt_space) + f"{Colors.border}|{Colors.reset}"),
-            self.center(f"{Colors.border}|{Colors.reset} {Colors.green}{Colors.bold}>{Colors.reset} {Colors.text}{typed}{Colors.reset}" + (" " * typed_space) + f"{Colors.border}|{Colors.reset}"),
+            self.center(
+                f"{Colors.border}|{Colors.reset} {Colors.muted}{prompt}{Colors.reset}"
+                + (" " * prompt_space)
+                + f"{Colors.border}|{Colors.reset}"
+            ),
+            self.center(
+                f"{Colors.border}|{Colors.reset} {Colors.green}{Colors.bold}>{Colors.reset} "
+                f"{Colors.text}{typed}{Colors.reset}"
+                + (" " * typed_space)
+                + f"{Colors.border}|{Colors.reset}"
+            ),
             self.center(bottom),
         ]
 
@@ -155,106 +195,147 @@ class TerminalUI:
         sys.stdout.write(f"\r\033[K{' ' * max(0, (width - visible_len(done)) // 2)}{done}\n")
         sys.stdout.flush()
 
-    def splash_frame(self, frame_index: int) -> list[str]:
-        logo =[
-            r"████████╗███████╗██╗     ███████╗    ██████╗ ██╗     ██╗",
-            r"╚══██╔══╝██╔════╝██║     ██╔════╝   ██╔════╝ ██║     ██║",
-            r"   ██║   █████╗  ██║     █████╗█████╗██║     ██║     ██║",
-            r"   ██║   ██╔══╝  ██║     ██╔══╝╚════╝██║     ██║     ██║",
-            r"   ██║   ███████╗███████╗███████╗   ╚██████╗ ███████╗██║",
-            r"   ╚═╝   ╚══════╝╚══════╝╚══════╝    ╚═════╝ ╚══════╝╚═╝",
+    def _progress_bar(self, width: int, progress: float, fill_color: str) -> str:
+        progress = max(0.0, min(1.0, progress))
+        filled = min(width, int(round(width * progress)))
+        return f"{fill_color}{'█' * filled}{Colors.reset}{Colors.muted}{'·' * (width - filled)}{Colors.reset}"
+
+    def startup_progress_frame(
+        self,
+        frame_index: int,
+        tasks: list[str],
+        active_index: int,
+        active_progress: float,
+        overall_progress: float,
+    ) -> list[str]:
+        logo = [
+            "████████╗███████╗██╗     ███████╗         ██████╗██╗     ██╗",
+            "╚══██╔══╝██╔════╝██║     ██╔════╝        ██╔════╝██║     ██║",
+            "   ██║   █████╗  ██║     █████╗          ██║     ██║     ██║",
+            "   ██║   ██╔══╝  ██║     ██╔══╝          ██║     ██║     ██║",
+            "   ██║   ███████╗███████╗███████╗        ╚██████╗███████╗██║",
+            "   ╚═╝   ╚══════╝╚══════╝╚══════╝         ╚═════╝╚══════╝╚═╝",
         ]
 
-        progress = min(100, int((frame_index / 16) * 100))
-
-        # Stylized scan wave colorization
-        rendered_logo =[]
-        for i, line in enumerate(logo):
-            lit_row = frame_index - 4
-            if frame_index < 4:
-                color = Colors.muted
-            elif i == lit_row:
+        progress_percent = min(100, int(round(overall_progress * 100)))
+        scan_line = frame_index % (len(logo) + 3) - 1
+        rendered_logo = []
+        for index, line in enumerate(logo):
+            if overall_progress >= 0.98:
+                color = Colors.text + Colors.bold if (frame_index + index) % 2 == 0 else Colors.green + Colors.bold
+            elif index == scan_line:
                 color = Colors.cyan + Colors.bold
-            elif i < lit_row:
+            elif index < scan_line:
                 color = Colors.green + Colors.bold
             else:
-                color = Colors.blue + Colors.dim
+                color = Colors.muted
+            rendered_logo.append((" " * 4) + color + line + Colors.reset)
 
-            # Flash effect at near completion
-            if 13 <= frame_index <= 14:
-                color = Colors.text + Colors.bold if frame_index % 2 == 0 else Colors.cyan + Colors.bold
-            elif frame_index > 14:
-                color = Colors.green + Colors.bold if i > 1 else Colors.cyan + Colors.bold
-
-            pad_left = 8
-            rendered_logo.append((" " * pad_left) + color + line + Colors.reset)
-
-        status_ok = f"{Colors.green}[ OK ]{Colors.reset}"
-        status_wait = f"{Colors.yellow}[ .. ]{Colors.reset}"
-        sys_boot = status_ok if frame_index >= 2 else status_wait
-        link_align = status_ok if frame_index >= 5 else status_wait
-        ai_core = status_ok if frame_index >= 9 else status_wait
-
-        bar_len = 34
-        p1_filled = int((progress / 100) * bar_len)
-        p1_bar = ("█" * p1_filled) + ("-" * (bar_len - p1_filled))
-        p1_display = f"{Colors.cyan}{p1_bar}{Colors.reset} {progress:3d}%"
+        status_done = f"{Colors.green}[ ready ]{Colors.reset}"
+        status_live = f"{Colors.cyan}[ live  ]{Colors.reset}"
+        status_wait = f"{Colors.muted}[ hold  ]{Colors.reset}"
+        sys_boot = status_done if overall_progress >= 0.22 else status_live
+        link_align = status_done if overall_progress >= 0.56 else status_live if overall_progress >= 0.20 else status_wait
+        ai_core = status_done if overall_progress >= 0.84 else status_live if overall_progress >= 0.42 else status_wait
+        dependency_status = status_done if overall_progress >= 0.999 else status_live
 
         def box_line(content: str) -> str:
-            vis_len = visible_len(content)
-            pad_right = max(0, 72 - vis_len - 2)
+            pad_right = max(0, 72 - visible_len(content) - 2)
             return self.center(f"{Colors.border}|{Colors.reset}  {content}{' ' * pad_right}{Colors.border}|{Colors.reset}")
 
         def empty_box_line() -> str:
             return self.center(f"{Colors.border}|{Colors.reset}{' ' * 72}{Colors.border}|{Colors.reset}")
 
-        # Dynamic scrolling logs
-        logs =[
-            "Initializing core memory...",
-            "Mounting virtual filesystem... OK",
-            "Loading bridging heuristics... OK",
-            "Initializing Telegram MTProto... OK",
-            "Connecting to local AI core... OK",
-            "Establishing handshake... OK",
-            "Synchronizing token schemas... OK",
-            "Warming up neural pathways... OK",
-            "Bridge protocols active.",
-            "All systems operational."
-        ]
-        log_idx = min(len(logs) - 1, frame_index // 2)
-        start_idx = max(0, log_idx - 2)
-        visible_logs = logs[start_idx : log_idx + 1]
-        while len(visible_logs) < 3:
-            visible_logs.append("")
+        task_rows: list[str] = []
+        for index, task in enumerate(tasks):
+            if index < active_index:
+                status = status_done
+                bar = self._progress_bar(16, 1.0, Colors.green)
+            elif index == active_index:
+                status = status_live
+                bar = self._progress_bar(16, active_progress, Colors.cyan)
+            else:
+                status = status_wait
+                pulse = 0.12 + (((frame_index + index) % 5) * 0.06)
+                bar = self._progress_bar(16, pulse, Colors.muted)
+            task_rows.append(f"{status} {task}  {bar}")
 
-        lines =[
+        while len(task_rows) < 4:
+            task_rows.append("")
+
+        phase_names = ["resolving", "downloading", "wiring", "verifying"]
+        phase_index = min(len(phase_names) - 1, max(0, active_index))
+        phase = phase_names[phase_index]
+
+        primary_fill = self._progress_bar(34, overall_progress, Colors.green)
+        layer_a = self._progress_bar(26, min(1.0, overall_progress * 1.18), Colors.green_dim)
+        layer_b = self._progress_bar(26, min(1.0, max(0.0, overall_progress - 0.20) / 0.80), Colors.cyan)
+        layer_c = self._progress_bar(26, min(1.0, max(0.0, overall_progress - 0.42) / 0.58), Colors.text)
+
+        lines = [
             "",
             self.center(f"{Colors.border}+{'-' * 72}+{Colors.reset}"),
-            box_line(f"{Colors.text}{Colors.bold}SYS.BOOT{Colors.reset} // KERNEL INIT{' ' * 41}{sys_boot}"),
-            box_line(f"{Colors.text}{Colors.bold}NET.LINK{Colors.reset} // TELEGRAM BRIDGE{' ' * 37}{link_align}"),
-            box_line(f"{Colors.text}{Colors.bold}AI.CORE {Colors.reset} // ENGINE ALIGNMENT{' ' * 36}{ai_core}"),
+            box_line(f"{Colors.text}{Colors.bold}BOOT.SEQ {Colors.reset}// bridge ignition{' ' * 39}{sys_boot}"),
+            box_line(f"{Colors.text}{Colors.bold}NET.LINK {Colors.reset}// telegram bridge{' ' * 38}{link_align}"),
+            box_line(f"{Colors.text}{Colors.bold}AI.CORE  {Colors.reset}// local reasoning stack{' ' * 34}{ai_core}"),
+            box_line(f"{Colors.text}{Colors.bold}PKG.SYNC {Colors.reset}// dependency payload{' ' * 36}{dependency_status}"),
+            empty_box_line(),
+            box_line(
+                f"{Colors.green_dim}The Bridge{Colors.reset} "
+                f"{Colors.muted}|{Colors.reset} "
+                f"{Colors.text}operator console activation{Colors.reset} "
+                f"{Colors.muted}|{Colors.reset} "
+                f"{Colors.green}{progress_percent:3d}%{Colors.reset}"
+            ),
             empty_box_line(),
         ]
 
         for line in rendered_logo:
             lines.append(box_line(line))
 
-        lines.append(empty_box_line())
+        lines.extend(
+            [
+                empty_box_line(),
+                box_line(
+                    f"{Colors.muted}telegram interface{Colors.reset}  "
+                    f"{Colors.green_dim}<->{Colors.reset}  "
+                    f"{Colors.text}ai engine{Colors.reset}  "
+                    f"{Colors.green_dim}<->{Colors.reset}  "
+                    f"{Colors.cyan}tele cli service{Colors.reset}"
+                ),
+                box_line(f"{Colors.muted}current phase:{Colors.reset} {Colors.text}{phase}{Colors.reset}"),
+                empty_box_line(),
+            ]
+        )
 
-        for log in visible_logs:
-            if log:
-                lines.append(box_line(f"{Colors.muted}> {log}{Colors.reset}"))
-            else:
-                lines.append(empty_box_line())
+        for row in task_rows:
+            lines.append(box_line(row) if row else empty_box_line())
 
-        lines.extend([
-            empty_box_line(),
-            box_line(f"SYSTEM ACTIVATION PROGRESS  [{p1_display}]"),
-            self.center(f"{Colors.border}+{'-' * 72}+{Colors.reset}"),
-            "",
-        ])
-
+        lines.extend(
+            [
+                empty_box_line(),
+                box_line(f"FILL LAYER A                 [{layer_a}]"),
+                box_line(f"FILL LAYER B                 [{layer_b}]"),
+                box_line(f"FILL LAYER C                 [{layer_c}]"),
+                box_line(f"OVERALL PROGRESS             [{primary_fill} {progress_percent:3d}%]"),
+                self.center(f"{Colors.border}+{'-' * 72}+{Colors.reset}"),
+                "",
+            ]
+        )
         return lines
+
+    def splash_frame(self, frame_index: int) -> list[str]:
+        tasks = [
+            "Loading local background service",
+            "Synchronizing AI engine",
+            "Wiring Telegram API handlers",
+            "Installing required Python packages",
+        ]
+        overall = min(1.0, frame_index / 18)
+        scaled = min(len(tasks), overall * len(tasks))
+        active_index = min(len(tasks) - 1, int(scaled))
+        active_progress = 1.0 if overall >= 1.0 else scaled - active_index
+        return self.startup_progress_frame(frame_index, tasks, active_index, active_progress, overall)
 
     def input_line(self, prompt: str, panel_width: int = 72, use_existing_field: bool = False) -> str:
         left_margin, inner_width = self.panel_geometry(panel_width)
@@ -279,7 +360,7 @@ class TerminalUI:
         sys.stdout.flush()
         self.show_cursor()
 
-        buffer: list[str] =[]
+        buffer: list[str] = []
         try:
             if sys.platform == "win32":
                 import msvcrt
@@ -422,8 +503,6 @@ class TerminalUI:
         import termios
         import tty
 
-        fd = sys.stdin.fileno()
-        previous = termios.tcgetattr(fd)
         fd = sys.stdin.fileno()
         previous = termios.tcgetattr(fd)
         try:

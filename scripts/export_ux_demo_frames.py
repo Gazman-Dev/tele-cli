@@ -23,25 +23,27 @@ def build_frames() -> list[dict[str, object]]:
 
     frames: list[dict[str, object]] = []
 
-    splash_lines = ui.splash_frame(1)
+    startup_tasks = [
+        "Loading local background service",
+        "Synchronizing AI engine",
+        "Wiring Telegram API handlers",
+        "Installing required Python packages",
+    ]
+    splash_lines = ui.startup_progress_frame(
+        frame_index=6,
+        tasks=startup_tasks,
+        active_index=1,
+        active_progress=0.55,
+        overall_progress=0.34,
+    )
     frames.append({"name": "00_splash", "lines": splash_lines})
 
-    install_lines = (
-        ui.print_header()
-        + ui.system_strip("starting", "not authenticated", "not paired", "Preparing the local bridge and first-run setup.")
-        + [""]
-        + ui.panel(
-            "Installing Tele-Cli",
-            [
-                f"{Colors.muted}Preparing local service, dependencies, and bridge wiring.{Colors.reset}",
-                f"{Colors.green}*{Colors.reset} {Colors.text}Loading local background service{Colors.reset}",
-                f"{Colors.green}*{Colors.reset} {Colors.text}Synchronizing AI engine{Colors.reset}",
-                f"{Colors.green}*{Colors.reset} {Colors.text}Wiring Telegram API handlers{Colors.reset}",
-                f"{Colors.green}*{Colors.reset} {Colors.text}Installing required Python packages{Colors.reset}",
-            ],
-            width=72,
-            align="center",
-        )
+    install_lines = ui.startup_progress_frame(
+        frame_index=18,
+        tasks=startup_tasks,
+        active_index=3,
+        active_progress=1.0,
+        overall_progress=1.0,
     )
     frames.append({"name": "01_install_complete", "lines": install_lines})
 

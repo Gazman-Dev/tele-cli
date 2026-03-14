@@ -34,35 +34,53 @@ class TeleCliUxDemo:
             self.ui.end()
 
     def _startup_screen(self) -> None:
-        self._bridge_splash_screen()
-        self.ui.render(
-            self.ui.print_header()
-            + self.ui.system_strip("starting", "not authenticated", "not paired", "Preparing the local bridge and first-run setup.")
-            + [""]
-            + self.ui.panel(
-                "Installing Tele-Cli",
-                [f"{Colors.muted}Preparing local service, dependencies, and bridge wiring.{Colors.reset}"],
-                width=72,
-                align="center",
-            )
-        )
-        print()
-        for step in[
+        tasks = [
             "Loading local background service",
             "Synchronizing AI engine",
             "Wiring Telegram API handlers",
             "Installing required Python packages",
-        ]:
-            self.ui.spinner(step, 0.75)
-        self.state.status_line = "Setup required"
+        ]
+        durations = [0.32, 0.44, 0.48, 0.96]
+        total_duration = max(2.0, sum(durations))
 
-    def _bridge_splash_screen(self) -> None:
         start = time.time()
         frame = 0
-        while time.time() - start < 3.5:
-            self.ui.render(self.ui.splash_frame(frame))
-            time.sleep(0.16)
+        while True:
+            elapsed = time.time() - start
+            if elapsed >= total_duration:
+                break
+
+            remaining = elapsed
+            active_index = len(tasks) - 1
+            active_progress = 1.0
+            completed = 0.0
+            for index, duration in enumerate(durations):
+                if remaining >= duration:
+                    completed += duration
+                    continue
+                active_index = index
+                active_progress = max(0.0, min(1.0, remaining / duration))
+                break
+            else:
+                active_index = len(tasks) - 1
+                active_progress = 1.0
+
+            overall_progress = max(0.0, min(1.0, completed / total_duration + (active_progress * durations[active_index] / total_duration)))
+            self.ui.render(
+                self.ui.startup_progress_frame(
+                    frame,
+                    tasks,
+                    active_index,
+                    active_progress,
+                    overall_progress,
+                )
+            )
+            time.sleep(0.08)
             frame += 1
+
+        self.ui.render(self.ui.startup_progress_frame(frame, tasks, len(tasks) - 1, 1.0, 1.0))
+        time.sleep(0.2)
+        self.state.status_line = "Setup required"
 
     def _telegram_token_screen(self) -> None:
         run_token_screen(self.ui, self.state)
