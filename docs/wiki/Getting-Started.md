@@ -9,10 +9,17 @@ python -m pip install -e .
 Or:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bash
+curl -fsSL https://github.com/Gazman-Dev/tele-cli/raw/master/setup.sh | bash
 ```
 
-That installer will install or update the app, run setup if needed, and register a background service that is restarted on later install runs.
+That setup script will install or update the app, run setup if needed, register a background service that is restarted on later setup runs, and offer uninstall if it detects an existing install.
+
+If the app is already installed, the script will prompt you to:
+
+- press Enter to update
+- type `uninstall` to remove it
+
+Uninstall requires typing `uninstall` a second time for confirmation. It removes the service, launcher scripts, installed package, and the default state directory at `~/.tele-cli`.
 
 ## First Run
 

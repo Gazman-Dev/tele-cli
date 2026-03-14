@@ -10,7 +10,13 @@ from minic.paths import build_paths
 from minic.runtime import ServiceRuntime
 from minic.service import reset_auth
 from minic.setup_flow import _handle_existing_setup
-from minic.telegram import confirm_pairing_code, register_pairing_request
+from minic.telegram import (
+    confirm_pairing_code,
+    describe_pairing,
+    has_pending_pairing,
+    is_auth_paired,
+    register_pairing_request,
+)
 
 
 class RuntimeTests(unittest.TestCase):
@@ -56,11 +62,19 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(auth.pending_chat_id, 22)
         self.assertEqual(auth.pending_user_id, 11)
         self.assertIsNotNone(auth.pairing_code)
+        self.assertTrue(has_pending_pairing(auth))
+        self.assertFalse(is_auth_paired(auth))
 
         self.assertFalse(confirm_pairing_code(auth, "wrong"))
         self.assertTrue(confirm_pairing_code(auth, auth.pairing_code))
         self.assertEqual(auth.telegram_chat_id, 22)
         self.assertEqual(auth.telegram_user_id, 11)
+        self.assertTrue(is_auth_paired(auth))
+
+    def test_pairing_without_completed_timestamp_is_not_treated_as_paired(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22)
+        self.assertFalse(is_auth_paired(auth))
+        self.assertEqual(describe_pairing(auth), "not paired")
 
     def test_completed_setup_does_not_trigger_recovery_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

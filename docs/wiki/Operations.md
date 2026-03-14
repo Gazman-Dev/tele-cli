@@ -4,6 +4,8 @@
 
 `~/.tele-cli`
 
+The `setup.sh` uninstall flow removes this directory after explicit confirmation.
+
 Contents:
 
 - `app.lock`

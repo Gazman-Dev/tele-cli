@@ -8,6 +8,11 @@
 - [Operations](Operations)
 - [Architecture](Architecture)
 
+## Setup Flow
+
+- `setup.sh` is the recommended one-line entrypoint for install and update
+- running `setup.sh` on an existing install offers uninstall with explicit typed confirmation
+
 ## Core Ideas
 
 - One operator

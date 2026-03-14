@@ -14,9 +14,10 @@ from .models import AuthState, Config, RuntimeState, utc_now
 from .paths import AppPaths
 from .process import describe_process, make_lock_metadata, process_exists, read_process_command, safe_kill
 from .prompts import ask_choice
+from .setup_flow import complete_pending_pairing
 from .recorder import Recorder
 from .runtime import ServiceRuntime
-from .telegram import TelegramClient, register_pairing_request
+from .telegram import TelegramClient, has_pending_pairing, is_auth_paired, register_pairing_request
 
 
 def run_service(paths: AppPaths) -> None:
@@ -59,13 +60,26 @@ def run_service(paths: AppPaths) -> None:
             telegram.send_message(auth.telegram_chat_id, f"[{source}] {line[:3500]}")
 
     codex = None
-    if auth.telegram_chat_id and auth.telegram_user_id:
+    if is_auth_paired(auth):
         codex = _start_codex_session(config, auth, runtime, runtime_state, metadata, app_lock, telegram, handle_output)
     save_json(paths.runtime, runtime_state.to_dict())
     append_recovery_log(paths.recovery_log, f"service started session_id={runtime_state.session_id}")
 
     offset = None
     try:
+        if has_pending_pairing(auth) and isatty():
+            complete_pending_pairing(paths, auth, telegram, allow_empty=True)
+            if is_auth_paired(auth) and codex is None:
+                codex = _start_codex_session(
+                    config,
+                    auth,
+                    runtime,
+                    runtime_state,
+                    metadata,
+                    app_lock,
+                    telegram,
+                    handle_output,
+                )
         while True:
             for update in telegram.get_updates(offset=offset, timeout=20):
                 offset = update["update_id"] + 1
@@ -86,10 +100,22 @@ def run_service(paths: AppPaths) -> None:
                         "Pairing requested. "
                         f"chat_id={auth.pending_chat_id} user_id={auth.pending_user_id} code={auth.pairing_code}"
                     )
+                    if isatty():
+                        if complete_pending_pairing(paths, auth, telegram, allow_empty=True) and codex is None:
+                            codex = _start_codex_session(
+                                config,
+                                auth,
+                                runtime,
+                                runtime_state,
+                                metadata,
+                                app_lock,
+                                telegram,
+                                handle_output,
+                            )
                     continue
                 if not ok:
                     continue
-                if codex is None and auth.telegram_chat_id and auth.telegram_user_id:
+                if codex is None and is_auth_paired(auth):
                     codex = _start_codex_session(
                         config,
                         auth,
@@ -116,6 +142,15 @@ def run_service(paths: AppPaths) -> None:
         debug.stop()
         app_lock.clear()
         append_recovery_log(paths.recovery_log, "service stopped")
+
+
+def isatty() -> bool:
+    try:
+        import sys
+
+        return sys.stdin.isatty()
+    except Exception:
+        return False
 
 
 def _start_codex_session(

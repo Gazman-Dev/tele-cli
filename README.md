@@ -43,19 +43,27 @@ Dockerfile.linux-test
 python -m pip install -e .
 ```
 
-One-line install:
+One-line setup:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bash
+curl -fsSL https://raw.github.com/Gazman-Dev/tele-cli/refs/heads/master/install.sh | bash
 ```
 
-The installer now:
+The setup script now:
 
 - installs or updates Tele Cli
 - runs setup immediately if the app is not configured yet
 - installs a managed background service
 - starts or restarts that service on every install run
+- offers uninstall when it detects an existing install
 - avoids duplicate service ownership through the service manager and runtime lock checks
+
+If `Tele Cli` is already installed, running `setup.sh` again will prompt you to either:
+
+- press Enter to update the existing install
+- type `uninstall` to start removal
+
+Uninstall requires a second confirmation where you must type `uninstall` again. It removes the background service, launcher scripts, installed package, and the default state directory at `~/.tele-cli`.
 
 ## Commands
 

@@ -44,6 +44,28 @@ class TelegramClient:
         self._request("sendMessage", params={"chat_id": chat_id, "text": text})
 
 
+def is_auth_paired(auth: Optional[AuthState]) -> bool:
+    if not auth or not auth.bot_token:
+        return False
+    return bool(auth.telegram_chat_id and auth.telegram_user_id and auth.paired_at)
+
+
+def has_pending_pairing(auth: Optional[AuthState]) -> bool:
+    if not auth:
+        return False
+    return bool(auth.pairing_code and auth.pending_chat_id and auth.pending_user_id)
+
+
+def describe_pairing(auth: Optional[AuthState]) -> str:
+    if not auth or not auth.bot_token:
+        return "missing bot token"
+    if is_auth_paired(auth):
+        return f"paired chat={auth.telegram_chat_id} user={auth.telegram_user_id}"
+    if has_pending_pairing(auth):
+        return f"pending code for chat={auth.pending_chat_id} user={auth.pending_user_id}"
+    return "not paired"
+
+
 def issue_pairing_code(auth: AuthState) -> str:
     import random
 
@@ -58,7 +80,7 @@ def register_pairing_request(auth: AuthState, update: dict) -> tuple[bool, str]:
     chat = message.get("chat") or {}
     user_id = from_user.get("id")
     chat_id = chat.get("id")
-    if auth.telegram_chat_id and auth.telegram_user_id:
+    if is_auth_paired(auth):
         if auth.telegram_chat_id != chat_id or auth.telegram_user_id != user_id:
             return False, "already-paired"
         return True, "authorized"
