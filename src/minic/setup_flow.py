@@ -115,20 +115,24 @@ def _pair_authorized_operator(paths: AppPaths, auth: AuthState, bot: TelegramCli
                     "Pairing request received. "
                     f"chat_id={auth.pending_chat_id} user_id={auth.pending_user_id}"
                 )
-
-        if auth.pairing_code:
-            code = ask_text("Enter the pairing code shown by the Telegram bot")
-            if confirm_pairing_code(auth, code):
-                save_json(paths.auth, auth.to_dict())
-                bot.send_message(auth.telegram_chat_id, "Pairing complete. Tele Cli is now authorized for this chat.")
-                append_recovery_log(
-                    paths.recovery_log,
-                    f"telegram paired chat_id={auth.telegram_chat_id} user_id={auth.telegram_user_id}",
-                )
+                _wait_for_local_pairing_confirmation(paths, auth, bot)
                 return
-            print("Invalid pairing code. Ask the bot again if needed and enter the newest code.")
-        else:
-            time.sleep(1)
+
+        time.sleep(1)
+
+
+def _wait_for_local_pairing_confirmation(paths: AppPaths, auth: AuthState, bot: TelegramClient) -> None:
+    while auth.telegram_chat_id is None or auth.telegram_user_id is None:
+        code = ask_text("Enter the pairing code shown by the Telegram bot")
+        if confirm_pairing_code(auth, code):
+            save_json(paths.auth, auth.to_dict())
+            bot.send_message(auth.telegram_chat_id, "Pairing complete. Tele Cli is now authorized for this chat.")
+            append_recovery_log(
+                paths.recovery_log,
+                f"telegram paired chat_id={auth.telegram_chat_id} user_id={auth.telegram_user_id}",
+            )
+            return
+        print("Invalid pairing code. Enter the current code from Telegram.")
 
 
 def _handle_existing_app_lock(app_lock: LockFile, paths: AppPaths) -> None:
