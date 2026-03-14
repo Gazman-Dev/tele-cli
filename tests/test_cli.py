@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from minic.cli import build_parser
+from tele_cli.cli import build_parser
 
 
 class CliTests(unittest.TestCase):

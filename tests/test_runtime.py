@@ -4,19 +4,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from minic.json_store import save_json
-from minic.models import AuthState, RuntimeState, SetupState
-from minic.paths import build_paths
-from minic.runtime import ServiceRuntime
-from minic.service import reset_auth
-from minic.setup_flow import _handle_existing_setup
-from minic.telegram import (
+from tele_cli.core.json_store import save_json
+from tele_cli.core.models import AuthState, RuntimeState, SetupState
+from tele_cli.core.paths import build_paths
+from tele_cli.integrations.telegram import (
     confirm_pairing_code,
     describe_pairing,
     has_pending_pairing,
     is_auth_paired,
     register_pairing_request,
 )
+from tele_cli.runtime.runtime import ServiceRuntime
+from tele_cli.runtime.service import reset_auth
+from tele_cli.setup.setup_flow import _handle_existing_setup
 
 
 class RuntimeTests(unittest.TestCase):

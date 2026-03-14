@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from minic.installer import LinuxInstallerStrategy, MacOSInstallerStrategy
+from tele_cli.setup.installer import LinuxInstallerStrategy, MacOSInstallerStrategy
 
 
 class InstallerTests(unittest.TestCase):

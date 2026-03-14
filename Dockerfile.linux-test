@@ -10,4 +10,4 @@ COPY tests /app/tests
 
 ENV PYTHONPATH=/app/src
 
-CMD ["sh", "-lc", "python -m unittest discover -s tests -v && python -m minic.cli --help"]
+CMD ["sh", "-lc", "python -m unittest discover -s tests -v && python -m tele_cli.cli --help"]

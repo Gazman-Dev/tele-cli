@@ -16,7 +16,7 @@ It is designed for Linux and macOS and focuses on one local operator, one Telegr
 ## Project Layout
 
 ```text
-src/minic/
+src/tele_cli/
   cli.py
   setup_flow.py
   service.py
@@ -89,8 +89,6 @@ tele-cli-ux-demo
 ```
 
 The demo is a mock TUI for the UX spec in [`spec/ux_spec.md`](/C:/git/MiniC/spec/ux_spec.md). It includes the setup screens, status dashboard, debug view, update flow, and uninstall confirmation, but it does not touch the real service or Telegram integration.
-
-`minic` remains available as a compatibility alias, but `tele-cli` is the primary command.
 
 Use `--state-dir` if you want state files somewhere other than `~/.tele-cli`.
 

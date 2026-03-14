@@ -10,8 +10,8 @@ setup(
     python_requires=">=3.9",
     entry_points={
         "console_scripts": [
-            "tele-cli=minic.cli:main",
-            "minic=minic.cli:main",
+            "tele-cli=tele_cli.cli:main",
+            "tele-cli-ux-demo=tele_cli.ux_demo:main",
         ]
     },
 )
