@@ -84,6 +84,27 @@ install_git() {
   esac
 }
 
+install_homebrew() {
+  echo "Homebrew not found. Installing Homebrew..."
+  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+  if [ -x /opt/homebrew/bin/brew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+}
+
+ensure_macos_prereqs() {
+  if [ "$(uname -s)" != "Darwin" ]; then
+    return
+  fi
+
+  if ! command -v npm >/dev/null 2>&1 && ! command -v brew >/dev/null 2>&1; then
+    install_homebrew
+  fi
+}
+
 append_path_hint() {
   local shell_rc=""
   local candidate
@@ -311,6 +332,7 @@ if ! command -v git >/dev/null 2>&1; then
   install_git
 fi
 
+ensure_macos_prereqs
 append_path_hint
 install_or_upgrade_package
 write_launcher
