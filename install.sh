@@ -85,22 +85,47 @@ install_git() {
 }
 
 append_path_hint() {
-  local shell_rc
+  local shell_rc=""
+  local candidate
 
   if [ -n "${ZSH_VERSION:-}" ] || [ "${SHELL:-}" = "/bin/zsh" ]; then
-    shell_rc="${HOME}/.zshrc"
+    for candidate in "${HOME}/.zshrc" "${HOME}/.zprofile"; do
+      if [ -e "$candidate" ]; then
+        if [ -w "$candidate" ]; then
+          shell_rc="$candidate"
+          break
+        fi
+      elif [ -w "${HOME}" ]; then
+        shell_rc="$candidate"
+        break
+      fi
+    done
   else
-    shell_rc="${HOME}/.bashrc"
+    for candidate in "${HOME}/.bashrc" "${HOME}/.bash_profile" "${HOME}/.profile"; do
+      if [ -e "$candidate" ]; then
+        if [ -w "$candidate" ]; then
+          shell_rc="$candidate"
+          break
+        fi
+      elif [ -w "${HOME}" ]; then
+        shell_rc="$candidate"
+        break
+      fi
+    done
   fi
 
   ensure_dir "$USER_BIN_DIR"
   if ! printf '%s\n' "${PATH}" | tr ':' '\n' | grep -Fx "$USER_BIN_DIR" >/dev/null 2>&1; then
-    if [ -f "$shell_rc" ]; then
-      if ! grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$shell_rc" >/dev/null 2>&1; then
-        printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$shell_rc"
+    if [ -n "$shell_rc" ]; then
+      if [ -f "$shell_rc" ]; then
+        if ! grep -F 'export PATH="$HOME/.local/bin:$PATH"' "$shell_rc" >/dev/null 2>&1; then
+          printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$shell_rc"
+        fi
+      else
+        printf 'export PATH="$HOME/.local/bin:$PATH"\n' > "$shell_rc"
       fi
     else
-      printf 'export PATH="$HOME/.local/bin:$PATH"\n' > "$shell_rc"
+      echo "Warning: could not find a writable shell rc file to persist PATH." >&2
     fi
     export PATH="$USER_BIN_DIR:$PATH"
   fi
