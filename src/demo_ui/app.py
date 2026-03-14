@@ -47,7 +47,7 @@ class TeleCliUxDemo:
             )
         )
         print()
-        for step in [
+        for step in[
             "Loading local background service",
             "Synchronizing AI engine",
             "Wiring Telegram API handlers",
@@ -59,7 +59,7 @@ class TeleCliUxDemo:
     def _bridge_splash_screen(self) -> None:
         start = time.time()
         frame = 0
-        while time.time() - start < 3.0:
+        while time.time() - start < 3.5:
             self.ui.render(self.ui.splash_frame(frame))
             time.sleep(0.16)
             frame += 1
@@ -89,7 +89,7 @@ class TeleCliUxDemo:
                 self.state.running = False
 
     def _render_status_screen(self, items: list[MenuItem]) -> None:
-        menu_lines: list[str] = []
+        menu_lines: list[str] =[]
         for index, item in enumerate(items):
             if index == self.selection:
                 menu_lines.append(f"{Colors.chip_focus} > {item.label.ljust(28)} {Colors.reset}")
@@ -109,7 +109,7 @@ class TeleCliUxDemo:
         )
 
     def _menu_items(self) -> list[MenuItem]:
-        return [
+        return[
             MenuItem("Status refresh", "refresh"),
             MenuItem("Setup", "setup"),
             MenuItem("Restart service", "service"),
