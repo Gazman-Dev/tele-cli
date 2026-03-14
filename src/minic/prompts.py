@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import Optional
 
 
@@ -7,6 +8,8 @@ def ask_choice(message: str, choices: list[str], default: Optional[str] = None) 
     choice_set = {item.lower() for item in choices}
     prompt = "/".join(choices)
     suffix = f" [{default}]" if default else ""
+    if not sys.stdin.isatty():
+        return default or choices[0]
     while True:
         raw = input(f"{message} ({prompt}){suffix}: ").strip().lower()
         if not raw and default:
