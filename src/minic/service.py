@@ -16,7 +16,7 @@ from .process import describe_process, make_lock_metadata, process_exists, read_
 from .prompts import ask_choice
 from .recorder import Recorder
 from .runtime import ServiceRuntime
-from .telegram import TelegramClient, issue_pairing_code, pair_from_update
+from .telegram import TelegramClient, register_pairing_request
 
 
 def run_service(paths: AppPaths) -> None:
@@ -58,11 +58,9 @@ def run_service(paths: AppPaths) -> None:
         if auth.telegram_chat_id:
             telegram.send_message(auth.telegram_chat_id, f"[{source}] {line[:3500]}")
 
-    codex = CodexSession(config.codex_command, handle_output)
-    runtime.start_codex()
-    runtime_state.codex_pid = codex.start()
-    metadata.child_codex_pid = runtime_state.codex_pid
-    app_lock.write(metadata)
+    codex = None
+    if auth.telegram_chat_id and auth.telegram_user_id:
+        codex = _start_codex_session(config, auth, runtime, runtime_state, metadata, app_lock, telegram, handle_output)
     save_json(paths.runtime, runtime_state.to_dict())
     append_recovery_log(paths.recovery_log, f"service started session_id={runtime_state.session_id}")
 
@@ -71,7 +69,7 @@ def run_service(paths: AppPaths) -> None:
         while True:
             for update in telegram.get_updates(offset=offset, timeout=20):
                 offset = update["update_id"] + 1
-                ok, status = pair_from_update(auth, update)
+                ok, status = register_pairing_request(auth, update)
                 save_json(paths.auth, auth.to_dict())
                 if status == "already-paired":
                     chat_id = update.get("message", {}).get("chat", {}).get("id")
@@ -79,35 +77,65 @@ def run_service(paths: AppPaths) -> None:
                         telegram.send_message(chat_id, "This bot is already paired to another chat.")
                     continue
                 if status == "code-issued":
-                    pending_code = auth.pairing_code or issue_pairing_code(auth)
-                    pending_chat_id = update.get("message", {}).get("chat", {}).get("id")
-                    if pending_chat_id:
+                    if auth.pending_chat_id and auth.pairing_code:
                         telegram.send_message(
-                            pending_chat_id,
-                            f"Pairing code: {pending_code}. Send this code back to pair this chat.",
+                            auth.pending_chat_id,
+                            f"Pairing code: {auth.pairing_code}. Enter this code in the local Tele Cli terminal to authorize this chat.",
                         )
                     print(
                         "Pairing requested. "
-                        f"chat_id={auth.pending_chat_id} user_id={auth.pending_user_id} code={pending_code}"
+                        f"chat_id={auth.pending_chat_id} user_id={auth.pending_user_id} code={auth.pairing_code}"
                     )
-                    continue
-                if status == "paired":
-                    telegram.send_message(auth.telegram_chat_id, "Pairing complete.")
                     continue
                 if not ok:
                     continue
+                if codex is None and auth.telegram_chat_id and auth.telegram_user_id:
+                    codex = _start_codex_session(
+                        config,
+                        auth,
+                        runtime,
+                        runtime_state,
+                        metadata,
+                        app_lock,
+                        telegram,
+                        handle_output,
+                    )
                 text = (update.get("message", {}).get("text") or "").strip()
                 if text:
+                    if codex is None:
+                        telegram.send_message(auth.telegram_chat_id, "Codex is not ready yet.")
+                        continue
                     codex.send(text)
                     recorder.record("telegram", text)
             time.sleep(config.poll_interval_seconds)
     finally:
-        codex.stop()
-        runtime.stop_codex()
+        if codex is not None:
+            codex.stop()
+            runtime.stop_codex()
         recorder.stop()
         debug.stop()
         app_lock.clear()
         append_recovery_log(paths.recovery_log, "service stopped")
+
+
+def _start_codex_session(
+    config: Config,
+    auth: AuthState,
+    runtime: ServiceRuntime,
+    runtime_state: RuntimeState,
+    metadata,
+    app_lock: LockFile,
+    telegram: TelegramClient,
+    handle_output,
+) -> CodexSession:
+    runtime.start_codex()
+    codex = CodexSession(config.codex_command, handle_output)
+    runtime_state.codex_pid = codex.start()
+    metadata.child_codex_pid = runtime_state.codex_pid
+    app_lock.write(metadata)
+    save_json(app_lock.path.parent / "runtime.json", runtime_state.to_dict())
+    telegram.send_message(auth.telegram_chat_id, "Tele Cli service connected. Starting Codex session.")
+    return codex
 
 
 def reset_auth(paths: AppPaths) -> None:

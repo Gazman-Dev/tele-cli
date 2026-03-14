@@ -163,7 +163,27 @@ EOF
 }
 
 is_configured() {
-  [ -f "${STATE_DIR}/config.json" ] && [ -f "${STATE_DIR}/auth.json" ]
+  "$PYTHON_BIN" - <<EOF
+import json
+from pathlib import Path
+
+state_dir = Path("${STATE_DIR}")
+config_path = state_dir / "config.json"
+auth_path = state_dir / "auth.json"
+
+if not config_path.exists() or not auth_path.exists():
+    raise SystemExit(1)
+
+config = json.loads(config_path.read_text())
+auth = json.loads(auth_path.read_text())
+
+if not auth.get("bot_token"):
+    raise SystemExit(1)
+if not auth.get("telegram_user_id") or not auth.get("telegram_chat_id"):
+    raise SystemExit(1)
+
+raise SystemExit(0)
+EOF
 }
 
 install_or_upgrade_package() {

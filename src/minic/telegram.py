@@ -52,11 +52,10 @@ def issue_pairing_code(auth: AuthState) -> str:
     return auth.pairing_code
 
 
-def pair_from_update(auth: AuthState, update: dict) -> tuple[bool, str]:
+def register_pairing_request(auth: AuthState, update: dict) -> tuple[bool, str]:
     message = update.get("message") or {}
     from_user = message.get("from") or {}
     chat = message.get("chat") or {}
-    text = (message.get("text") or "").strip()
     user_id = from_user.get("id")
     chat_id = chat.get("id")
     if auth.telegram_chat_id and auth.telegram_user_id:
@@ -79,13 +78,20 @@ def pair_from_update(auth: AuthState, update: dict) -> tuple[bool, str]:
         auth.pending_user_id = int(user_id)
         return False, "code-issued"
 
-    if text == auth.pairing_code:
-        auth.telegram_user_id = int(user_id)
-        auth.telegram_chat_id = int(chat_id)
-        auth.paired_at = utc_now()
-        auth.pairing_code = None
-        auth.pending_chat_id = None
-        auth.pending_user_id = None
-        auth.pending_issued_at = None
-        return True, "paired"
-    return False, "pending"
+    return False, "code-issued"
+
+
+def confirm_pairing_code(auth: AuthState, code: str) -> bool:
+    if not auth.pairing_code or not auth.pending_chat_id or not auth.pending_user_id:
+        return False
+    if code.strip() != auth.pairing_code:
+        return False
+
+    auth.telegram_user_id = auth.pending_user_id
+    auth.telegram_chat_id = auth.pending_chat_id
+    auth.paired_at = utc_now()
+    auth.pairing_code = None
+    auth.pending_chat_id = None
+    auth.pending_user_id = None
+    auth.pending_issued_at = None
+    return True

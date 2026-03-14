@@ -10,7 +10,7 @@ from minic.paths import build_paths
 from minic.runtime import ServiceRuntime
 from minic.service import reset_auth
 from minic.setup_flow import _handle_existing_setup
-from minic.telegram import pair_from_update
+from minic.telegram import confirm_pairing_code, register_pairing_request
 
 
 class RuntimeTests(unittest.TestCase):
@@ -47,20 +47,18 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn('"telegram_user_id": null', data)
             self.assertIn('"telegram_chat_id": null', data)
 
-    def test_pairing_requires_code_round_trip(self) -> None:
+    def test_pairing_requires_terminal_confirmation(self) -> None:
         auth = AuthState(bot_token="token")
         update = {"message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "hello"}}
-        ok, status = pair_from_update(auth, update)
+        ok, status = register_pairing_request(auth, update)
         self.assertFalse(ok)
         self.assertEqual(status, "code-issued")
         self.assertEqual(auth.pending_chat_id, 22)
         self.assertEqual(auth.pending_user_id, 11)
         self.assertIsNotNone(auth.pairing_code)
 
-        confirm = {"message": {"chat": {"id": 22}, "from": {"id": 11}, "text": auth.pairing_code}}
-        ok, status = pair_from_update(auth, confirm)
-        self.assertTrue(ok)
-        self.assertEqual(status, "paired")
+        self.assertFalse(confirm_pairing_code(auth, "wrong"))
+        self.assertTrue(confirm_pairing_code(auth, auth.pairing_code))
         self.assertEqual(auth.telegram_chat_id, 22)
         self.assertEqual(auth.telegram_user_id, 11)
 
