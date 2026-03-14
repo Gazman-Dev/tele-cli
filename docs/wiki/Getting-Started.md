@@ -27,6 +27,14 @@ tele-cli service
 tele-cli reset-auth
 ```
 
+## Debug Mode
+
+```bash
+tele-cli debug
+```
+
+If another owned instance is already running, Tele Cli will prompt you to kill it so the current run can take over.
+
 ## Linux Validation In Docker
 
 ```bash

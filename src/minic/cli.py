@@ -14,6 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("setup")
     subparsers.add_parser("service")
+    subparsers.add_parser("debug")
     subparsers.add_parser("reset-auth")
     return parser
 
@@ -27,6 +28,8 @@ def main() -> None:
     if args.command == "setup":
         run_setup(paths)
     elif args.command == "service":
+        run_service(paths)
+    elif args.command == "debug":
         run_service(paths)
     elif args.command == "reset-auth":
         reset_auth(paths)

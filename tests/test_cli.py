@@ -14,6 +14,9 @@ class CliTests(unittest.TestCase):
         args = parser.parse_args(["service"])
         self.assertEqual(args.command, "service")
 
+        args = parser.parse_args(["debug"])
+        self.assertEqual(args.command, "debug")
+
         args = parser.parse_args(["reset-auth"])
         self.assertEqual(args.command, "reset-auth")
 

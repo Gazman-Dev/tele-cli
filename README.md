@@ -62,6 +62,7 @@ The installer now:
 ```bash
 tele-cli setup
 tele-cli service
+tele-cli debug
 tele-cli reset-auth
 ```
 
@@ -92,6 +93,16 @@ powershell -File scripts/run_docker_tests.ps1
 - `config.json`
 - `recovery.log`
 - `terminal.log`
+
+## Debug Mode
+
+Run:
+
+```bash
+tele-cli debug
+```
+
+`debug` runs the service in the foreground and keeps the local debug mirror on your terminal. If another Tele Cli instance already owns the runtime, the app will prompt with `kill`, `ignore`, or `exit`. Use `kill` to terminate the other owned instance and let the current debug run take over.
 
 ## License
 
