@@ -12,6 +12,7 @@ dependencies = []
 [project.scripts]
 tele-cli = "minic.cli:main"
 minic = "minic.cli:main"
+tele-cli-ux-demo = "minic.ux_demo:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

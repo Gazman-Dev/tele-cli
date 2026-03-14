@@ -74,6 +74,22 @@ tele-cli debug
 tele-cli reset-auth
 ```
 
+## UX Demo
+
+To review the proposed CLI UX before implementing it in the production flow:
+
+```bash
+python ux_demo.py
+```
+
+If installed as a package:
+
+```bash
+tele-cli-ux-demo
+```
+
+The demo is a mock TUI for the UX spec in [`spec/ux_spec.md`](/C:/git/MiniC/spec/ux_spec.md). It includes the setup screens, status dashboard, debug view, update flow, and uninstall confirmation, but it does not touch the real service or Telegram integration.
+
 `minic` remains available as a compatibility alias, but `tele-cli` is the primary command.
 
 Use `--state-dir` if you want state files somewhere other than `~/.tele-cli`.
