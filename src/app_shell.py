@@ -14,7 +14,7 @@ from core.locks import LockFile
 from core.models import AuthState, Config, RuntimeState, SetupState
 from core.paths import AppPaths
 from core.process import describe_process
-from demo_ui.state import Colors, MenuItem
+from demo_ui.state import Colors, DemoExit, MenuItem
 from demo_ui.ui import TerminalUI
 from integrations.telegram import (
     TelegramClient,
@@ -366,15 +366,27 @@ class AppShell:
         try:
             self._show_startup_splash()
             self._bootstrap_dependencies()
-            if startup_action is None and self._needs_initial_setup():
-                result = self._run_action("setup", pause=False)
-                if result == "exit":
+            pending_action = startup_action
+            pending_initial_setup = startup_action is None and self._needs_initial_setup()
+            while True:
+                try:
+                    if pending_initial_setup:
+                        pending_initial_setup = False
+                        result = self._run_action("setup", pause=False)
+                        if result == "exit":
+                            return
+                    if pending_action:
+                        action = pending_action
+                        pending_action = None
+                        result = self._run_action(action, pause=False)
+                        if result == "exit":
+                            return
+                    self._status_loop()
                     return
-            if startup_action:
-                result = self._run_action(startup_action, pause=False)
-                if result == "exit":
-                    return
-            self._status_loop()
+                except (DemoExit, KeyboardInterrupt):
+                    self.selection = 0
+                    pending_action = None
+                    pending_initial_setup = False
         finally:
             self.ui.end()
 
@@ -455,7 +467,7 @@ class AppShell:
                 if result == "exit":
                     return
             elif key in {"q", "esc"}:
-                return
+                self.selection = 0
 
     def _render_status_screen(self, items: list[MenuItem]) -> None:
         status = self.backend.build_status(self.paths)
@@ -486,15 +498,15 @@ class AppShell:
         recovery_choices: SetupRecoveryChoices | None = None
         if action == "setup":
             recovery_choices = self._resolve_setup_recovery()
-            if recovery_choices == "exit":
-                return "exit"
+            if recovery_choices == "cancel":
+                return "cancel"
         if action == "setup" and self._needs_token_setup():
             result = self._run_token_setup_flow()
-            if result == "exit":
+            if result in {"exit", "cancel"}:
                 return result
         if action == "setup" and self._needs_pairing_setup():
             result = self._run_pairing_setup_flow()
-            if result == "exit":
+            if result in {"exit", "cancel"}:
                 return result
         if action in {"setup", "update"}:
             result = self._resolve_duplicate_service_conflicts(action)
@@ -509,8 +521,8 @@ class AppShell:
             return result
         if action == "service":
             conflict_choices = self._resolve_service_runtime_conflict()
-            if conflict_choices == "exit":
-                return "exit"
+            if conflict_choices == "cancel":
+                return "cancel"
             result = self.backend.perform_service_action(self.paths, conflict_choices=conflict_choices)
             if result != "exit" and pause:
                 self.ui.pause("Press Enter to return to Tele Cli...")
@@ -529,15 +541,15 @@ class AppShell:
         lock_conflict = inspect_existing_app_lock(LockFile(self.paths.app_lock))
         if lock_conflict:
             lock_choice = self._show_app_lock_conflict(lock_conflict)
-            if lock_choice == "exit":
-                return "exit"
+            if lock_choice == "cancel":
+                return "cancel"
             choices.app_lock_choice = lock_choice
 
         setup_conflict = inspect_existing_setup(self.paths)
         if setup_conflict:
             setup_choice = self._show_setup_conflict(setup_conflict)
-            if setup_choice == "exit":
-                return "exit"
+            if setup_choice == "cancel":
+                return "cancel"
             choices.setup_choice = setup_choice
 
         if choices.app_lock_choice is None and choices.setup_choice is None:
@@ -577,7 +589,7 @@ class AppShell:
             if key == "i":
                 return "ignore"
             if key in {"e", "q", "esc"}:
-                return "exit"
+                return "cancel"
 
     def _show_setup_conflict(self, conflict: ExistingSetupConflict) -> str:
         while True:
@@ -618,7 +630,7 @@ class AppShell:
             if key == "i":
                 return "ignore"
             if key in {"e", "q", "esc"}:
-                return "exit"
+                return "cancel"
 
     def _resolve_service_runtime_conflict(self) -> ServiceConflictChoices | str | None:
         conflict = inspect_service_conflict(LockFile(self.paths.app_lock))
@@ -626,13 +638,13 @@ class AppShell:
             return None
         choices = ServiceConflictChoices()
         selected = self._show_service_conflict(conflict)
-        if selected == "exit":
-            return "exit"
+        if selected == "cancel":
+            return "cancel"
         choices.conflict_choice = selected
         if conflict.kind == "stale" and selected == "heal" and conflict.orphan_codex_active:
             orphan = self._show_orphan_codex_conflict(conflict)
-            if orphan == "exit":
-                return "exit"
+            if orphan == "cancel":
+                return "cancel"
             choices.orphan_choice = orphan
         return choices
 
@@ -681,7 +693,7 @@ class AppShell:
             if key == "i":
                 return "ignore"
             if key in {"e", "q", "esc"}:
-                return "exit"
+                return "cancel"
 
     def _show_orphan_codex_conflict(self, conflict: ServiceConflict) -> str:
         while True:
@@ -701,7 +713,7 @@ class AppShell:
             if key == "i":
                 return "ignore"
             if key in {"e", "q", "esc"}:
-                return "exit"
+                return "cancel"
 
     def _run_token_setup_flow(self) -> str | None:
         error = ""
@@ -723,7 +735,7 @@ class AppShell:
             )
             token = self.ui.input_line("Paste bot token", panel_width=74, use_existing_field=True)
             if token.lower() in {"q", "quit"}:
-                return "exit"
+                return "cancel"
 
             ok, message = self.backend.validate_and_save_token(self.paths, token)
             if ok:
@@ -743,90 +755,67 @@ class AppShell:
         error = ""
         offset: int | None = None
         while True:
-            auth = load_json(self.paths.auth, AuthState.from_dict)
-            code = auth.pairing_code if auth and auth.pairing_code else None
-            lines = [
-                "Pair this machine with your Telegram user.",
-                "",
-                "1. Send any message to your bot.",
-                "2. The bot replies with your unique code.",
-                "3. Enter that code on this machine.",
-            ]
-            if code:
-                lines.extend(
-                    [
-                        "",
-                        f"{Colors.muted}Telegram replied with this code{Colors.reset}",
-                        f"{Colors.chip_focus}   {code}   {Colors.reset}",
-                    ]
-                )
-            else:
-                lines.extend(
-                    [
-                        "",
-                        f"{Colors.muted}Waiting for the first Telegram message.{Colors.reset}",
-                    ]
-                )
-            lines.extend(
-                [
-                    "",
-                    f"{Colors.muted}Press Enter once you have the code, or q to exit setup.{Colors.reset}",
-                ]
-            )
-            if error:
-                lines.extend(["", f"{Colors.red}{error}{Colors.reset}"])
-
-            self.ui.render(self.ui.print_header() + self.ui.panel("Telegram Pairing", lines, width=74, align="center"))
-            key = self.ui.timed_keypress(0.4)
-            if key in {"q", "esc"}:
-                return "exit"
-            if key == "enter" and code:
-                entered_code = self._prompt_for_pairing_code(error="")
-                if entered_code is None:
-                    return "exit"
-                ok, message = self.backend.confirm_pairing(self.paths, entered_code)
-                if ok:
-                    self.ui.render(
-                        self.ui.print_header()
-                        + self.ui.panel(
-                            "Telegram Pairing",
-                            [f"{Colors.green}{Colors.bold}Device successfully paired.{Colors.reset}"],
-                            align="center",
-                        )
-                    )
-                    time.sleep(0.9)
-                    return None
-                error = message or "Invalid pairing code."
-                continue
-
             offset, status, payload = self.backend.poll_pairing_request(self.paths, offset)
             if status == "paired":
                 return None
             if status == "error":
                 error = payload or "Telegram pairing could not start."
-            elif status == "code-issued":
+            elif status == "code-issued" and not error:
                 error = ""
 
-    def _prompt_for_pairing_code(self, error: str) -> str | None:
-        while True:
+            auth = load_json(self.paths.auth, AuthState.from_dict)
+            pending_pairing = bool(auth and has_pending_pairing(auth))
             lines = [
-                "Enter the code shown by the Telegram bot.",
+                "Pair this machine with your Telegram user.",
                 "",
-                f"{Colors.muted}Press q to cancel and return to the shell.{Colors.reset}",
+                "1. Send any message to your bot.",
+                "2. The bot replies in Telegram with your unique code.",
+                "3. Enter that code on this machine as soon as it arrives.",
             ]
+            lines.extend(
+                [
+                    "",
+                    (
+                        f"{Colors.green}Pairing request detected. Enter the code from Telegram now.{Colors.reset}"
+                        if pending_pairing
+                        else f"{Colors.muted}Waiting for the first Telegram message.{Colors.reset}"
+                    ),
+                ]
+            )
+            lines.extend(
+                [
+                    "",
+                    f"{Colors.muted}Press Enter with no code to refresh, or q to cancel back to Tele Cli.{Colors.reset}",
+                ]
+            )
             if error:
                 lines.extend(["", f"{Colors.red}{error}{Colors.reset}"])
+
             self.ui.render(
                 self.ui.print_header()
                 + self.ui.panel("Telegram Pairing", lines, width=74, align="center")
                 + self.ui.input_section("Type the Telegram code", 74, title="Pairing Code")
             )
-            code = self.ui.input_line("Type the Telegram code", panel_width=74, use_existing_field=True)
-            if code.lower() in {"q", "quit"}:
+            entered_code = self.ui.input_line("Type the Telegram code", panel_width=74, use_existing_field=True)
+            if entered_code.lower() in {"q", "quit"}:
+                return "cancel"
+            if not entered_code.strip():
+                error = ""
+                continue
+
+            ok, message = self.backend.confirm_pairing(self.paths, entered_code)
+            if ok:
+                self.ui.render(
+                    self.ui.print_header()
+                    + self.ui.panel(
+                        "Telegram Pairing",
+                        [f"{Colors.green}{Colors.bold}Device successfully paired.{Colors.reset}"],
+                        align="center",
+                    )
+                )
+                time.sleep(0.9)
                 return None
-            if code.strip():
-                return code
-            error = "Pairing code is required."
+            error = message or "Invalid pairing code."
 
     def _run_update_flow(self) -> str | None:
         self.ui.render(

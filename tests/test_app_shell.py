@@ -9,6 +9,7 @@ from app_shell import AppShell, DefaultAppShellBackend
 from core.json_store import save_json
 from core.models import AuthState, Config, LockMetadata, RuntimeState, SetupState
 from core.paths import build_paths
+from demo_ui.state import DemoExit
 from runtime.control import ServiceConflict
 
 
@@ -85,6 +86,26 @@ class FakeUi:
 
     def splash_frame(self, frame_index: int) -> list[str]:
         return [f"SPLASH {frame_index}"]
+
+
+class InterruptingUi(FakeUi):
+    def __init__(self, *, fail_on: str, exception: BaseException, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.fail_on = fail_on
+        self.exception = exception
+        self.failed = False
+
+    def read_key(self) -> str:
+        if self.fail_on == "read_key" and not self.failed:
+            self.failed = True
+            raise self.exception
+        return super().read_key()
+
+    def input_line(self, prompt: str, panel_width: int = 72, use_existing_field: bool = False) -> str:
+        if self.fail_on == "input_line" and not self.failed:
+            self.failed = True
+            raise self.exception
+        return super().input_line(prompt, panel_width=panel_width, use_existing_field=use_existing_field)
 
 
 class FakeBackend:
@@ -273,12 +294,12 @@ class AppShellTests(unittest.TestCase):
                 ).to_dict(),
             )
             backend = FakeBackend()
-            ui = FakeUi(keys=["q"])
+            ui = FakeUi(keys=["down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
-            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(backend.actions, ["setup", "exit"])
             self.assertTrue(ui.begin_called)
             self.assertTrue(ui.end_called)
             self.assertTrue(ui.renders)
@@ -288,13 +309,13 @@ class AppShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             backend = FakeBackend()
-            ui = FakeUi(keys=["q"], inputs=["bot-token"])
+            ui = FakeUi(keys=["down", "enter"], inputs=["bot-token"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run()
 
             self.assertEqual(backend.validated_tokens, ["bot-token"])
-            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(backend.actions, ["setup", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Telegram Bot Setup", rendered_text)
 
@@ -311,12 +332,12 @@ class AppShellTests(unittest.TestCase):
                 ).to_dict(),
             )
             backend = FakeBackend()
-            ui = FakeUi(keys=["q"])
+            ui = FakeUi(keys=["down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run()
 
-            self.assertEqual(backend.actions, [])
+            self.assertEqual(backend.actions, ["exit"])
             rendered_text = "\n".join(ui.renders[-1])
             self.assertIn("PANEL Status", rendered_text)
             self.assertIn("PANEL Menu", rendered_text)
@@ -335,7 +356,7 @@ class AppShellTests(unittest.TestCase):
             )
             backend = FakeBackend()
             backend.dependency_steps = ["Installing npm via brew", "Installing Codex CLI"]
-            ui = FakeUi(keys=["q"])
+            ui = FakeUi(keys=["down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run()
@@ -362,7 +383,7 @@ class AppShellTests(unittest.TestCase):
             )
             backend = FakeBackend()
             backend.dependency_error = "npm install failed"
-            ui = FakeUi(keys=["q"])
+            ui = FakeUi(keys=["down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run()
@@ -385,12 +406,12 @@ class AppShellTests(unittest.TestCase):
                 ).to_dict(),
             )
             backend = FakeBackend()
-            ui = FakeUi(keys=["enter", "q"])
+            ui = FakeUi(keys=["enter", "down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run()
 
-            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(backend.actions, ["setup", "exit"])
             self.assertEqual(ui.pause_messages, ["Press Enter to return to Tele Cli..."])
             rendered_text = "\n".join(ui.renders[-1])
             self.assertIn("PANEL Status", rendered_text)
@@ -400,13 +421,13 @@ class AppShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             backend = FakeBackend()
-            ui = FakeUi(keys=["q"], inputs=["bot-token"])
+            ui = FakeUi(keys=["down", "enter"], inputs=["bot-token"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
             self.assertEqual(backend.validated_tokens, ["bot-token"])
-            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(backend.actions, ["setup", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Telegram Bot Setup", rendered_text)
 
@@ -422,7 +443,7 @@ class AppShellTests(unittest.TestCase):
                     return True, None
 
             backend = RetryingBackend()
-            ui = FakeUi(keys=["q"], inputs=["bad", "good"])
+            ui = FakeUi(keys=["down", "enter"], inputs=["bad", "good"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
@@ -436,36 +457,31 @@ class AppShellTests(unittest.TestCase):
             paths = build_paths(Path(tmp))
             save_json(paths.auth, AuthState(bot_token="token").to_dict())
             backend = FakeBackend()
-            backend.poll_results = [
-                (1, "waiting", None),
-                (2, "code-issued", "123456"),
-            ]
-            ui = FakeUi(keys=["q"], inputs=["123456"], timed_keys=[None, None, "enter"])
+            backend.poll_results = [(1, "code-issued", "123456")]
+            ui = FakeUi(keys=["down", "enter"], inputs=["123456"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
-            self.assertGreaterEqual(len(backend.pairing_polls), 2)
-            self.assertEqual(backend.pairing_polls[:2], [None, 1])
+            self.assertEqual(backend.pairing_polls, [None])
             self.assertEqual(backend.pairing_confirmations, ["123456"])
-            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(backend.actions, ["setup", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Telegram Pairing", rendered_text)
+            self.assertNotIn("123456", rendered_text)
+            self.assertIn("Type the Telegram code", rendered_text)
 
     def test_shell_pairing_screen_retries_bad_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             save_json(paths.auth, AuthState(bot_token="token").to_dict())
             backend = FakeBackend()
-            backend.poll_results = [
-                (1, "code-issued", "123456"),
-                (2, "code-issued", "123456"),
-            ]
+            backend.poll_results = [(1, "code-issued", "123456"), (2, "code-issued", "123456")]
             backend.confirm_results = [
                 (False, "Invalid pairing code. Enter the current code from Telegram."),
                 (True, None),
             ]
-            ui = FakeUi(keys=["q"], inputs=["bad", "123456"], timed_keys=[None, "enter", "enter"])
+            ui = FakeUi(keys=["down", "enter"], inputs=["bad", "123456"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
@@ -474,11 +490,75 @@ class AppShellTests(unittest.TestCase):
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Invalid pairing code", rendered_text)
 
+    def test_escape_during_setup_returns_to_main_menu(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            ui = InterruptingUi(
+                fail_on="input_line",
+                exception=DemoExit(0),
+                keys=["down", "enter"],
+                inputs=["ignored"],
+            )
+            backend = FakeBackend()
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
+
+            self.assertEqual(backend.actions, ["exit"])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("PANEL Menu", rendered_text)
+
+    def test_control_c_on_status_screen_does_not_exit_app(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            ui = InterruptingUi(
+                fail_on="read_key",
+                exception=KeyboardInterrupt(),
+                keys=["down", "enter"],
+            )
+            backend = FakeBackend()
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run()
+
+            self.assertEqual(backend.actions, ["exit"])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("PANEL Menu", rendered_text)
+
+    def test_escape_on_status_screen_keeps_shell_open_until_explicit_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            backend = FakeBackend()
+            ui = FakeUi(keys=["esc", "down", "enter"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run()
+
+            self.assertEqual(backend.actions, ["exit"])
+
     def test_shell_runs_update_flow_in_shell(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             backend = FakeBackend()
-            ui = FakeUi(keys=["q"])
+            ui = FakeUi(keys=["down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="update")
@@ -495,7 +575,7 @@ class AppShellTests(unittest.TestCase):
             paths = build_paths(Path(tmp))
             backend = FakeBackend()
             backend.update_result = (False, "repair declined")
-            ui = FakeUi(keys=["q"])
+            ui = FakeUi(keys=["down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="update")
@@ -512,7 +592,7 @@ class AppShellTests(unittest.TestCase):
             backend = FakeBackend()
             backend.duplicate_registrations = ["tele-cli-copy (launchd)"]
             backend.repaired_duplicates = ["tele-cli-copy (launchd)"]
-            ui = FakeUi(keys=["r", "q"])
+            ui = FakeUi(keys=["r", "down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="update")
@@ -528,7 +608,7 @@ class AppShellTests(unittest.TestCase):
             paths = build_paths(Path(tmp))
             backend = FakeBackend()
             backend.duplicate_registrations = ["tele-cli-copy (launchd)"]
-            ui = FakeUi(keys=["c", "q"])
+            ui = FakeUi(keys=["c", "down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="update")
@@ -554,13 +634,13 @@ class AppShellTests(unittest.TestCase):
             backend = FakeBackend()
             backend.duplicate_registrations = ["tele-cli-copy (launchd)"]
             backend.repaired_duplicates = ["tele-cli-copy (launchd)"]
-            ui = FakeUi(keys=["r", "q"])
+            ui = FakeUi(keys=["r", "down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
             self.assertEqual(backend.duplicate_repair_calls, 1)
-            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(backend.actions, ["setup", "exit"])
 
     def test_shell_collects_interrupted_setup_resolution_before_running_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -587,12 +667,12 @@ class AppShellTests(unittest.TestCase):
                 ).to_dict(),
             )
             backend = FakeBackend()
-            ui = FakeUi(keys=["r", "q"])
+            ui = FakeUi(keys=["r", "down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
-            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(backend.actions, ["setup", "exit"])
             self.assertEqual(backend.setup_choices[0].setup_choice, "resume")
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Interrupted Setup", rendered_text)
@@ -624,12 +704,12 @@ class AppShellTests(unittest.TestCase):
                 ).to_dict(),
             )
             backend = FakeBackend()
-            ui = FakeUi(keys=["h", "q"])
+            ui = FakeUi(keys=["h", "down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
-            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(backend.actions, ["setup", "exit"])
             self.assertEqual(backend.setup_choices[0].app_lock_choice, "heal")
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Stale App Lock", rendered_text)
@@ -651,7 +731,7 @@ class AppShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             backend = FakeBackend()
-            ui = FakeUi(keys=["q"], inputs=["q"])
+            ui = FakeUi(keys=["down", "enter"], inputs=["q"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="uninstall")
@@ -692,7 +772,7 @@ class AppShellTests(unittest.TestCase):
                 ).to_dict(),
             )
             backend = FakeBackend()
-            ui = FakeUi(keys=["h", "k", "q"])
+            ui = FakeUi(keys=["h", "k", "down", "enter"])
 
             with (
                 patch("app_shell.time.sleep", return_value=None),
@@ -701,7 +781,7 @@ class AppShellTests(unittest.TestCase):
             ):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="service")
 
-            self.assertEqual(backend.actions, ["service"])
+            self.assertEqual(backend.actions, ["service", "exit"])
             choices = backend.service_choices[0]
             self.assertEqual(choices.conflict_choice, "heal")
             self.assertEqual(choices.orphan_choice, "kill")
