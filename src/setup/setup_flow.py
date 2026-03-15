@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+from pathlib import Path
 
 from .installer import current_installer
 from core.json_store import load_json, save_json
@@ -15,6 +17,44 @@ from .pairing import complete_pending_pairing, pair_authorized_operator
 from .recovery import SetupRecoveryChoices, initialize_setup
 from .service_manager import ensure_service_registration
 from .state import load_setup_state, save_setup_state
+
+
+def _npm_global_bin() -> str | None:
+    if not shutil.which("npm"):
+        return None
+    try:
+        result = subprocess.run(
+            ["npm", "config", "get", "prefix"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    prefix = (result.stdout or "").strip()
+    if not prefix:
+        return None
+    candidate = Path(prefix) / "bin" / "codex"
+    if candidate.exists():
+        return str(candidate)
+    return None
+
+
+def resolve_codex_command(config: Config) -> list[str]:
+    configured = list(config.codex_command or ["codex"])
+    candidate = configured[0]
+    if os.path.isabs(candidate) and os.access(candidate, os.X_OK):
+        return configured
+
+    resolved = shutil.which(candidate)
+    if resolved:
+        return [resolved, *configured[1:]]
+
+    npm_codex = _npm_global_bin()
+    if npm_codex:
+        return [npm_codex, *configured[1:]]
+
+    return configured
 
 
 def ensure_local_dependencies(paths: AppPaths, setup_state=None) -> list[str]:
@@ -48,6 +88,9 @@ def ensure_local_dependencies(paths: AppPaths, setup_state=None) -> list[str]:
         if state is not None:
             state.codex_installed = True
             save_setup_state(paths, state)
+
+    config.codex_command = resolve_codex_command(config)
+    save_json(paths.config, config.to_dict())
 
     return steps
 

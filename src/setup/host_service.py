@@ -22,6 +22,24 @@ SERVICE_NAME = "tele-cli"
 LAUNCHD_LABEL = "dev.gazman.tele-cli"
 
 
+def launchd_path() -> str:
+    segments = [
+        os.environ.get("PATH", ""),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ]
+    ordered: list[str] = []
+    for segment in segments:
+        for entry in segment.split(":"):
+            if entry and entry not in ordered:
+                ordered.append(entry)
+    return ":".join(ordered)
+
+
 def build_service_command(paths: AppPaths) -> str:
     return f'"{sys.executable}" -m cli --state-dir "{paths.root}" service'
 
@@ -229,6 +247,7 @@ def build_systemd_unit(registration: ServiceRegistration) -> str:
 
 def build_launchd_plist(registration: ServiceRegistration) -> str:
     program = registration.executable.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    path_value = launchd_path().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return (
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
@@ -242,6 +261,10 @@ def build_launchd_plist(registration: ServiceRegistration) -> str:
         f"    <string>-lc</string>\n"
         f"    <string>{program}</string>\n"
         "  </array>\n"
+        "  <key>EnvironmentVariables</key>\n"
+        "  <dict>\n"
+        f"    <key>PATH</key><string>{path_value}</string>\n"
+        "  </dict>\n"
         "  <key>RunAtLoad</key><true/>\n"
         "  <key>KeepAlive</key><true/>\n"
         "</dict>\n"

@@ -25,7 +25,7 @@ from integrations.telegram import (
     register_pairing_request,
 )
 from runtime.control import ServiceConflict, ServiceConflictChoices, inspect_service_conflict
-from runtime.service import reset_auth, run_service
+from runtime.service import reset_auth
 from setup.admin import run_uninstall, run_update
 from setup.host_service import build_service_registration, current_service_manager
 from setup.recovery import (
@@ -35,7 +35,7 @@ from setup.recovery import (
     inspect_existing_app_lock,
     inspect_existing_setup,
 )
-from setup.service_manager import analyze_service_registrations, repair_duplicate_registrations
+from setup.service_manager import analyze_service_registrations, ensure_service_registration, repair_duplicate_registrations
 from setup.setup_flow import complete_pending_pairing, ensure_local_dependencies, run_setup
 
 
@@ -233,7 +233,11 @@ class DefaultAppShellBackend:
         paths: AppPaths,
         conflict_choices: ServiceConflictChoices | None = None,
     ) -> str | None:
-        run_service(paths, conflict_choices=conflict_choices)
+        manager = current_service_manager()
+        desired = build_service_registration(paths)
+        result = ensure_service_registration(manager, desired)
+        if result.action == "repair_required":
+            raise RuntimeError("Duplicate service registrations must be repaired before starting the service.")
         return None
 
     def perform_update(self, paths: AppPaths) -> tuple[bool, str | None]:
@@ -520,10 +524,41 @@ class AppShell:
                 self.ui.pause("Press Enter to return to Tele Cli...")
             return result
         if action == "service":
+            result = self._resolve_duplicate_service_conflicts(action)
+            if result is not None:
+                if result == "handled":
+                    return None
+                return result
             conflict_choices = self._resolve_service_runtime_conflict()
             if conflict_choices == "cancel":
                 return "cancel"
-            result = self.backend.perform_service_action(self.paths, conflict_choices=conflict_choices)
+            try:
+                result = self.backend.perform_service_action(self.paths, conflict_choices=conflict_choices)
+            except Exception as exc:
+                self.ui.render(
+                    self.ui.print_header()
+                    + self.ui.panel(
+                        "Starting Service",
+                        [
+                            f"{Colors.red}{Colors.bold}Service start failed.{Colors.reset}",
+                            "",
+                            str(exc),
+                        ],
+                        width=76,
+                        align="center",
+                    )
+                )
+                self.ui.pause("Press Enter to return to Tele Cli...")
+                return None
+            self.ui.render(
+                self.ui.print_header()
+                + self.ui.panel(
+                    "Starting Service",
+                    [f"{Colors.green}{Colors.bold}Background service start requested.{Colors.reset}"],
+                    width=76,
+                    align="center",
+                )
+            )
             if result != "exit" and pause:
                 self.ui.pause("Press Enter to return to Tele Cli...")
             return result

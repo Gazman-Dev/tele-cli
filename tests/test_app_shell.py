@@ -10,7 +10,7 @@ from core.json_store import save_json
 from core.models import AuthState, Config, LockMetadata, RuntimeState, SetupState
 from core.paths import build_paths
 from demo_ui.state import DemoExit
-from runtime.control import ServiceConflict
+from setup.service_manager import ServiceEnsureResult, ServiceRegistrationAnalysis
 
 
 class FakeUi:
@@ -280,6 +280,28 @@ class AppShellTests(unittest.TestCase):
             self.assertEqual(status.codex_state, "auth required")
             self.assertEqual(status.telegram_state, "running")
             self.assertIn("codex=AUTH_REQUIRED", status.status_line)
+
+    def test_default_backend_service_action_starts_managed_service(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            backend = DefaultAppShellBackend()
+
+            with (
+                patch("app_shell.current_service_manager") as current_manager,
+                patch("app_shell.ensure_service_registration") as ensure_registration,
+            ):
+                current_manager.return_value = object()
+                ensure_registration.return_value = ServiceEnsureResult(
+                    action="started",
+                    analysis=ServiceRegistrationAnalysis(
+                        state_dir=str(paths.root),
+                        canonical=None,
+                        duplicates=(),
+                    ),
+                )
+                backend.perform_service_action(paths)
+
+            ensure_registration.assert_called_once()
 
     def test_shell_runs_startup_action_before_status_loop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

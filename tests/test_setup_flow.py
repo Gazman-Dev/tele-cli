@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.json_store import save_json
+from core.json_store import load_json, save_json
 from core.models import Config, SetupState
 from core.paths import build_paths
 from setup.setup_flow import ensure_local_dependencies
@@ -57,6 +57,30 @@ class SetupFlowTests(unittest.TestCase):
             )
             self.assertTrue(state.npm_installed)
             self.assertTrue(state.codex_installed)
+
+    def test_ensure_local_dependencies_persists_resolved_codex_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
+            state = SetupState(status="started", pid=1, timestamp="now")
+            fake_installer = _FakeInstaller()
+
+            def fake_which(name: str) -> str | None:
+                if name == "npm":
+                    return "/opt/homebrew/bin/npm"
+                if name == "codex":
+                    return "/opt/homebrew/bin/codex"
+                return None
+
+            with (
+                patch("setup.setup_flow.current_installer", return_value=fake_installer),
+                patch("setup.setup_flow.shutil.which", side_effect=fake_which),
+            ):
+                ensure_local_dependencies(paths, state)
+
+            config = load_json(paths.config, Config.from_dict)
+            assert config is not None
+            self.assertEqual(config.codex_command, ["/opt/homebrew/bin/codex"])
 
 
 if __name__ == "__main__":

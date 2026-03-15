@@ -53,6 +53,8 @@ class HostServiceTests(unittest.TestCase):
         plist = build_launchd_plist(registration)
         self.assertIn(LAUNCHD_LABEL, plist)
         self.assertIn(registration.executable, plist)
+        self.assertIn("<key>EnvironmentVariables</key>", plist)
+        self.assertIn("<key>PATH</key>", plist)
         self.assertIn("<key>KeepAlive</key><true/>", plist)
 
     def test_resolve_duplicate_registrations_repairs_when_user_accepts(self) -> None:
