@@ -15,6 +15,9 @@ class AppServerClient:
     def get_account(self) -> dict[str, Any]:
         return self.rpc.request("getAccount", {})
 
+    def login_account(self, login_type: str = "chatgpt") -> dict[str, Any]:
+        return self.rpc.request("login/account", {"type": login_type})
+
     def thread_start(self, **params: Any) -> dict[str, Any]:
         return self.rpc.request("thread/start", params)
 

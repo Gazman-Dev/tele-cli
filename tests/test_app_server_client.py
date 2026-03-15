@@ -43,6 +43,19 @@ class AppServerClientTests(unittest.TestCase):
         self.assertEqual(result["status"], "auth_required")
         self.assertIn("chatgpt", result["supports"])
 
+    def test_login_account_requests_chatgpt_login_flow(self) -> None:
+        self.server.on(
+            "login/account",
+            lambda payload: {"type": payload["params"]["type"], "authUrl": "https://example.test/login"},
+        )
+
+        result = self.client.login_account("chatgpt")
+
+        self.assertEqual(result["type"], "chatgpt")
+        self.assertEqual(result["authUrl"], "https://example.test/login")
+        self.assertEqual(self.server.received[0]["method"], "login/account")
+        self.assertEqual(self.server.received[0]["params"]["type"], "chatgpt")
+
     def test_thread_start_and_resume_forward_expected_params(self) -> None:
         self.server.on("thread/start", lambda payload: {"threadId": "thread-1"})
         self.server.on("thread/resume", lambda payload: {"threadId": payload["params"]["threadId"]})

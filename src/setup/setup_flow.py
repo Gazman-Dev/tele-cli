@@ -10,9 +10,11 @@ from core.models import AuthState, Config
 from core.paths import AppPaths
 from core.prompts import ask_text
 from integrations.telegram import TelegramClient, is_auth_paired
+from .host_service import build_service_registration, current_service_manager, resolve_duplicate_registrations
 from .pairing import complete_pending_pairing, pair_authorized_operator
 from .recovery import handle_existing_setup as _handle_existing_setup
 from .recovery import initialize_setup
+from .service_manager import ensure_service_registration
 from .state import save_setup_state
 
 
@@ -62,6 +64,13 @@ def run_setup(paths: AppPaths) -> None:
             print("Telegram chat is already paired. Keeping existing authorization.")
         else:
             pair_authorized_operator(paths, auth, bot)
+        service_manager = current_service_manager()
+        desired = build_service_registration(paths)
+        result = ensure_service_registration(service_manager, desired)
+        if not resolve_duplicate_registrations(service_manager, result, desired):
+            raise RuntimeError("Duplicate service registrations were not repaired.")
+        if result.action == "repair_required":
+            result = ensure_service_registration(service_manager, desired)
         setup_state.status = "completed"
         save_setup_state(paths, setup_state)
         save_json(paths.config, config.to_dict())

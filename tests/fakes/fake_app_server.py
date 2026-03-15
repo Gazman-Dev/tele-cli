@@ -35,6 +35,9 @@ class InMemoryJsonRpcTransport:
     def close(self) -> None:
         self.closed = True
 
+    def is_alive(self) -> bool:
+        return not self.closed
+
 
 class FakeAppServer:
     def __init__(self, transport: InMemoryJsonRpcTransport):

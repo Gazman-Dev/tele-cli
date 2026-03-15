@@ -1,22 +1,25 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import time
 import uuid
 
 from .debug_mirror import DebugMirror
 from core.json_store import load_json, save_json
 from core.logging_utils import append_recovery_log
-from core.models import AuthState, Config, RuntimeState, utc_now
+from core.models import AuthState, CodexServerState, Config, RuntimeState, utc_now
 from core.paths import AppPaths
+from core.state_versions import load_versioned_state, save_versioned_state
 from integrations.telegram import (
     TelegramClient,
+    TelegramError,
     describe_pairing,
     has_pending_pairing,
     is_auth_paired,
     register_pairing_request,
 )
 from setup.setup_flow import complete_pending_pairing
-from .app_server_runtime import default_transport_factory, make_app_server_start_fn
+from .app_server_runtime import default_transport_factory, derive_codex_state, make_app_server_start_fn
 from .approval_store import ApprovalStore
 from .control import isatty, prepare_service_lock, reset_auth, start_codex_session
 from .recorder import Recorder
@@ -25,11 +28,16 @@ from .session_store import SessionStore
 from .telegram_update_store import TelegramUpdateStore
 
 
-def build_status_message(auth: AuthState, runtime_state: RuntimeState, session_store: SessionStore | None = None) -> str:
+def build_status_message(
+    auth: AuthState,
+    runtime_state: RuntimeState,
+    session_store: SessionStore | None = None,
+    topic_id: int | None = None,
+) -> str:
     session_lines: list[str] = []
     if session_store is not None and auth.telegram_chat_id:
-        sessions = session_store.list_telegram_sessions(auth)
-        active = session_store.get_current_telegram_session(auth)
+        sessions = session_store.list_telegram_sessions(auth, topic_id)
+        active = session_store.get_current_telegram_session(auth, topic_id)
         session_lines.extend(
             [
                 f"sessions={len(sessions)}",
@@ -42,7 +50,9 @@ def build_status_message(auth: AuthState, runtime_state: RuntimeState, session_s
     approval_lines: list[str] = []
     if auth.telegram_chat_id and session_store is not None:
         pending_approvals = ApprovalStore(session_store.paths).pending()
+        stale_approvals = ApprovalStore(session_store.paths).stale()
         approval_lines.append(f"pending_approvals={len(pending_approvals)}")
+        approval_lines.append(f"stale_approvals={len(stale_approvals)}")
     return (
         "Tele Cli status\n"
         f"service={runtime_state.service_state}\n"
@@ -73,6 +83,12 @@ def parse_request_command(text: str, command: str) -> int | None:
         return None
 
 
+def extract_update_topic_id(update: dict) -> int | None:
+    message = update.get("message") or {}
+    topic_id = message.get("message_thread_id")
+    return int(topic_id) if isinstance(topic_id, int) else None
+
+
 def extract_assistant_text(params: dict) -> str | None:
     candidates = [
         params.get("outputText"),
@@ -85,6 +101,42 @@ def extract_assistant_text(params: dict) -> str | None:
         if isinstance(candidate, str) and candidate.strip():
             return candidate
     return None
+
+
+def extract_account_payload(params: dict) -> dict | None:
+    if not isinstance(params, dict):
+        return None
+    for key in ("account", "result"):
+        candidate = params.get(key)
+        if isinstance(candidate, dict):
+            return candidate
+    if "status" in params or "state" in params:
+        return params
+    return None
+
+
+def update_codex_auth_state(
+    paths: AppPaths,
+    *,
+    account_payload: dict,
+    runtime: ServiceRuntime | None,
+    runtime_state: RuntimeState | None,
+) -> str:
+    persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+    if persisted is None:
+        persisted = CodexServerState(transport="stdio://", initialized=True)
+    persisted.account_status = account_payload.get("status") or account_payload.get("state")
+    persisted.account_type = account_payload.get("accountType") or account_payload.get("type")
+    persisted.auth_required = derive_codex_state(account_payload) == "AUTH_REQUIRED"
+    if not persisted.auth_required:
+        persisted.login_url = None
+        persisted.login_type = None
+    save_versioned_state(paths.codex_server, persisted.to_dict())
+    next_state = derive_codex_state(account_payload)
+    if runtime is not None and runtime_state is not None:
+        runtime.set_codex_state(next_state)
+        save_json(paths.runtime, runtime_state.to_dict())
+    return next_state
 
 
 def resolve_notification_session(
@@ -152,6 +204,151 @@ def flush_buffer(
         append_recovery_log(session_store.paths.recovery_log, f"detached_sessions_pruned count={pruned}")
 
 
+def parse_utc_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def flush_idle_partial_outputs(
+    paths: AppPaths,
+    auth: AuthState,
+    telegram: TelegramClient,
+    recorder: Recorder,
+    session_store: SessionStore,
+    *,
+    idle_seconds: float,
+    now: datetime | None = None,
+) -> None:
+    if idle_seconds <= 0:
+        return
+    if ApprovalStore(paths).pending():
+        return
+    now = now or datetime.now(timezone.utc)
+    for session in session_store.list_telegram_sessions(auth):
+        if not session.attached or not session.pending_output_text:
+            continue
+        updated_at = parse_utc_timestamp(session.pending_output_updated_at)
+        if updated_at is None:
+            continue
+        if (now - updated_at).total_seconds() < idle_seconds:
+            continue
+        flush_buffer(session.session_id, auth, telegram, recorder, session_store, mark_agent=False)
+
+
+def maybe_send_typing_indicator(
+    paths: AppPaths,
+    auth: AuthState,
+    telegram: TelegramClient,
+    session_store: SessionStore,
+    *,
+    interval_seconds: float,
+    last_sent_at: datetime | None,
+    now: datetime | None = None,
+) -> datetime | None:
+    if interval_seconds <= 0 or not auth.telegram_chat_id:
+        return last_sent_at
+    if ApprovalStore(paths).pending():
+        return last_sent_at
+    current = session_store.get_current_telegram_session(auth)
+    if current is None or not current.attached or not current.active_turn_id:
+        return last_sent_at
+    now = now or datetime.now(timezone.utc)
+    if last_sent_at is not None and (now - last_sent_at).total_seconds() < interval_seconds:
+        return last_sent_at
+    if hasattr(telegram, "send_typing"):
+        telegram.send_typing(auth.telegram_chat_id)
+        return now
+    return last_sent_at
+
+
+def codex_is_alive(codex) -> bool:
+    if codex is None:
+        return False
+    if hasattr(codex, "is_alive"):
+        try:
+            return bool(codex.is_alive())
+        except Exception:
+            return False
+    return True
+
+
+def codex_restart_delay(config: Config, failure_count: int) -> float:
+    base = max(config.codex_restart_backoff_seconds, 0.0)
+    maximum = max(config.codex_restart_backoff_max_seconds, base)
+    if base == 0:
+        return 0.0
+    exponent = max(failure_count - 1, 0)
+    return min(base * (2**exponent), maximum)
+
+
+def telegram_retry_delay(config: Config, failure_count: int) -> float:
+    base = max(config.telegram_backoff_seconds, 0.0)
+    maximum = max(config.telegram_backoff_max_seconds, base)
+    if base == 0:
+        return 0.0
+    exponent = max(failure_count - 1, 0)
+    return min(base * (2**exponent), maximum)
+
+
+def maintain_codex_runtime(
+    *,
+    paths: AppPaths,
+    config: Config,
+    auth: AuthState,
+    runtime: ServiceRuntime,
+    runtime_state: RuntimeState,
+    metadata,
+    app_lock,
+    telegram: TelegramClient,
+    handle_output,
+    codex,
+    start_codex_session_fn,
+    restart_failures: int,
+    next_restart_at: float,
+) -> tuple[object | None, int, float]:
+    now = time.monotonic()
+    if codex is not None and not codex_is_alive(codex):
+        try:
+            codex.stop()
+        except Exception:
+            pass
+        codex = None
+        restart_failures += 1
+        delay = codex_restart_delay(config, restart_failures)
+        next_restart_at = now + delay
+        runtime.set_codex_state("BACKOFF")
+        save_json(paths.runtime, runtime_state.to_dict())
+        append_recovery_log(paths.recovery_log, f"codex child exited -> restart backoff={delay:.1f}s")
+        if auth.telegram_chat_id:
+            telegram.send_message(
+                auth.telegram_chat_id,
+                f"Codex App Server stopped. Restarting in {delay:.1f}s. Telegram remains available.",
+            )
+    if codex is None and is_auth_paired(auth) and now >= next_restart_at:
+        restarted = start_codex_session_fn(
+            config,
+            auth,
+            runtime,
+            runtime_state,
+            metadata,
+            app_lock,
+            telegram,
+            handle_output,
+        )
+        if restarted is not None:
+            append_recovery_log(paths.recovery_log, "codex restart succeeded")
+            return restarted, 0, 0.0
+        restart_failures += 1
+        delay = codex_restart_delay(config, restart_failures)
+        append_recovery_log(paths.recovery_log, f"codex restart failed -> backoff={delay:.1f}s")
+        return None, restart_failures, now + delay
+    return codex, restart_failures, next_restart_at
+
+
 def handle_authorized_message(
     text: str,
     auth: AuthState,
@@ -160,14 +357,15 @@ def handle_authorized_message(
     telegram: TelegramClient,
     recorder: Recorder,
     session_store: SessionStore | None = None,
+    topic_id: int | None = None,
 ) -> None:
     if not auth.telegram_chat_id:
         return
     if text == "/status":
-        telegram.send_message(auth.telegram_chat_id, build_status_message(auth, runtime_state, session_store))
+        telegram.send_message(auth.telegram_chat_id, build_status_message(auth, runtime_state, session_store, topic_id))
         return
     if text == "/sessions":
-        sessions = session_store.list_telegram_sessions(auth) if session_store is not None else []
+        sessions = session_store.list_telegram_sessions(auth, topic_id) if session_store is not None else []
         if not sessions:
             telegram.send_message(auth.telegram_chat_id, "No sessions yet.")
             return
@@ -180,8 +378,8 @@ def handle_authorized_message(
         if session_store is None:
             telegram.send_message(auth.telegram_chat_id, "Session store is not available.")
             return
-        prior = session_store.get_current_telegram_session(auth)
-        session = session_store.create_new_telegram_session(auth)
+        prior = session_store.get_current_telegram_session(auth, topic_id)
+        session = session_store.create_new_telegram_session(auth, topic_id)
         if prior is not None:
             append_recovery_log(
                 session_store.paths.recovery_log,
@@ -227,14 +425,17 @@ def handle_authorized_message(
         if not hasattr(codex, "interrupt"):
             telegram.send_message(auth.telegram_chat_id, "Stop is not supported by the current Codex runtime.")
             return
-        stopped = codex.interrupt()
+        try:
+            stopped = codex.interrupt(topic_id=topic_id)
+        except TypeError:
+            stopped = codex.interrupt()
         if stopped:
             telegram.send_message(auth.telegram_chat_id, "Stopped the active turn.")
         else:
             telegram.send_message(auth.telegram_chat_id, "No active turn to stop.")
         return
     if session_store is not None:
-        current = session_store.get_current_telegram_session(auth)
+        current = session_store.get_current_telegram_session(auth, topic_id)
         if current is not None and current.status == "RECOVERING_TURN":
             telegram.send_message(
                 auth.telegram_chat_id,
@@ -244,7 +445,10 @@ def handle_authorized_message(
     if codex is None:
         telegram.send_message(auth.telegram_chat_id, "Codex is not ready yet.")
         return
-    codex.send(text)
+    try:
+        codex.send(text, topic_id=topic_id)
+    except TypeError:
+        codex.send(text)
     recorder.record("telegram", text)
 
 
@@ -271,6 +475,7 @@ def process_telegram_update(
             return codex
 
     session_store = SessionStore(paths)
+    topic_id = extract_update_topic_id(update)
     ok, status = register_pairing_request(auth, update)
     save_json(paths.auth, auth.to_dict())
     if status == "already-paired":
@@ -306,7 +511,7 @@ def process_telegram_update(
 
     text = (update.get("message", {}).get("text") or "").strip()
     if text in {"/status", "/sessions", "/new", "/stop"} or text.startswith("/approve ") or text.startswith("/deny "):
-        handle_authorized_message(text, auth, runtime_state, codex, telegram, recorder, session_store)
+        handle_authorized_message(text, auth, runtime_state, codex, telegram, recorder, session_store, topic_id)
         return codex
 
     if codex is None and is_auth_paired(auth):
@@ -322,7 +527,7 @@ def process_telegram_update(
         )
 
     if text:
-        handle_authorized_message(text, auth, runtime_state, codex, telegram, recorder, session_store)
+        handle_authorized_message(text, auth, runtime_state, codex, telegram, recorder, session_store, topic_id)
     return codex
 
 
@@ -347,6 +552,8 @@ def drain_codex_notifications(
     telegram: TelegramClient,
     recorder: Recorder,
     codex,
+    runtime: ServiceRuntime | None = None,
+    runtime_state: RuntimeState | None = None,
 ) -> None:
     if codex is None or not hasattr(codex, "poll_notification"):
         return
@@ -362,6 +569,19 @@ def drain_codex_notifications(
             session = resolve_notification_session(session_store, auth, params)
             if session is not None and text:
                 session_store.append_pending_output(session, text)
+            continue
+        if method in {"account/updated", "account/ready", "login/completed"}:
+            account_payload = extract_account_payload(params)
+            if account_payload is None:
+                continue
+            next_state = update_codex_auth_state(
+                paths,
+                account_payload=account_payload,
+                runtime=runtime,
+                runtime_state=runtime_state,
+            )
+            if auth.telegram_chat_id and next_state == "RUNNING":
+                telegram.send_message(auth.telegram_chat_id, "Codex login completed. Telegram and Codex are ready.")
             continue
         if method == "assistant/message.partial":
             text = extract_assistant_text(params)
@@ -445,6 +665,8 @@ def run_service(paths: AppPaths, start_codex_session_fn=start_codex_session) -> 
     recorder = Recorder(paths.terminal_log)
     debug = DebugMirror()
     telegram = TelegramClient(auth.bot_token)
+    session_store = SessionStore(paths)
+    approval_store = ApprovalStore(paths)
     if start_codex_session_fn is start_codex_session:
         start_codex_session_fn = make_app_server_start_fn(paths, default_transport_factory)
 
@@ -453,6 +675,7 @@ def run_service(paths: AppPaths, start_codex_session_fn=start_codex_session) -> 
     runtime.start_debug()
     debug.start()
     runtime.start_telegram()
+    stale_approvals = approval_store.mark_all_pending_stale()
 
     def handle_output(source: str, line: str) -> None:
         recorder.record(source, line)
@@ -463,6 +686,11 @@ def run_service(paths: AppPaths, start_codex_session_fn=start_codex_session) -> 
             telegram.send_message(auth.telegram_chat_id, f"[{source}] {line[:3500]}")
 
     codex = None
+    last_typing_sent_at: datetime | None = None
+    codex_restart_failures = 0
+    next_codex_restart_at = 0.0
+    telegram_failures = 0
+    next_telegram_poll_at = 0.0
     codex = bootstrap_paired_codex(
         paths=paths,
         config=config,
@@ -476,8 +704,16 @@ def run_service(paths: AppPaths, start_codex_session_fn=start_codex_session) -> 
         codex=codex,
         start_codex_session_fn=start_codex_session_fn,
     )
+    if codex is None and is_auth_paired(auth):
+        codex_restart_failures = 1
+        next_codex_restart_at = time.monotonic() + codex_restart_delay(config, codex_restart_failures)
     save_json(paths.runtime, runtime_state.to_dict())
     append_recovery_log(paths.recovery_log, f"service started session_id={runtime_state.session_id}")
+    if stale_approvals and auth.telegram_chat_id:
+        telegram.send_message(
+            auth.telegram_chat_id,
+            f"{stale_approvals} pending approval request(s) were marked stale after restart.",
+        )
 
     offset = None
     try:
@@ -497,7 +733,24 @@ def run_service(paths: AppPaths, start_codex_session_fn=start_codex_session) -> 
                 start_codex_session_fn=start_codex_session_fn,
             )
         while True:
-            for update in telegram.get_updates(offset=offset, timeout=20):
+            updates: list[dict] = []
+            now = time.monotonic()
+            if now >= next_telegram_poll_at:
+                try:
+                    updates = telegram.get_updates(offset=offset, timeout=20)
+                    if runtime_state.telegram_state != "RUNNING":
+                        runtime_state.telegram_state = "RUNNING"
+                        save_json(paths.runtime, runtime_state.to_dict())
+                    telegram_failures = 0
+                    next_telegram_poll_at = 0.0
+                except TelegramError as exc:
+                    telegram_failures += 1
+                    delay = telegram_retry_delay(config, telegram_failures)
+                    next_telegram_poll_at = now + delay
+                    runtime_state.telegram_state = "BACKOFF"
+                    save_json(paths.runtime, runtime_state.to_dict())
+                    append_recovery_log(paths.recovery_log, f"telegram poll failed -> backoff={delay:.1f}s error={exc}")
+            for update in updates:
                 offset = update["update_id"] + 1
                 codex = process_telegram_update(
                     update,
@@ -515,9 +768,71 @@ def run_service(paths: AppPaths, start_codex_session_fn=start_codex_session) -> 
                     start_codex_session_fn=start_codex_session_fn,
                 )
                 drain_codex_approvals(paths, auth, telegram, codex)
-                drain_codex_notifications(paths, auth, telegram, recorder, codex)
+                drain_codex_notifications(paths, auth, telegram, recorder, codex, runtime, runtime_state)
+                flush_idle_partial_outputs(
+                    paths,
+                    auth,
+                    telegram,
+                    recorder,
+                    session_store,
+                    idle_seconds=config.partial_flush_idle_seconds,
+                )
+                last_typing_sent_at = maybe_send_typing_indicator(
+                    paths,
+                    auth,
+                    telegram,
+                    session_store,
+                    interval_seconds=config.typing_indicator_interval_seconds,
+                    last_sent_at=last_typing_sent_at,
+                )
+                codex, codex_restart_failures, next_codex_restart_at = maintain_codex_runtime(
+                    paths=paths,
+                    config=config,
+                    auth=auth,
+                    runtime=runtime,
+                    runtime_state=runtime_state,
+                    metadata=metadata,
+                    app_lock=app_lock,
+                    telegram=telegram,
+                    handle_output=handle_output,
+                    codex=codex,
+                    start_codex_session_fn=start_codex_session_fn,
+                    restart_failures=codex_restart_failures,
+                    next_restart_at=next_codex_restart_at,
+                )
             drain_codex_approvals(paths, auth, telegram, codex)
-            drain_codex_notifications(paths, auth, telegram, recorder, codex)
+            drain_codex_notifications(paths, auth, telegram, recorder, codex, runtime, runtime_state)
+            flush_idle_partial_outputs(
+                paths,
+                auth,
+                telegram,
+                recorder,
+                session_store,
+                idle_seconds=config.partial_flush_idle_seconds,
+            )
+            last_typing_sent_at = maybe_send_typing_indicator(
+                paths,
+                auth,
+                telegram,
+                session_store,
+                interval_seconds=config.typing_indicator_interval_seconds,
+                last_sent_at=last_typing_sent_at,
+            )
+            codex, codex_restart_failures, next_codex_restart_at = maintain_codex_runtime(
+                paths=paths,
+                config=config,
+                auth=auth,
+                runtime=runtime,
+                runtime_state=runtime_state,
+                metadata=metadata,
+                app_lock=app_lock,
+                telegram=telegram,
+                handle_output=handle_output,
+                codex=codex,
+                start_codex_session_fn=start_codex_session_fn,
+                restart_failures=codex_restart_failures,
+                next_restart_at=next_codex_restart_at,
+            )
             time.sleep(config.poll_interval_seconds)
     finally:
         if codex is not None:

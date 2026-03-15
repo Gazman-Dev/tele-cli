@@ -45,7 +45,7 @@ def main() -> None:
     elif args.command == "reset-auth":
         reset_auth(paths)
     elif args.command == "update":
-        run_update()
+        run_update(paths)
     elif args.command == "uninstall":
         run_uninstall(paths)
     elif args.command == "complete-pairing":

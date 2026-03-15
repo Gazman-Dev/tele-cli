@@ -9,6 +9,8 @@ from pathlib import Path
 
 from core.paths import AppPaths
 from core.prompts import ask_text
+from .host_service import build_service_registration, current_service_manager, resolve_duplicate_registrations
+from .service_manager import perform_service_update
 
 REPO_URL = "https://github.com/Gazman-Dev/tele-cli.git"
 USER_BIN_DIR = Path.home() / ".local" / "bin"
@@ -16,23 +18,18 @@ SERVICE_NAME = "tele-cli"
 LAUNCHD_LABEL = "dev.gazman.tele-cli"
 
 
-def run_update() -> None:
+def run_update(paths: AppPaths | None = None) -> None:
     print("Updating Tele Cli...")
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--quiet",
-            "--upgrade",
-            "--force-reinstall",
-            "--no-cache-dir",
-            f"git+{REPO_URL}",
-        ],
-        check=True,
-    )
+    if paths is None:
+        _run_package_update()
+    else:
+        manager = current_service_manager()
+        desired = build_service_registration(paths)
+        result = perform_service_update(manager, desired, _run_package_update)
+        if not resolve_duplicate_registrations(manager, result, desired):
+            raise SystemExit("Update cancelled because duplicate service registrations were not repaired.")
+        if result.action == "repair_required":
+            result = perform_service_update(manager, desired, _run_package_update)
     print("Update complete.")
 
 
@@ -60,6 +57,24 @@ def _remove_service(paths: AppPaths) -> None:
     elif system == "Linux":
         _remove_systemd_user_service()
         _remove_fallback_service(paths)
+
+
+def _run_package_update() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--quiet",
+            "--upgrade",
+            "--force-reinstall",
+            "--no-cache-dir",
+            f"git+{REPO_URL}",
+        ],
+        check=True,
+    )
 
 
 def _remove_launchd_service() -> None:

@@ -41,3 +41,6 @@ class SubprocessJsonRpcTransport(JsonRpcTransport):
     def close(self) -> None:
         if self.process.poll() is None:
             self.process.terminate()
+
+    def is_alive(self) -> bool:
+        return self.process.poll() is None

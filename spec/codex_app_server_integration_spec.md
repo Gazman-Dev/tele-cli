@@ -336,7 +336,6 @@ Phase 1 policy:
 - many durable sessions
 - one active turn per session
 - additional user input for that same session is handled via `turn/steer`
-- one global max concurrent turn count across sessions, default `1`
 
 Reason:
 
@@ -356,8 +355,8 @@ Recommended v1:
 - enforce exactly one active turn per session
 - use `turn/steer` as the default behavior for mid-turn user follow-ups
 - expose `/stop` as a hard interrupt mapped to `turn/interrupt`
-- keep the global cap at `1` initially
-- revisit higher cross-session concurrency only after pause-flush delivery and approval handling are stable
+- allow different sessions to run independently
+- revisit stricter service-wide throttling only if real Telegram delivery or reliability issues require it
 
 ## 11. Failure Model
 

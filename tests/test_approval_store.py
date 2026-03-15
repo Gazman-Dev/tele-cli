@@ -23,6 +23,21 @@ class ApprovalStoreTests(unittest.TestCase):
             store.mark(7, "approved")
             self.assertIsNone(store.get_pending(7))
 
+    def test_mark_all_pending_stale_only_changes_pending_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = ApprovalStore(paths)
+            store.add(ApprovalRecord(request_id=7, method="approval/request", params={"tool": "shell"}))
+            store.add(ApprovalRecord(request_id=8, method="approval/request", params={"tool": "shell"}, status="approved"))
+
+            changed = store.mark_all_pending_stale()
+
+            self.assertEqual(changed, 1)
+            self.assertIsNone(store.get_pending(7))
+            stale = store.stale()
+            self.assertEqual(len(stale), 1)
+            self.assertEqual(stale[0].request_id, 7)
+
 
 if __name__ == "__main__":
     unittest.main()

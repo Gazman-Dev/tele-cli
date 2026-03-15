@@ -5,6 +5,7 @@ from typing import Any, Callable
 from core.json_store import save_json
 from core.models import AuthState, CodexServerState, Config, RuntimeState
 from core.paths import AppPaths
+from core.state_versions import load_versioned_state, save_versioned_state
 
 from .app_server_client import AppServerClient
 from .approval_store import ApprovalRecord
@@ -12,6 +13,17 @@ from .app_server_process import SubprocessJsonRpcTransport
 from .jsonrpc import JsonRpcClient, JsonRpcNotification, JsonRpcTransport
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
+
+
+def validate_initialize_result(initialize_result: dict[str, Any]) -> None:
+    protocol_version = initialize_result.get("protocolVersion")
+    if not isinstance(protocol_version, str) or not protocol_version.strip():
+        raise RuntimeError("App server did not report a usable protocol version.")
+    capabilities = initialize_result.get("capabilities")
+    if not isinstance(capabilities, dict):
+        raise RuntimeError("App server did not report capabilities.")
+    if not capabilities.get("threads"):
+        raise RuntimeError("App server does not support thread lifecycle operations.")
 
 
 def derive_codex_state(account: dict[str, Any]) -> str:
@@ -29,8 +41,8 @@ class AppServerSession:
         self.config = config
         self._resumed_threads: set[str] = set()
 
-    def send(self, text: str) -> None:
-        session = self.session_store.get_or_create_telegram_session(self.auth)
+    def send(self, text: str, topic_id: int | None = None) -> None:
+        session = self.session_store.get_or_create_telegram_session(self.auth, topic_id)
         if session.status == "RECOVERING_TURN":
             raise RuntimeError("Session is recovering an in-flight turn.")
         self.session_store.mark_user_message(session)
@@ -66,8 +78,8 @@ class AppServerSession:
         session.status = "RUNNING_TURN"
         self.session_store.save_session(session)
 
-    def interrupt(self) -> bool:
-        session = self.session_store.get_current_telegram_session(self.auth)
+    def interrupt(self, topic_id: int | None = None) -> bool:
+        session = self.session_store.get_current_telegram_session(self.auth, topic_id)
         if session is None or not session.active_turn_id:
             return False
         self.client.turn_interrupt(session.active_turn_id)
@@ -99,6 +111,12 @@ class AppServerSession:
     def stop(self) -> None:
         self.client.rpc.close()
 
+    def is_alive(self) -> bool:
+        transport = self.client.rpc.transport
+        if hasattr(transport, "is_alive"):
+            return bool(transport.is_alive())
+        return True
+
 
 def recover_inflight_sessions(client: AppServerClient, session_store: SessionStore) -> None:
     for session in session_store.mark_recovering_turns():
@@ -119,9 +137,11 @@ def build_codex_server_state(
     transport: str,
     initialize_result: dict[str, Any],
     account_result: dict[str, Any],
+    login_result: dict[str, Any] | None = None,
     pid: int | None = None,
     last_error: str | None = None,
 ) -> CodexServerState:
+    login_payload = login_result or {}
     return CodexServerState(
         transport=transport,
         initialized=True,
@@ -129,6 +149,8 @@ def build_codex_server_state(
         account_status=account_result.get("status") or account_result.get("state"),
         account_type=account_result.get("accountType") or account_result.get("type"),
         auth_required=derive_codex_state(account_result) == "AUTH_REQUIRED",
+        login_type=login_payload.get("type") or login_payload.get("loginType"),
+        login_url=login_payload.get("url") or login_payload.get("authUrl") or login_payload.get("loginUrl"),
         pid=pid,
         capabilities=initialize_result.get("capabilities") or {},
         last_error=last_error,
@@ -164,15 +186,23 @@ def bootstrap_app_server_session(
     rpc.start()
     client = client_factory(rpc)
     initialize_result = client.initialize()
+    validate_initialize_result(initialize_result)
     account_result = client.get_account()
+    login_result: dict[str, Any] | None = None
+    if derive_codex_state(account_result) == "AUTH_REQUIRED":
+        try:
+            login_result = client.login_account("chatgpt")
+        except Exception:
+            login_result = None
     session_store = SessionStore(paths)
     recover_inflight_sessions(client, session_store)
     codex_server_state = build_codex_server_state(
         transport=transport_name,
         initialize_result=initialize_result,
         account_result=account_result,
+        login_result=login_result,
     )
-    save_json(paths.codex_server, codex_server_state.to_dict())
+    save_versioned_state(paths.codex_server, codex_server_state.to_dict())
     runtime.set_codex_state(derive_codex_state(account_result))
     save_json(paths.runtime, runtime_state.to_dict())
     return AppServerSession(client, session_store, auth, config)
@@ -208,6 +238,9 @@ def make_app_server_start_fn(
             if auth.telegram_chat_id:
                 if runtime_state.codex_state == "AUTH_REQUIRED":
                     telegram.send_message(auth.telegram_chat_id, "Codex login is required. Telegram remains available.")
+                    persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+                    if persisted is not None and persisted.login_url:
+                        telegram.send_message(auth.telegram_chat_id, f"Complete Codex login: {persisted.login_url}")
                 else:
                     telegram.send_message(auth.telegram_chat_id, "Tele Cli service connected to Codex App Server.")
                 if session.session_store.has_recovering_session(auth):
@@ -224,7 +257,7 @@ def make_app_server_start_fn(
                     pass
             runtime.set_codex_state("DEGRADED")
             save_json(paths.runtime, runtime_state.to_dict())
-            save_json(
+            save_versioned_state(
                 paths.codex_server,
                 build_failed_codex_server_state(transport=transport_name, last_error=str(exc)).to_dict(),
             )

@@ -43,6 +43,9 @@ class TelegramClient:
     def send_message(self, chat_id: int, text: str) -> None:
         self._request("sendMessage", params={"chat_id": chat_id, "text": text})
 
+    def send_typing(self, chat_id: int) -> None:
+        self._request("sendChatAction", params={"chat_id": chat_id, "action": "typing"})
+
 
 def is_auth_paired(auth: Optional[AuthState]) -> bool:
     if not auth or not auth.bot_token:

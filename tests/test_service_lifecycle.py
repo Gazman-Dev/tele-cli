@@ -7,6 +7,7 @@ from unittest.mock import patch
 from core.locks import LockInspection
 from core.models import AuthState, LockMetadata, RuntimeState
 from core.paths import build_paths
+from runtime.approval_store import ApprovalRecord, ApprovalStore
 from runtime.control import classify_service_conflict, handle_service_conflict
 from runtime.service import build_status_message, handle_authorized_message
 
@@ -123,6 +124,8 @@ class ServiceLifecycleTests(unittest.TestCase):
             telegram_chat_id=22,
             paired_at="now",
         )
+        paths = build_paths(Path.cwd() / ".test_state" / "service_lifecycle_status")
+        ApprovalStore(paths).add(ApprovalRecord(17, "approval/request", {"tool": "shell"}, status="stale"))
         runtime_state = RuntimeState(
             session_id="1",
             service_state="RUNNING",
@@ -131,11 +134,14 @@ class ServiceLifecycleTests(unittest.TestCase):
             recorder_state="RUNNING",
             debug_state="RUNNING",
         )
-        status = build_status_message(auth, runtime_state)
+        from runtime.session_store import SessionStore
+
+        status = build_status_message(auth, runtime_state, SessionStore(paths))
         self.assertIn("service=RUNNING", status)
         self.assertIn("telegram=RUNNING", status)
         self.assertIn("codex=AUTH_REQUIRED", status)
         self.assertIn("pairing=paired chat=22 user=11", status)
+        self.assertIn("stale_approvals=1", status)
 
     def test_status_command_works_without_codex(self) -> None:
         auth = AuthState(

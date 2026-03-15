@@ -4,15 +4,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.json_store import load_json
 from core.models import AuthState, CodexServerState, Config, RuntimeState
 from core.paths import build_paths
+from core.state_versions import load_versioned_state
 from runtime.app_server_runtime import (
     AppServerSession,
     bootstrap_app_server_session,
     build_app_server_command,
     derive_codex_state,
     make_app_server_start_fn,
+    validate_initialize_result,
 )
 from runtime.runtime import ServiceRuntime
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
@@ -28,6 +29,13 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(derive_codex_state({"status": "auth_required"}), "AUTH_REQUIRED")
         self.assertEqual(derive_codex_state({"status": "expired"}), "AUTH_REQUIRED")
         self.assertEqual(derive_codex_state({"status": "ready"}), "RUNNING")
+
+    def test_validate_initialize_result_requires_protocol_version_and_threads(self) -> None:
+        with self.assertRaises(RuntimeError):
+            validate_initialize_result({})
+        with self.assertRaises(RuntimeError):
+            validate_initialize_result({"protocolVersion": "1.0", "capabilities": {}})
+        validate_initialize_result({"protocolVersion": "1.0", "capabilities": {"threads": True}})
 
     def test_bootstrap_persists_codex_server_state_and_runtime_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -57,7 +65,7 @@ class AppServerRuntimeTests(unittest.TestCase):
 
             self.assertIsInstance(session, AppServerSession)
             self.assertEqual(runtime_state.codex_state, "RUNNING")
-            persisted = load_json(paths.codex_server, CodexServerState.from_dict)
+            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertTrue(persisted.initialized)
@@ -81,6 +89,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             server = FakeAppServer(transport)
             server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
             server.on("getAccount", lambda payload: {"status": "auth_required"})
+            server.on("login/account", lambda payload: {"type": "chatgpt", "authUrl": "https://example.test/login"})
 
             bootstrap_app_server_session(
                 paths=paths,
@@ -92,10 +101,12 @@ class AppServerRuntimeTests(unittest.TestCase):
             )
 
             self.assertEqual(runtime_state.codex_state, "AUTH_REQUIRED")
-            persisted = load_json(paths.codex_server, CodexServerState.from_dict)
+            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertTrue(persisted.auth_required)
+            self.assertEqual(persisted.login_type, "chatgpt")
+            self.assertEqual(persisted.login_url, "https://example.test/login")
 
     def test_app_server_session_send_steers_when_turn_is_already_active(self) -> None:
         transport = InMemoryJsonRpcTransport()
@@ -431,6 +442,47 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertIsNotNone(session)
             self.assertEqual(telegram.messages, [(22, "Tele Cli service connected to Codex App Server.")])
 
+    def test_start_fn_sends_login_link_when_auth_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            telegram = FakeTelegramClient()
+            transport = InMemoryJsonRpcTransport()
+            server = FakeAppServer(transport)
+            server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+            server.on("getAccount", lambda payload: {"status": "auth_required"})
+            server.on("login/account", lambda payload: {"type": "chatgpt", "authUrl": "https://example.test/login"})
+            start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
+
+            session = start_fn(
+                Config(state_dir=str(paths.root)),
+                auth,
+                runtime,
+                runtime_state,
+                object(),
+                object(),
+                telegram,
+                lambda source, line: None,
+            )
+
+            self.assertIsNotNone(session)
+            self.assertEqual(
+                telegram.messages,
+                [
+                    (22, "Codex login is required. Telegram remains available."),
+                    (22, "Complete Codex login: https://example.test/login"),
+                ],
+            )
+
     def test_start_fn_degrades_runtime_when_transport_factory_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
@@ -460,11 +512,49 @@ class AppServerRuntimeTests(unittest.TestCase):
 
             self.assertIsNone(session)
             self.assertEqual(runtime_state.codex_state, "DEGRADED")
-            persisted = load_json(paths.codex_server, CodexServerState.from_dict)
+            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertFalse(persisted.initialized)
             self.assertEqual(persisted.last_error, "boom")
+            self.assertEqual(telegram.messages, [(22, "Codex App Server failed to start. Telegram remains available.")])
+
+    def test_start_fn_degrades_runtime_when_initialize_is_incompatible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            telegram = FakeTelegramClient()
+            transport = InMemoryJsonRpcTransport()
+            server = FakeAppServer(transport)
+            server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {}})
+            start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
+
+            session = start_fn(
+                Config(state_dir=str(paths.root)),
+                auth,
+                runtime,
+                runtime_state,
+                object(),
+                object(),
+                telegram,
+                lambda source, line: None,
+            )
+
+            self.assertIsNone(session)
+            self.assertEqual(runtime_state.codex_state, "DEGRADED")
+            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+            self.assertIsNotNone(persisted)
+            assert persisted is not None
+            self.assertIn("thread lifecycle", persisted.last_error)
             self.assertEqual(telegram.messages, [(22, "Codex App Server failed to start. Telegram remains available.")])
 
     def test_poll_approval_request_and_reply(self) -> None:

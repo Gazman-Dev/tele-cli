@@ -3,9 +3,9 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
-from core.json_store import load_json, save_json
 from core.models import AuthState, SessionRecord, utc_now
 from core.paths import AppPaths
+from core.state_versions import load_versioned_state, save_versioned_state
 
 
 @dataclass
@@ -25,10 +25,10 @@ class SessionStore:
         self.paths = paths
 
     def load(self) -> SessionStoreState:
-        return load_json(self.paths.sessions, SessionStoreState.from_dict) or SessionStoreState()
+        return load_versioned_state(self.paths.sessions, SessionStoreState.from_dict) or SessionStoreState()
 
     def save(self, state: SessionStoreState) -> None:
-        save_json(self.paths.sessions, state.to_dict())
+        save_versioned_state(self.paths.sessions, state.to_dict())
 
     @staticmethod
     def is_writable(session: SessionRecord) -> bool:
@@ -46,12 +46,20 @@ class SessionStore:
             and not session.pending_output_text
         )
 
-    def get_or_create_telegram_session(self, auth: AuthState) -> SessionRecord:
+    @staticmethod
+    def _matches_transport(session: SessionRecord, auth: AuthState, topic_id: int | None = None) -> bool:
+        return (
+            session.transport == "telegram"
+            and session.transport_chat_id == auth.telegram_chat_id
+            and session.transport_topic_id == topic_id
+        )
+
+    def get_or_create_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord:
         state = self.load()
         matching = [
             session
             for session in state.sessions
-            if session.transport == "telegram" and session.transport_chat_id == auth.telegram_chat_id and session.attached
+            if self._matches_transport(session, auth, topic_id) and session.attached
         ]
         active = next((session for session in matching if self.is_writable(session)), None)
         if active is not None:
@@ -63,6 +71,7 @@ class SessionStore:
             transport="telegram",
             transport_user_id=auth.telegram_user_id,
             transport_chat_id=auth.telegram_chat_id,
+            transport_topic_id=topic_id,
         )
         state.sessions.append(session)
         self.save(state)
@@ -88,10 +97,10 @@ class SessionStore:
         self.save_session(session)
         return session
 
-    def create_new_telegram_session(self, auth: AuthState) -> SessionRecord:
+    def create_new_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord:
         state = self.load()
         for session in state.sessions:
-            if session.transport == "telegram" and session.transport_chat_id == auth.telegram_chat_id:
+            if self._matches_transport(session, auth, topic_id):
                 session.attached = False
         state.sessions = [session for session in state.sessions if not self.is_prunable_detached(session)]
         session = SessionRecord(
@@ -99,35 +108,36 @@ class SessionStore:
             transport="telegram",
             transport_user_id=auth.telegram_user_id,
             transport_chat_id=auth.telegram_chat_id,
+            transport_topic_id=topic_id,
         )
         state.sessions.append(session)
         self.save(state)
         return session
 
-    def list_telegram_sessions(self, auth: AuthState) -> list[SessionRecord]:
+    def list_telegram_sessions(self, auth: AuthState, topic_id: int | None = None) -> list[SessionRecord]:
         state = self.load()
         return [
             session
             for session in state.sessions
-            if session.transport == "telegram" and session.transport_chat_id == auth.telegram_chat_id
+            if self._matches_transport(session, auth, topic_id)
         ]
 
-    def get_active_telegram_session(self, auth: AuthState) -> SessionRecord | None:
-        sessions = list(reversed(self.list_telegram_sessions(auth)))
+    def get_active_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord | None:
+        sessions = list(reversed(self.list_telegram_sessions(auth, topic_id)))
         for session in sessions:
             if self.is_writable(session):
                 return session
         return None
 
-    def get_current_telegram_session(self, auth: AuthState) -> SessionRecord | None:
-        sessions = list(reversed(self.list_telegram_sessions(auth)))
+    def get_current_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord | None:
+        sessions = list(reversed(self.list_telegram_sessions(auth, topic_id)))
         for session in sessions:
             if session.attached and self.is_recoverable(session):
                 return session
         return None
 
-    def has_recovering_session(self, auth: AuthState) -> bool:
-        sessions = self.list_telegram_sessions(auth)
+    def has_recovering_session(self, auth: AuthState, topic_id: int | None = None) -> bool:
+        sessions = self.list_telegram_sessions(auth, topic_id)
         return any(session.attached and session.status == "RECOVERING_TURN" for session in sessions)
 
     def find_by_turn_id(self, turn_id: str) -> SessionRecord | None:
@@ -154,12 +164,14 @@ class SessionStore:
     def append_pending_output(self, session: SessionRecord, text: str) -> SessionRecord:
         if text:
             session.pending_output_text += text
+            session.pending_output_updated_at = utc_now()
             self.save_session(session)
         return session
 
     def consume_pending_output(self, session: SessionRecord) -> str:
         text = session.pending_output_text
         session.pending_output_text = ""
+        session.pending_output_updated_at = None
         self.save_session(session)
         return text
 

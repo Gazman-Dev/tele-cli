@@ -73,6 +73,12 @@ class Config:
     codex_command: list[str] = field(default_factory=lambda: ["codex"])
     sandbox_mode: str = "danger-full-access"
     approval_policy: str = "never"
+    codex_restart_backoff_seconds: float = 5.0
+    codex_restart_backoff_max_seconds: float = 60.0
+    telegram_backoff_seconds: float = 5.0
+    telegram_backoff_max_seconds: float = 60.0
+    partial_flush_idle_seconds: float = 3.0
+    typing_indicator_interval_seconds: float = 4.0
     poll_interval_seconds: float = 2.0
     install_homebrew_if_missing: bool = False
 
@@ -112,6 +118,8 @@ class CodexServerState:
     account_status: Optional[str] = None
     account_type: Optional[str] = None
     auth_required: bool = False
+    login_type: Optional[str] = None
+    login_url: Optional[str] = None
     pid: Optional[int] = None
     capabilities: dict[str, Any] = field(default_factory=dict)
     last_error: Optional[str] = None
@@ -131,10 +139,12 @@ class SessionRecord:
     transport: str
     transport_user_id: Optional[int]
     transport_chat_id: Optional[int]
+    transport_topic_id: Optional[int] = None
     attached: bool = True
     thread_id: Optional[str] = None
     active_turn_id: Optional[str] = None
     pending_output_text: str = ""
+    pending_output_updated_at: Optional[str] = None
     last_completed_turn_id: Optional[str] = None
     last_delivered_output_text: str = ""
     status: str = "ACTIVE"

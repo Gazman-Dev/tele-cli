@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.json_store import load_json, save_json
+from core.models import utc_now
 from core.paths import AppPaths
+from core.state_versions import load_versioned_state, save_versioned_state
 
 
 @dataclass
@@ -13,6 +14,8 @@ class ApprovalRecord:
     method: str
     params: dict[str, Any]
     status: str = "pending"
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -20,6 +23,8 @@ class ApprovalRecord:
             "method": self.method,
             "params": self.params,
             "status": self.status,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
         }
 
     @classmethod
@@ -29,6 +34,8 @@ class ApprovalRecord:
             method=data["method"],
             params=data.get("params", {}),
             status=data.get("status", "pending"),
+            created_at=data.get("created_at", utc_now()),
+            updated_at=data.get("updated_at", data.get("created_at", utc_now())),
         )
 
 
@@ -49,10 +56,10 @@ class ApprovalStore:
         self.paths = paths
 
     def load(self) -> ApprovalStoreState:
-        return load_json(self.paths.approvals, ApprovalStoreState.from_dict) or ApprovalStoreState()
+        return load_versioned_state(self.paths.approvals, ApprovalStoreState.from_dict) or ApprovalStoreState()
 
     def save(self, state: ApprovalStoreState) -> None:
-        save_json(self.paths.approvals, state.to_dict())
+        save_versioned_state(self.paths.approvals, state.to_dict())
 
     def add(self, approval: ApprovalRecord) -> None:
         state = self.load()
@@ -72,9 +79,26 @@ class ApprovalStore:
         for approval in state.approvals:
             if approval.request_id == request_id:
                 approval.status = status
+                approval.updated_at = utc_now()
                 self.save(state)
                 return approval
         return None
 
     def pending(self) -> list[ApprovalRecord]:
         return [approval for approval in self.load().approvals if approval.status == "pending"]
+
+    def stale(self) -> list[ApprovalRecord]:
+        return [approval for approval in self.load().approvals if approval.status == "stale"]
+
+    def mark_all_pending_stale(self) -> int:
+        state = self.load()
+        changed = 0
+        now = utc_now()
+        for approval in state.approvals:
+            if approval.status == "pending":
+                approval.status = "stale"
+                approval.updated_at = now
+                changed += 1
+        if changed:
+            self.save(state)
+        return changed

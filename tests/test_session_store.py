@@ -21,6 +21,19 @@ class SessionStoreTests(unittest.TestCase):
 
             self.assertEqual(first.session_id, second.session_id)
 
+    def test_get_or_create_telegram_session_separates_topics_within_same_chat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = SessionStore(paths)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+
+            first = store.get_or_create_telegram_session(auth, topic_id=101)
+            second = store.get_or_create_telegram_session(auth, topic_id=202)
+
+            self.assertNotEqual(first.session_id, second.session_id)
+            self.assertEqual(first.transport_topic_id, 101)
+            self.assertEqual(second.transport_topic_id, 202)
+
     def test_save_session_persists_thread_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
@@ -69,6 +82,26 @@ class SessionStoreTests(unittest.TestCase):
             self.assertEqual(archived.active_turn_id, "turn-1")
             self.assertEqual(archived.pending_output_text, "partial")
             self.assertEqual(archived.thread_id, "thread-1")
+
+    def test_create_new_telegram_session_only_detaches_sessions_in_same_topic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = SessionStore(paths)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+
+            topic_a = store.get_or_create_telegram_session(auth, topic_id=101)
+            topic_b = store.get_or_create_telegram_session(auth, topic_id=202)
+            replacement = store.create_new_telegram_session(auth, topic_id=101)
+
+            sessions_a = store.list_telegram_sessions(auth, 101)
+            sessions_b = store.list_telegram_sessions(auth, 202)
+
+            self.assertFalse(any(session.session_id == topic_a.session_id for session in sessions_a))
+            current_a = next(session for session in sessions_a if session.session_id == replacement.session_id)
+            self.assertTrue(current_a.attached)
+            self.assertEqual(len(sessions_b), 1)
+            self.assertEqual(sessions_b[0].session_id, topic_b.session_id)
+            self.assertTrue(sessions_b[0].attached)
 
     def test_find_by_completed_turn_id_returns_completed_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

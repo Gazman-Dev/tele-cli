@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import uuid
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.models import AuthState, Config, RuntimeState
+from core.json_store import load_json
+from core.models import AuthState, CodexServerState, Config, RuntimeState
 from core.paths import build_paths
+from core.state_versions import load_versioned_state
 from runtime.approval_store import ApprovalRecord, ApprovalStore
 from runtime.app_server_runtime import make_app_server_start_fn
 from runtime.runtime import ServiceRuntime
-from runtime.service import bootstrap_paired_codex, drain_codex_approvals, drain_codex_notifications, process_telegram_update
+from runtime.service import (
+    bootstrap_paired_codex,
+    drain_codex_approvals,
+    drain_codex_notifications,
+    flush_idle_partial_outputs,
+    maybe_send_typing_indicator,
+    process_telegram_update,
+)
 from runtime.session_store import SessionStore
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 from tests.fakes.fake_telegram import FakeTelegramClient
@@ -27,18 +37,22 @@ class FakeRecorder:
 class FakeCodex:
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.sent_topics: list[int | None] = []
         self.interrupted = False
         self.stop_result = False
+        self.interrupt_topics: list[int | None] = []
         self.approved: list[int] = []
         self.denied: list[int] = []
         self.pending_approvals: list[ApprovalRecord] = []
         self.pending_notifications: list[object] = []
 
-    def send(self, text: str) -> None:
+    def send(self, text: str, topic_id: int | None = None) -> None:
         self.sent.append(text)
+        self.sent_topics.append(topic_id)
 
-    def interrupt(self) -> bool:
+    def interrupt(self, topic_id: int | None = None) -> bool:
         self.interrupted = True
+        self.interrupt_topics.append(topic_id)
         return self.stop_result
 
     def poll_approval_request(self):
@@ -177,8 +191,49 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertIs(codex, started_codex)
         self.assertEqual(started_codex.sent, ["hello"])
+        self.assertEqual(started_codex.sent_topics, [None])
         self.assertEqual(self.recorder.records, [("telegram", "hello")])
         self.assertEqual(telegram.messages, [])
+
+    def test_regular_update_routes_message_to_topic_specific_session(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        update = {
+            "update_id": 10,
+            "message": {
+                "chat": {"id": 22},
+                "from": {"id": 11},
+                "message_thread_id": 99,
+                "text": "hello topic",
+            },
+        }
+        started_codex = FakeCodex()
+
+        with patch("runtime.service.save_json"):
+            codex = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=None,
+                handle_output=lambda source, line: None,
+                start_codex_session_fn=lambda *args, **kwargs: started_codex,
+            )
+
+        self.assertIs(codex, started_codex)
+        self.assertEqual(started_codex.sent, ["hello topic"])
+        self.assertEqual(started_codex.sent_topics, [99])
 
     def test_regular_update_is_blocked_while_session_is_recovering(self) -> None:
         auth = AuthState(
@@ -433,6 +488,7 @@ class ServiceFlowTests(unittest.TestCase):
         server = FakeAppServer(transport)
         server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
         server.on("getAccount", lambda payload: {"status": "auth_required"})
+        server.on("login/account", lambda payload: {"type": "chatgpt", "authUrl": "https://example.test/login"})
         start_fn = make_app_server_start_fn(self.paths, lambda config, auth: transport)
 
         codex = bootstrap_paired_codex(
@@ -451,7 +507,13 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertIsNotNone(codex)
         self.assertEqual(self.runtime_state.codex_state, "AUTH_REQUIRED")
-        self.assertEqual(telegram.messages, [(22, "Codex login is required. Telegram remains available.")])
+        self.assertEqual(
+            telegram.messages,
+            [
+                (22, "Codex login is required. Telegram remains available."),
+                (22, "Complete Codex login: https://example.test/login"),
+            ],
+        )
 
     def test_sessions_command_lists_current_chat_sessions(self) -> None:
         auth = AuthState(
@@ -559,6 +621,40 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIs(returned, codex)
         self.assertTrue(codex.interrupted)
         self.assertEqual(telegram.messages, [(22, "Stopped the active turn.")])
+
+    def test_stop_command_passes_topic_id(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.stop_result = True
+        update = {
+            "update_id": 11,
+            "message": {"chat": {"id": 22}, "from": {"id": 11}, "message_thread_id": 99, "text": "/stop"},
+        }
+
+        with patch("runtime.service.save_json"):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=codex,
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIs(returned, codex)
+        self.assertEqual(codex.interrupt_topics, [99])
 
     def test_stop_command_is_noop_without_active_turn(self) -> None:
         auth = AuthState(
@@ -759,6 +855,59 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIsNotNone(updated.last_agent_message_at)
         self.assertEqual(telegram.messages, [(22, "Final answer from Codex")])
         self.assertEqual(self.recorder.records, [("assistant", "Final answer from Codex")])
+
+    def test_drain_codex_notifications_marks_auth_ready_after_login_completion(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        persisted = CodexServerState(
+            transport="stdio://",
+            initialized=True,
+            account_status="auth_required",
+            auth_required=True,
+            login_type="chatgpt",
+            login_url="https://example.test/login",
+        )
+        from core.json_store import save_json
+
+        save_json(self.paths.codex_server, persisted.to_dict())
+        self.runtime_state.codex_state = "AUTH_REQUIRED"
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification("account/updated", {"status": "ready", "accountType": "chatgpt"})
+        )
+
+        drain_codex_notifications(
+            self.paths,
+            auth,
+            telegram,
+            self.recorder,
+            codex,
+            self.runtime,
+            self.runtime_state,
+        )
+
+        updated = load_versioned_state(self.paths.codex_server, CodexServerState.from_dict)
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertFalse(updated.auth_required)
+        self.assertEqual(updated.account_status, "ready")
+        self.assertEqual(updated.account_type, "chatgpt")
+        self.assertIsNone(updated.login_url)
+        self.assertIsNone(updated.login_type)
+        self.assertEqual(self.runtime_state.codex_state, "RUNNING")
+        self.assertEqual(telegram.messages, [(22, "Codex login completed. Telegram and Codex are ready.")])
 
     def test_drain_codex_notifications_flushes_partial_buffer_on_partial_event(self) -> None:
         auth = AuthState(
@@ -1015,6 +1164,122 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.pending_output_text, "")
         self.assertEqual(telegram.messages, [(22, "Hello")])
         self.assertEqual(self.recorder.records, [("assistant", "Hello")])
+
+    def test_flush_idle_partial_outputs_flushes_after_idle_gap(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.pending_output_text = "Hello"
+        session.pending_output_updated_at = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        store.save_session(session)
+
+        telegram = FakeTelegramClient()
+        flush_idle_partial_outputs(
+            self.paths,
+            auth,
+            telegram,
+            self.recorder,
+            store,
+            idle_seconds=3.0,
+            now=datetime.now(timezone.utc),
+        )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.last_delivered_output_text, "Hello")
+        self.assertEqual(telegram.messages, [(22, "Hello")])
+        self.assertEqual(self.recorder.records, [("assistant", "Hello")])
+
+    def test_flush_idle_partial_outputs_is_suppressed_while_approval_is_pending(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.pending_output_text = "Hello"
+        session.pending_output_updated_at = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        store.save_session(session)
+        ApprovalStore(self.paths).add(ApprovalRecord(17, "approval/request", {"tool": "shell"}))
+
+        telegram = FakeTelegramClient()
+        flush_idle_partial_outputs(
+            self.paths,
+            auth,
+            telegram,
+            self.recorder,
+            store,
+            idle_seconds=3.0,
+            now=datetime.now(timezone.utc),
+        )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.pending_output_text, "Hello")
+        self.assertEqual(updated.last_delivered_output_text, "")
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(self.recorder.records, [])
+
+    def test_maybe_send_typing_indicator_for_attached_active_turn(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        telegram = FakeTelegramClient()
+        sent_at = maybe_send_typing_indicator(
+            self.paths,
+            auth,
+            telegram,
+            store,
+            interval_seconds=4.0,
+            last_sent_at=None,
+            now=datetime.now(timezone.utc),
+        )
+
+        self.assertIsNotNone(sent_at)
+        self.assertEqual(telegram.typing_actions, [22])
+
+    def test_maybe_send_typing_indicator_is_suppressed_while_approval_is_pending(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+        ApprovalStore(self.paths).add(ApprovalRecord(17, "approval/request", {"tool": "shell"}))
+
+        telegram = FakeTelegramClient()
+        sent_at = maybe_send_typing_indicator(
+            self.paths,
+            auth,
+            telegram,
+            store,
+            interval_seconds=4.0,
+            last_sent_at=None,
+            now=datetime.now(timezone.utc),
+        )
+
+        self.assertIsNone(sent_at)
+        self.assertEqual(telegram.typing_actions, [])
 
 
 if __name__ == "__main__":
