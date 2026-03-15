@@ -257,10 +257,10 @@ launch_app_shell() {
   echo
   if [ -n "$startup_action" ]; then
     log "Launching ${PROJECT_NAME}..."
-    "${USER_BIN_DIR}/tele-cli" "$startup_action"
+    "${USER_BIN_DIR}/tele-cli" "$startup_action" < /dev/tty > /dev/tty 2> /dev/tty
   else
     log "Launching ${PROJECT_NAME}..."
-    "${USER_BIN_DIR}/tele-cli"
+    "${USER_BIN_DIR}/tele-cli" < /dev/tty > /dev/tty 2> /dev/tty
   fi
 }
 
