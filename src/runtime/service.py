@@ -539,7 +539,14 @@ def handle_authorized_message(
     try:
         codex.send(text, topic_id=topic_id)
     except TypeError:
-        codex.send(text)
+        try:
+            codex.send(text)
+        except Exception as exc:
+            telegram.send_message(auth.telegram_chat_id, f"Codex request failed: {exc}")
+            return
+    except Exception as exc:
+        telegram.send_message(auth.telegram_chat_id, f"Codex request failed: {exc}")
+        return
     recorder.record("telegram", text)
 
 

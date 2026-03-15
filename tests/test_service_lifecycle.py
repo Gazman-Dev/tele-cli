@@ -43,8 +43,11 @@ class FakeRecorder:
 class FakeCodex:
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.error: Exception | None = None
 
     def send(self, text: str) -> None:
+        if self.error is not None:
+            raise self.error
         self.sent.append(text)
 
 
@@ -215,6 +218,31 @@ class ServiceLifecycleTests(unittest.TestCase):
         self.assertEqual(codex.sent, ["hello"])
         self.assertEqual(recorder.records, [("telegram", "hello")])
         self.assertEqual(telegram.messages, [])
+
+    def test_regular_message_reports_codex_failure_without_crashing(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        runtime_state = RuntimeState(
+            session_id="1",
+            service_state="RUNNING",
+            codex_state="RUNNING",
+            telegram_state="RUNNING",
+            recorder_state="RUNNING",
+            debug_state="RUNNING",
+        )
+        telegram = FakeTelegram()
+        recorder = FakeRecorder()
+        codex = FakeCodex()
+        codex.error = RuntimeError("boom")
+
+        handle_authorized_message("hello", auth, runtime_state, codex, telegram, recorder)
+
+        self.assertEqual(recorder.records, [])
+        self.assertEqual(telegram.messages, [(22, "Codex request failed: boom")])
 
 
 if __name__ == "__main__":

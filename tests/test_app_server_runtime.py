@@ -162,7 +162,57 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(thread_start["params"]["cwd"], str(paths.root))
         turn_steer = next(payload for payload in server.received if payload["method"] == "turn/steer")
         self.assertEqual(turn_steer["params"]["turnId"], "turn-1")
-        self.assertEqual(turn_steer["params"]["input"], "again")
+        self.assertEqual(turn_steer["params"]["input"], [{"type": "text", "text": "again"}])
+
+    def test_send_starts_new_thread_when_resume_rejects_stale_thread(self) -> None:
+        transport = InMemoryJsonRpcTransport()
+        server = FakeAppServer(transport)
+        server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+        server.on("getAccount", lambda payload: {"status": "ready"})
+        server.on("thread/resume", lambda payload: (_ for _ in ()).throw(RuntimeError("no rollout found")))
+        server.on("thread/start", lambda payload: {"threadId": "thread-2"})
+        server.on("turn/start", lambda payload: {"turn": {"id": "turn-2"}})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            from runtime.session_store import SessionStore
+
+            store = SessionStore(paths)
+            existing = store.get_or_create_telegram_session(auth)
+            existing.thread_id = "thread-stale"
+            existing.status = "ACTIVE"
+            store.save_session(existing)
+
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            session = bootstrap_app_server_session(
+                paths=paths,
+                auth=auth,
+                runtime=runtime,
+                runtime_state=runtime_state,
+                transport=transport,
+                config=Config(state_dir=str(paths.root)),
+            )
+
+            session.send("hello")
+
+            refreshed = store.get_current_telegram_session(auth)
+            self.assertIsNotNone(refreshed)
+            assert refreshed is not None
+            self.assertEqual(refreshed.thread_id, "thread-2")
+            self.assertEqual(refreshed.active_turn_id, "turn-2")
+
+        methods = [payload["method"] for payload in server.received]
+        self.assertIn("thread/resume", methods)
+        self.assertIn("thread/start", methods)
 
     def test_interrupt_clears_active_turn_and_marks_session_interrupted(self) -> None:
         transport = InMemoryJsonRpcTransport()

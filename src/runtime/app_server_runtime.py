@@ -80,10 +80,29 @@ class AppServerSession:
             return
         if thread_id:
             if thread_id not in self._resumed_threads:
-                resumed = self.client.thread_resume(thread_id)
-                thread_id = resumed.get("threadId") or thread_id
-                self._resumed_threads.add(thread_id)
+                try:
+                    resumed = self.client.thread_resume(thread_id)
+                except Exception:
+                    # The app server can reject stale thread ids after a restart.
+                    session.thread_id = None
+                    self.session_store.save_session(session)
+                    thread_id = None
+                else:
+                    thread_id = resumed.get("threadId") or thread_id
+                    session.thread_id = thread_id
+                    self._resumed_threads.add(thread_id)
         else:
+            started = self.client.thread_start(
+                cwd=self.config.state_dir,
+                sandbox=self.config.sandbox_mode,
+                approvalPolicy=self.config.approval_policy,
+            )
+            thread_id = started.get("threadId")
+            session.thread_id = thread_id
+            self.session_store.save_session(session)
+            if thread_id:
+                self._resumed_threads.add(thread_id)
+        if not thread_id:
             started = self.client.thread_start(
                 cwd=self.config.state_dir,
                 sandbox=self.config.sandbox_mode,
