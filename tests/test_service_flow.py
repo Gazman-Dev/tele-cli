@@ -20,6 +20,8 @@ from runtime.service import (
     flush_idle_partial_outputs,
     maybe_send_typing_indicator,
     process_telegram_update,
+    extract_login_callback_url,
+    replay_login_callback,
 )
 from runtime.session_store import SessionStore
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
@@ -513,6 +515,85 @@ class ServiceFlowTests(unittest.TestCase):
                 (22, "Codex login is required. Telegram remains available."),
                 (22, "Complete Codex login: https://example.test/login"),
             ],
+        )
+
+    def test_extract_login_callback_url_requires_code_and_state(self) -> None:
+        url = extract_login_callback_url(
+            "done http://localhost:1455/auth/callback?code=abc123&state=xyz987 and more"
+        )
+        missing = extract_login_callback_url("http://localhost:1455/auth/callback?code=abc123")
+
+        self.assertEqual(url, "http://localhost:1455/auth/callback?code=abc123&state=xyz987")
+        self.assertIsNone(missing)
+
+    def test_handle_authorized_message_replays_pasted_login_callback_when_auth_required(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        runtime_state = RuntimeState(
+            session_id="1",
+            service_state="RUNNING",
+            codex_state="AUTH_REQUIRED",
+            telegram_state="RUNNING",
+            recorder_state="RUNNING",
+            debug_state="RUNNING",
+        )
+
+        with patch("runtime.service.replay_login_callback", return_value=(True, "ok")) as replay:
+            from runtime.service import handle_authorized_message
+
+            handle_authorized_message(
+                "http://localhost:1455/auth/callback?code=abc123&state=xyz987",
+                auth,
+                runtime_state,
+                None,
+                telegram,
+                self.recorder,
+            )
+
+        replay.assert_called_once_with("http://localhost:1455/auth/callback?code=abc123&state=xyz987")
+        self.assertEqual(
+            telegram.messages,
+            [(22, "Codex login callback received. Waiting for Codex to finish sign-in.")],
+        )
+        self.assertEqual(self.recorder.records, [])
+
+    def test_handle_authorized_message_reports_callback_replay_failure(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        runtime_state = RuntimeState(
+            session_id="1",
+            service_state="RUNNING",
+            codex_state="AUTH_REQUIRED",
+            telegram_state="RUNNING",
+            recorder_state="RUNNING",
+            debug_state="RUNNING",
+        )
+
+        with patch("runtime.service.replay_login_callback", return_value=(False, "Connection refused")):
+            from runtime.service import handle_authorized_message
+
+            handle_authorized_message(
+                "http://localhost:1455/auth/callback?code=abc123&state=xyz987",
+                auth,
+                runtime_state,
+                None,
+                telegram,
+                self.recorder,
+            )
+
+        self.assertEqual(
+            telegram.messages,
+            [(22, "Codex login callback failed: Connection refused")],
         )
 
     def test_sessions_command_lists_current_chat_sessions(self) -> None:

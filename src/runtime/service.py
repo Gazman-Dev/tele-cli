@@ -3,6 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import time
 import uuid
+import re
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlparse
+from urllib.request import urlopen
 
 from .debug_mirror import DebugMirror
 from core.json_store import load_json, save_json
@@ -26,6 +30,9 @@ from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
 from .telegram_update_store import TelegramUpdateStore
+
+
+LOCAL_AUTH_CALLBACK_RE = re.compile(r"https?://(?:localhost|127\.0\.0\.1):1455/auth/callback\?[^\s]+", re.IGNORECASE)
 
 
 def build_status_message(
@@ -113,6 +120,32 @@ def extract_account_payload(params: dict) -> dict | None:
     if "status" in params or "state" in params:
         return params
     return None
+
+
+def extract_login_callback_url(text: str) -> str | None:
+    match = LOCAL_AUTH_CALLBACK_RE.search(text)
+    if not match:
+        return None
+    candidate = match.group(0).rstrip(").,]")
+    parsed = urlparse(candidate)
+    params = parse_qs(parsed.query)
+    if not params.get("code") or not params.get("state"):
+        return None
+    return candidate
+
+
+def replay_login_callback(callback_url: str, timeout_seconds: float = 5.0) -> tuple[bool, str]:
+    try:
+        with urlopen(callback_url, timeout=timeout_seconds) as response:
+            body = response.read(512).decode("utf-8", errors="replace").strip()
+            if response.status >= 400:
+                return False, f"HTTP {response.status}"
+            return True, body or "Codex login callback accepted."
+    except HTTPError as exc:
+        return False, f"HTTP {exc.code}"
+    except URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        return False, str(reason)
 
 
 def update_codex_auth_state(
@@ -360,6 +393,14 @@ def handle_authorized_message(
     topic_id: int | None = None,
 ) -> None:
     if not auth.telegram_chat_id:
+        return
+    callback_url = extract_login_callback_url(text)
+    if runtime_state.codex_state == "AUTH_REQUIRED" and callback_url:
+        ok, detail = replay_login_callback(callback_url)
+        if ok:
+            telegram.send_message(auth.telegram_chat_id, "Codex login callback received. Waiting for Codex to finish sign-in.")
+        else:
+            telegram.send_message(auth.telegram_chat_id, f"Codex login callback failed: {detail}")
         return
     if text == "/status":
         telegram.send_message(auth.telegram_chat_id, build_status_message(auth, runtime_state, session_store, topic_id))
