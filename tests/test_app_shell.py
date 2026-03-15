@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from app_shell import AppShell, DefaultAppShellBackend
 from core.json_store import save_json
-from core.models import AuthState, Config, LockMetadata, RuntimeState, SetupState
+from core.models import AuthState, CodexServerState, Config, LockMetadata, RuntimeState, SetupState
 from core.paths import build_paths
 from demo_ui.state import DemoExit
 
@@ -310,6 +310,70 @@ class AppShellTests(unittest.TestCase):
             self.assertEqual(status.telegram_state, "running")
             self.assertIn("codex=AUTH_REQUIRED", status.status_line)
 
+    def test_default_backend_status_surfaces_codex_login_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            save_json(
+                paths.runtime,
+                RuntimeState(
+                    session_id="1",
+                    service_state="RUNNING",
+                    codex_state="AUTH_REQUIRED",
+                    telegram_state="RUNNING",
+                    recorder_state="RUNNING",
+                    debug_state="RUNNING",
+                ).to_dict(),
+            )
+            save_json(
+                paths.codex_server,
+                CodexServerState(
+                    transport="stdio://",
+                    initialized=True,
+                    account_status="auth_required",
+                    auth_required=True,
+                    login_type="chatgpt",
+                    login_url="https://example.test/login",
+                    capabilities={"threads": True},
+                ).to_dict(),
+            )
+
+            with patch("app_shell.LockFile.inspect") as inspect:
+                inspect.return_value = type(
+                    "Inspection",
+                    (),
+                    {
+                        "exists": True,
+                        "metadata": LockMetadata(
+                            pid=1,
+                            hostname="host",
+                            username="user",
+                            started_at="now",
+                            mode="service",
+                            timestamp="now",
+                            app_version="1",
+                            cwd=str(paths.root),
+                        ),
+                        "live": True,
+                    },
+                )()
+                status = DefaultAppShellBackend().build_status(paths)
+
+            self.assertEqual(status.service_state, "running")
+            self.assertEqual(status.codex_state, "auth required")
+            self.assertEqual(status.telegram_state, "running")
+            self.assertEqual(status.status_line, "AI Service (Codex) login required.")
+            self.assertIn("Login URL:", "\n".join(status.detail_lines))
+
     def test_default_backend_status_ignores_stale_runtime_when_service_is_not_live(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
@@ -338,9 +402,9 @@ class AppShellTests(unittest.TestCase):
             status = DefaultAppShellBackend().build_status(paths)
 
             self.assertEqual(status.service_state, "error")
-            self.assertEqual(status.codex_state, "error")
-            self.assertEqual(status.telegram_state, "error")
-            self.assertEqual(status.status_line, "AI Service (Codex) failed to start.")
+            self.assertEqual(status.codex_state, "running")
+            self.assertEqual(status.telegram_state, "running")
+            self.assertEqual(status.status_line, "last known telegram=RUNNING codex=RUNNING")
 
     def test_default_backend_ensure_service_running_starts_managed_service(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -381,7 +445,7 @@ class AppShellTests(unittest.TestCase):
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
-            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "ensure-service", "exit"])
             self.assertTrue(ui.begin_called)
             self.assertTrue(ui.end_called)
             self.assertTrue(ui.renders)
@@ -397,7 +461,7 @@ class AppShellTests(unittest.TestCase):
                 AppShell(paths, backend=backend, ui=ui).run()
 
             self.assertEqual(backend.validated_tokens, ["bot-token"])
-            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "ensure-service", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Telegram Bot Setup", rendered_text)
 
@@ -509,7 +573,7 @@ class AppShellTests(unittest.TestCase):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
             self.assertEqual(backend.validated_tokens, ["bot-token"])
-            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "ensure-service", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Telegram Bot Setup", rendered_text)
 
@@ -547,7 +611,7 @@ class AppShellTests(unittest.TestCase):
 
             self.assertEqual(backend.pairing_polls, [None])
             self.assertEqual(backend.pairing_confirmations, ["123456"])
-            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "ensure-service", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Telegram Pairing", rendered_text)
             self.assertNotIn("123456", rendered_text)
@@ -634,7 +698,7 @@ class AppShellTests(unittest.TestCase):
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run()
 
-            self.assertEqual(backend.actions, ["exit"])
+            self.assertEqual(backend.actions, ["ensure-service", "exit"])
 
     def test_shell_runs_update_flow_in_shell(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -722,7 +786,7 @@ class AppShellTests(unittest.TestCase):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
             self.assertEqual(backend.duplicate_repair_calls, 1)
-            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "ensure-service", "exit"])
 
     def test_shell_collects_interrupted_setup_resolution_before_running_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -754,7 +818,7 @@ class AppShellTests(unittest.TestCase):
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
-            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "ensure-service", "exit"])
             self.assertEqual(backend.setup_choices[0].setup_choice, "resume")
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Interrupted Setup", rendered_text)
@@ -791,7 +855,7 @@ class AppShellTests(unittest.TestCase):
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
-            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "ensure-service", "exit"])
             self.assertEqual(backend.setup_choices[0].app_lock_choice, "heal")
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Stale App Lock", rendered_text)

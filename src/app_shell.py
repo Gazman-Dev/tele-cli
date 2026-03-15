@@ -11,9 +11,10 @@ from typing import Protocol
 from core.json_store import load_json, save_json
 from core.logging_utils import append_recovery_log
 from core.locks import LockFile
-from core.models import AuthState, Config, RuntimeState, SetupState
+from core.models import AuthState, CodexServerState, Config, RuntimeState, SetupState
 from core.paths import AppPaths
 from core.process import describe_process
+from core.state_versions import load_versioned_state
 from demo_ui.state import Colors, DemoExit, MenuItem
 from demo_ui.ui import TerminalUI
 from integrations.telegram import (
@@ -130,6 +131,7 @@ class DefaultAppShellBackend:
         setup = load_json(paths.setup_lock, SetupState.from_dict)
         auth = load_json(paths.auth, AuthState.from_dict)
         runtime = load_json(paths.runtime, RuntimeState.from_dict)
+        codex_server = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
         config = load_json(paths.config, Config.from_dict)
         inspection = LockFile(paths.app_lock).inspect()
 
@@ -155,6 +157,10 @@ class DefaultAppShellBackend:
             status_line = "AI Service (Codex) failed to start."
         elif setup:
             status_line = setup.status
+        if codex_server and codex_server.auth_required:
+            codex_state = "auth required"
+            if service_state == "running":
+                status_line = "AI Service (Codex) login required."
 
         npm_status = "installed" if shutil.which("npm") else "missing"
         codex_install_status = "installed" if shutil.which("codex") else "missing"
@@ -175,6 +181,10 @@ class DefaultAppShellBackend:
                 detail_lines.append(f"{Colors.muted}Active lock:{Colors.reset} {lock_line}")
             else:
                 detail_lines.append(f"{Colors.yellow}Stale lock:{Colors.reset} {lock_line}")
+        if codex_server and codex_server.auth_required:
+            detail_lines.append(f"{Colors.yellow}Codex login required:{Colors.reset} complete ChatGPT sign-in to enable AI Service (Codex).")
+            if codex_server.login_url:
+                detail_lines.append(f"{Colors.muted}Login URL:{Colors.reset} {codex_server.login_url}")
 
         return AppShellStatus(
             service_state=service_state,

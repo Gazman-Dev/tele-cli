@@ -99,13 +99,23 @@ class TerminalUI:
         telegram_state: str,
         summary: str,
     ) -> list[str]:
-        telegram_running = telegram_state.lower() in {"paired", "running", "connected"}
-        ai_service_running = codex_state.lower() in {"authenticated", "running"}
+        telegram_status = telegram_state.lower()
+        codex_status = codex_state.lower()
 
-        def status_value(is_running: bool) -> str:
-            color = Colors.green if is_running else Colors.red
-            word = "RUNNING" if is_running else "ERROR"
+        def status_value(kind: str) -> str:
+            if kind == "running":
+                color = Colors.green
+                word = "RUNNING"
+            elif kind == "login":
+                color = Colors.yellow
+                word = "LOGIN"
+            else:
+                color = Colors.red
+                word = "ERROR"
             return f"{color}[{word}]{Colors.reset}"
+
+        telegram_badge = "running" if telegram_status in {"paired", "running", "connected"} else "error"
+        ai_badge = "login" if codex_status in {"auth required", "login required"} else "running" if codex_status in {"authenticated", "running"} else "error"
 
         def cell(text: str) -> str:
             return text + (" " * max(0, 34 - visible_len(text)))
@@ -121,8 +131,8 @@ class TerminalUI:
             ),
             "  ".join(
                 [
-                    cell(status_value(telegram_running)),
-                    cell(status_value(ai_service_running)),
+                    cell(status_value(telegram_badge)),
+                    cell(status_value(ai_badge)),
                 ]
             ),
             "",
