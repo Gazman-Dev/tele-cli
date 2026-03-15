@@ -104,8 +104,8 @@ class TerminalUI:
 
         def status_value(is_running: bool) -> str:
             color = Colors.green if is_running else Colors.red
-            word = "running" if is_running else "error"
-            return f"{color}o{Colors.reset} {Colors.text}{word}{Colors.reset}"
+            word = "RUNNING" if is_running else "ERROR"
+            return f"{color}[{word}]{Colors.reset}"
 
         def cell(text: str) -> str:
             return text + (" " * max(0, 34 - visible_len(text)))

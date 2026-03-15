@@ -483,6 +483,7 @@ class AppShell:
                 status_line="AI Service (Codex) failed to start.",
                 detail_lines=[
                     f"{Colors.red}{Colors.bold}Startup error:{Colors.reset} {self.service_error}",
+                    f"{Colors.yellow}Telegram is unavailable until the background service starts successfully.{Colors.reset}",
                     *status.detail_lines,
                 ],
             )

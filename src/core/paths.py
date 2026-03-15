@@ -29,8 +29,9 @@ def default_state_dir() -> Path:
     return Path.home().joinpath(".tele-cli")
 
 
-def build_paths(state_dir: Optional[Path] = None) -> AppPaths:
-    root = (state_dir or default_state_dir()).expanduser().resolve()
+def build_paths(state_dir: Optional[Path | str] = None) -> AppPaths:
+    root_input = state_dir or default_state_dir()
+    root = Path(root_input).expanduser().resolve()
     return AppPaths(
         root=root,
         app_lock=root / "app.lock",
