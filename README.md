@@ -46,7 +46,7 @@ python -m pip install -e .
 One-line setup:
 
 ```bash
-curl -fsSL https://raw.github.com/Gazman-Dev/tele-cli/refs/heads/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bash
 ```
 
 The setup script now:
@@ -56,6 +56,8 @@ The setup script now:
 - opens the full-screen app shell for interactive installs and reinstalls
 - keeps non-interactive setup/service installation as a fallback path
 - avoids duplicate service ownership through the service manager and runtime lock checks
+
+The public `install.sh` wrapper fetches `setup.sh` with cache-busting query parameters so installer updates are not blocked by stale raw-file caches.
 
 If `Tele Cli` is already installed, running `setup.sh` again now relaunches the same app shell after bootstrap so update, repair, restart, or uninstall decisions stay in one place.
 

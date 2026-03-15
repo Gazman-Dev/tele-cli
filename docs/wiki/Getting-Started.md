@@ -9,10 +9,10 @@ python -m pip install -e .
 Or:
 
 ```bash
-curl -fsSL https://github.com/Gazman-Dev/tele-cli/raw/master/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bash
 ```
 
-That setup script now bootstraps only enough to launch `tele-cli` for interactive installs and reinstalls, so setup, update, repair, and uninstall stay inside the app shell. Non-interactive runs keep the narrower fallback path that completes setup and service registration directly.
+That install wrapper fetches the latest `setup.sh` with a cache-busting URL, then bootstraps only enough to launch `tele-cli` for interactive installs and reinstalls. Setup, update, repair, and uninstall stay inside the app shell. Non-interactive runs keep the narrower fallback path that completes setup and service registration directly.
 
 ## First Run
 

@@ -10,7 +10,8 @@
 
 ## Setup Flow
 
-- `setup.sh` is the recommended one-line entrypoint for install and update
+- `install.sh` is the recommended one-line entrypoint for install and update
+- `install.sh` fetches `setup.sh` with cache-busting query parameters to avoid stale raw-file caches
 - interactive `setup.sh` runs now bootstrap into the unified `tele-cli` app shell instead of managing reinstall and uninstall in raw shell prompts
 
 ## Core Ideas
