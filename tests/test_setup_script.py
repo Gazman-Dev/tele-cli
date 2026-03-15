@@ -12,6 +12,7 @@ class SetupScriptTests(unittest.TestCase):
         self.assertIn("[ -r /dev/tty ] && [ -t 1 ]", script)
         self.assertIn("launch_app_shell()", script)
         self.assertIn('< /dev/tty > /dev/tty 2> /dev/tty', script)
+        self.assertIn("--no-warn-script-location", script)
         self.assertIn('if is_interactive_terminal; then', script)
         self.assertIn("launch_app_shell", script)
 

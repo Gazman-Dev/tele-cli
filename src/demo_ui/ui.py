@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
 from typing import Optional
@@ -10,7 +11,23 @@ from .state import Colors, DemoExit, terminal_size, visible_len
 
 class TerminalUI:
     def __init__(self) -> None:
+        self._tty_streams: list[object] = []
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            self._attach_controlling_tty()
         self.is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+
+    def _attach_controlling_tty(self) -> None:
+        if os.name == "nt":
+            return
+        try:
+            tty_in = open("/dev/tty", "r", encoding=sys.stdin.encoding or "utf-8", buffering=1)
+            tty_out = open("/dev/tty", "w", encoding=sys.stdout.encoding or "utf-8", buffering=1)
+        except OSError:
+            return
+        sys.stdin = tty_in
+        sys.stdout = tty_out
+        sys.stderr = tty_out
+        self._tty_streams = [tty_in, tty_out]
 
     def begin(self) -> None:
         sys.stdout.write("\033[?1049h\033[?25l")

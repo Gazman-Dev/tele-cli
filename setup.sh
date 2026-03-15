@@ -236,8 +236,14 @@ confirm_uninstall() {
 }
 
 install_or_upgrade_package() {
+  local install_log
+  install_log="$(mktemp)"
+  trap 'rm -f "$install_log"' RETURN
   log "Installing ${PROJECT_NAME}..."
-  "$PYTHON_BIN" -m pip install --disable-pip-version-check --quiet --upgrade --force-reinstall --no-cache-dir "$PACKAGE_SPEC"
+  if ! "$PYTHON_BIN" -m pip install --disable-pip-version-check --quiet --upgrade --force-reinstall --no-cache-dir --no-warn-script-location "$PACKAGE_SPEC" >"$install_log" 2>&1; then
+    cat "$install_log" >&2
+    exit 1
+  fi
 }
 
 run_setup_if_needed() {
