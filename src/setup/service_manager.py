@@ -11,6 +11,7 @@ class ServiceRegistration:
     service_name: str
     executable: str
     state_dir: str
+    environment_path: str | None = None
     enabled: bool = True
     running: bool = False
 

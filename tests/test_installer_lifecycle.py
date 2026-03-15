@@ -182,6 +182,40 @@ class InstallerLifecycleTests(unittest.TestCase):
         self.assertEqual(registrations[0].executable, "/usr/local/bin/tele-cli")
         self.assertTrue(registrations[0].running)
 
+    def test_ensure_service_registration_updates_launchd_when_environment_path_changes(self) -> None:
+        manager = FakeServiceManager()
+        manager.install(
+            ServiceRegistration(
+                manager="launchd",
+                service_name="dev.gazman.tele-cli",
+                executable="/usr/local/bin/tele-cli",
+                state_dir="/srv/tele-cli",
+                environment_path="/usr/bin:/bin:/usr/sbin:/sbin",
+                enabled=True,
+                running=True,
+            )
+        )
+        manager.calls.clear()
+        desired = ServiceRegistration(
+            manager="launchd",
+            service_name="dev.gazman.tele-cli",
+            executable="/usr/local/bin/tele-cli",
+            state_dir="/srv/tele-cli",
+            environment_path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            enabled=True,
+            running=True,
+        )
+
+        result = ensure_service_registration(manager, desired)
+
+        self.assertEqual(result.action, "updated")
+        self.assertEqual(manager.calls, [("install", "dev.gazman.tele-cli"), ("restart", "dev.gazman.tele-cli")])
+        registrations = manager.list_registrations()
+        self.assertEqual(
+            registrations[0].environment_path,
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        )
+
     def test_ensure_service_registration_requires_repair_when_duplicates_exist(self) -> None:
         manager = FakeServiceManager()
         manager.install(

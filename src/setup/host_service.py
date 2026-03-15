@@ -54,6 +54,7 @@ def build_service_registration(paths: AppPaths) -> ServiceRegistration:
         service_name=service_name,
         executable=executable,
         state_dir=str(paths.root),
+        environment_path=launchd_path() if manager == "launchd" else os.environ.get("PATH", ""),
         enabled=True,
         running=True,
     )
@@ -79,6 +80,7 @@ class SystemdUserServiceManager(ServiceManager):
                     service_name=service_name,
                     executable=executable,
                     state_dir=state_dir,
+                    environment_path=None,
                     enabled=self._is_enabled(service_name),
                     running=self._is_running(service_name),
                 )
@@ -150,6 +152,7 @@ class LaunchdServiceManager(ServiceManager):
                     service_name=label,
                     executable=executable,
                     state_dir=state_dir,
+                    environment_path=extract_launchd_path(plist_path),
                     enabled=not self._is_disabled(label),
                     running=self._is_running(label),
                 )
@@ -301,6 +304,19 @@ def extract_launchd_label(plist_path: Path) -> str:
     return str(label) if isinstance(label, str) else ""
 
 
+def extract_launchd_path(plist_path: Path) -> str:
+    try:
+        root = ET.fromstring(plist_path.read_text(encoding="utf-8"))
+    except ET.ParseError:
+        return ""
+    values = plist_dict_values(root)
+    env = values.get("EnvironmentVariables")
+    if not isinstance(env, dict):
+        return ""
+    path_value = env.get("PATH")
+    return str(path_value) if isinstance(path_value, str) else ""
+
+
 def plist_dict_values(root: ET.Element) -> dict[str, object]:
     dict_element = root.find("dict")
     if dict_element is None:
@@ -319,6 +335,24 @@ def plist_dict_values(root: ET.Element) -> dict[str, object]:
             values[key] = value_element.text or ""
         elif value_element.tag == "array":
             values[key] = [item.text or "" for item in value_element if item.tag == "string"]
+        elif value_element.tag == "dict":
+            nested: dict[str, object] = {}
+            nested_children = list(value_element)
+            nested_index = 0
+            while nested_index + 1 < len(nested_children):
+                nested_key_element = nested_children[nested_index]
+                nested_value_element = nested_children[nested_index + 1]
+                nested_index += 2
+                if nested_key_element.tag != "key":
+                    continue
+                nested_key = nested_key_element.text or ""
+                if nested_value_element.tag == "string":
+                    nested[nested_key] = nested_value_element.text or ""
+                elif nested_value_element.tag == "true":
+                    nested[nested_key] = True
+                elif nested_value_element.tag == "false":
+                    nested[nested_key] = False
+            values[key] = nested
         elif value_element.tag == "true":
             values[key] = True
         elif value_element.tag == "false":
