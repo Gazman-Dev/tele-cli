@@ -197,7 +197,9 @@ class TerminalUI:
 
     def _progress_bar(self, width: int, progress: float, fill_color: str) -> str:
         progress = max(0.0, min(1.0, progress))
-        filled = min(width, int(round(width * progress)))
+        filled = min(width, int(width * progress))
+        if progress >= 1.0:
+            filled = width
         return f"{fill_color}{'█' * filled}{Colors.reset}{Colors.muted}{'·' * (width - filled)}{Colors.reset}"
 
     def startup_progress_frame(
@@ -218,18 +220,22 @@ class TerminalUI:
         ]
 
         progress_percent = min(100, int(round(overall_progress * 100)))
-        scan_line = frame_index % (len(logo) + 3) - 1
+        logo_width = max(len(line) for line in logo)
+        filled_columns = min(logo_width, int(logo_width * overall_progress))
+        if overall_progress >= 1.0:
+            filled_columns = logo_width
         rendered_logo = []
-        for index, line in enumerate(logo):
-            if overall_progress >= 0.98:
-                color = Colors.text + Colors.bold if (frame_index + index) % 2 == 0 else Colors.green + Colors.bold
-            elif index == scan_line:
-                color = Colors.cyan + Colors.bold
-            elif index < scan_line:
-                color = Colors.green + Colors.bold
-            else:
-                color = Colors.muted
-            rendered_logo.append((" " * 4) + color + line + Colors.reset)
+        for line in logo:
+            line_chars: list[str] = []
+            padded_line = line.ljust(logo_width)
+            for column_index, char in enumerate(padded_line):
+                if column_index < filled_columns:
+                    line_chars.append(f"{Colors.green}{Colors.bold}{char}{Colors.reset}")
+                elif column_index == filled_columns and overall_progress < 1.0:
+                    line_chars.append(f"{Colors.cyan}{Colors.bold}{char}{Colors.reset}")
+                else:
+                    line_chars.append(f"{Colors.muted}{char}{Colors.reset}")
+            rendered_logo.append((" " * 4) + "".join(line_chars))
 
         status_done = f"{Colors.green}[ ready ]{Colors.reset}"
         status_live = f"{Colors.cyan}[ live  ]{Colors.reset}"
@@ -256,8 +262,7 @@ class TerminalUI:
                 bar = self._progress_bar(16, active_progress, Colors.cyan)
             else:
                 status = status_wait
-                pulse = 0.12 + (((frame_index + index) % 5) * 0.06)
-                bar = self._progress_bar(16, pulse, Colors.muted)
+                bar = self._progress_bar(16, 0.0, Colors.muted)
             task_rows.append(f"{status} {task}  {bar}")
 
         while len(task_rows) < 4:
@@ -268,9 +273,12 @@ class TerminalUI:
         phase = phase_names[phase_index]
 
         primary_fill = self._progress_bar(34, overall_progress, Colors.green)
-        layer_a = self._progress_bar(26, min(1.0, overall_progress * 1.18), Colors.green_dim)
-        layer_b = self._progress_bar(26, min(1.0, max(0.0, overall_progress - 0.20) / 0.80), Colors.cyan)
-        layer_c = self._progress_bar(26, min(1.0, max(0.0, overall_progress - 0.42) / 0.58), Colors.text)
+        layer_a_progress = min(1.0, overall_progress / 0.34)
+        layer_b_progress = min(1.0, max(0.0, (overall_progress - 0.34) / 0.33))
+        layer_c_progress = min(1.0, max(0.0, (overall_progress - 0.67) / 0.33))
+        layer_a = self._progress_bar(26, layer_a_progress, Colors.green_dim)
+        layer_b = self._progress_bar(26, layer_b_progress, Colors.cyan)
+        layer_c = self._progress_bar(26, layer_c_progress, Colors.text)
 
         lines = [
             "",

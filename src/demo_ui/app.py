@@ -78,8 +78,6 @@ class TeleCliUxDemo:
             time.sleep(0.08)
             frame += 1
 
-        self.ui.render(self.ui.startup_progress_frame(frame, tasks, len(tasks) - 1, 1.0, 1.0))
-        time.sleep(0.2)
         self.state.status_line = "Setup required"
 
     def _telegram_token_screen(self) -> None:
