@@ -93,12 +93,14 @@ service_path() {
     for entry in "${entries[@]}"; do
       [ -n "$entry" ] || continue
       existing=0
-      for candidate in "${ordered[@]}"; do
-        if [ "$candidate" = "$entry" ]; then
-          existing=1
-          break
-        fi
-      done
+      if [ "${#ordered[@]}" -gt 0 ]; then
+        for candidate in "${ordered[@]}"; do
+          if [ "$candidate" = "$entry" ]; then
+            existing=1
+            break
+          fi
+        done
+      fi
       if [ "$existing" -eq 0 ]; then
         ordered+=("$entry")
       fi
@@ -106,13 +108,15 @@ service_path() {
   done
 
   local joined=""
-  for entry in "${ordered[@]}"; do
-    if [ -n "$joined" ]; then
-      joined="${joined}:$entry"
-    else
-      joined="$entry"
-    fi
-  done
+  if [ "${#ordered[@]}" -gt 0 ]; then
+    for entry in "${ordered[@]}"; do
+      if [ -n "$joined" ]; then
+        joined="${joined}:$entry"
+      else
+        joined="$entry"
+      fi
+    done
+  fi
   printf '%s\n' "$joined"
 }
 
