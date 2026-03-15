@@ -14,6 +14,10 @@ class AppPaths:
     runtime: Path
     auth: Path
     config: Path
+    sessions: Path
+    telegram_updates: Path
+    approvals: Path
+    codex_server: Path
     recovery_log: Path
     terminal_log: Path
 
@@ -34,6 +38,10 @@ def build_paths(state_dir: Optional[Path] = None) -> AppPaths:
         runtime=root / "runtime.json",
         auth=root / "auth.json",
         config=root / "config.json",
+        sessions=root / "sessions.json",
+        telegram_updates=root / "telegram_updates.json",
+        approvals=root / "approvals.json",
+        codex_server=root / "codex_server.json",
         recovery_log=root / "recovery.log",
         terminal_log=root / "terminal.log",
     )

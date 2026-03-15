@@ -7,4 +7,5 @@ __pycache__/
 .coverage
 dist/
 build/
-artifacts/ux_demo
+artifacts
+.test_state

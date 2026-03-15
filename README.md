@@ -116,6 +116,15 @@ powershell -File scripts/run_docker_tests.ps1
 - `recovery.log`
 - `terminal.log`
 
+## Codex Mode
+
+Tele Cli now starts Codex App Server threads in full-access mode by default through `config.json`:
+
+- `sandbox_mode = "danger-full-access"`
+- `approval_policy = "never"`
+
+That means Codex threads are created without local sandboxing and without approval prompts unless you override those values in `config.json`.
+
 ## Debug Mode
 
 Run:

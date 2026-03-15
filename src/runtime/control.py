@@ -66,15 +66,29 @@ def prepare_service_lock(paths: AppPaths) -> tuple[LockFile, object]:
     return app_lock, metadata
 
 
+def classify_service_conflict(inspection) -> str:
+    if not inspection.exists or not inspection.metadata:
+        return "clear"
+    if inspection.live and inspection.same_app:
+        return "live_same_app"
+    if inspection.live:
+        return "live_unknown"
+    return "stale"
+
+
 def handle_service_conflict(paths: AppPaths, app_lock: LockFile) -> None:
     inspection = app_lock.inspect()
-    if not inspection.exists or not inspection.metadata:
+    conflict = classify_service_conflict(inspection)
+    if conflict == "clear" or not inspection.metadata:
         return
 
     metadata = inspection.metadata
-    if inspection.live and inspection.same_app:
+    if conflict == "live_same_app":
         print("Another app instance appears to be running.")
         print(describe_process(metadata))
+        if not isatty():
+            append_recovery_log(paths.recovery_log, f"service conflict -> exit pid={metadata.pid}")
+            raise SystemExit(1)
         choice = ask_choice("Resolve live app conflict", ["kill", "ignore", "exit"], default="exit")
         append_recovery_log(paths.recovery_log, f"service conflict -> {choice} pid={metadata.pid}")
         if choice == "kill":
@@ -86,8 +100,28 @@ def handle_service_conflict(paths: AppPaths, app_lock: LockFile) -> None:
             raise SystemExit(1)
         return
 
+    if conflict == "live_unknown":
+        print("A live process owns the runtime lock, but ownership could not be verified.")
+        print(describe_process(metadata))
+        if not isatty():
+            append_recovery_log(paths.recovery_log, f"unknown live service conflict -> exit pid={metadata.pid}")
+            raise SystemExit(1)
+        choice = ask_choice("Resolve unknown live app conflict", ["ignore", "exit"], default="exit")
+        append_recovery_log(paths.recovery_log, f"unknown live service conflict -> {choice} pid={metadata.pid}")
+        if choice == "exit":
+            raise SystemExit(1)
+        return
+
     print("A stale app lock was found.")
     print(describe_process(metadata))
+    if not isatty():
+        append_recovery_log(paths.recovery_log, f"stale service lock -> heal pid={metadata.pid}")
+        if metadata.child_codex_pid and process_exists(metadata.child_codex_pid) and is_owned_codex(
+            metadata.child_codex_pid, metadata.cwd
+        ):
+            safe_kill(metadata.child_codex_pid)
+        app_lock.clear()
+        return
     choice = ask_choice("Resolve stale app lock", ["heal", "ignore", "exit"], default="heal")
     append_recovery_log(paths.recovery_log, f"stale service lock -> {choice} pid={metadata.pid}")
     if choice == "heal":

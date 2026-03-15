@@ -71,6 +71,8 @@ class AuthState:
 class Config:
     state_dir: str
     codex_command: list[str] = field(default_factory=lambda: ["codex"])
+    sandbox_mode: str = "danger-full-access"
+    approval_policy: str = "never"
     poll_interval_seconds: float = 2.0
     install_homebrew_if_missing: bool = False
 
@@ -99,4 +101,50 @@ class RuntimeState:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RuntimeState":
+        return cls(**data)
+
+
+@dataclass
+class CodexServerState:
+    transport: str
+    initialized: bool
+    protocol_version: Optional[str] = None
+    account_status: Optional[str] = None
+    account_type: Optional[str] = None
+    auth_required: bool = False
+    pid: Optional[int] = None
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    last_error: Optional[str] = None
+    updated_at: str = field(default_factory=utc_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CodexServerState":
+        return cls(**data)
+
+
+@dataclass
+class SessionRecord:
+    session_id: str
+    transport: str
+    transport_user_id: Optional[int]
+    transport_chat_id: Optional[int]
+    attached: bool = True
+    thread_id: Optional[str] = None
+    active_turn_id: Optional[str] = None
+    pending_output_text: str = ""
+    last_completed_turn_id: Optional[str] = None
+    last_delivered_output_text: str = ""
+    status: str = "ACTIVE"
+    created_at: str = field(default_factory=utc_now)
+    last_user_message_at: Optional[str] = None
+    last_agent_message_at: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SessionRecord":
         return cls(**data)

@@ -19,6 +19,9 @@ class ServiceRuntime:
     def start_codex(self) -> None:
         self._transition("codex_state", "STOPPED", "RUNNING")
 
+    def set_codex_state(self, new_state: str) -> None:
+        self.state.codex_state = new_state
+
     def stop_codex(self) -> None:
         self.state.codex_state = "STOPPED"
         self.state.codex_pid = None
