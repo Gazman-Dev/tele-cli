@@ -11,7 +11,7 @@
 - `process.py`: PID and ownership inspection
 - `locks.py`: lock metadata persistence
 - `recorder.py`: replayable terminal log
-- `debug_mirror.py`: local debug output mirror
+- `debug_mirror.py`: local runtime output mirror
 
 ## Runtime Model
 
@@ -19,4 +19,4 @@
 - one active Codex child
 - one Telegram poller
 - one recorder
-- one debug mirror
+- one runtime output mirror

@@ -366,7 +366,7 @@ Tests:
 ### 6.10 Ownership And Duplicate-Service Handling
 
 - background startup exits when another healthy owner already holds the same state directory
-- foreground debug detects the background owner and requires explicit takeover flow
+- foreground service start detects the background owner and requires explicit takeover flow
 - duplicate service registration is detected before a second service is started
 - installer repair keeps the canonical registration and removes the duplicate only after confirmation
 - killing the wrong process still converges back to one owner after recovery

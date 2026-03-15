@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 from app_meta import APP_VERSION
@@ -13,6 +14,19 @@ from core.prompts import ask_choice
 from integrations.telegram import TelegramClient
 from .codex_runtime import CodexSession
 from .runtime import ServiceRuntime
+
+
+@dataclass
+class ServiceConflict:
+    kind: str
+    metadata: object
+    orphan_codex_active: bool = False
+
+
+@dataclass
+class ServiceConflictChoices:
+    conflict_choice: str | None = None
+    orphan_choice: str | None = None
 
 
 def isatty() -> bool:
@@ -58,9 +72,9 @@ def reset_auth(paths: AppPaths) -> None:
     save_json(paths.auth, auth.to_dict())
 
 
-def prepare_service_lock(paths: AppPaths) -> tuple[LockFile, object]:
+def prepare_service_lock(paths: AppPaths, choices: ServiceConflictChoices | None = None) -> tuple[LockFile, object]:
     app_lock = LockFile(paths.app_lock)
-    handle_service_conflict(paths, app_lock)
+    handle_service_conflict(paths, app_lock, choices=choices)
     metadata = make_lock_metadata(mode="service", app_version=APP_VERSION, cwd=paths.root)
     app_lock.write(metadata)
     return app_lock, metadata
@@ -76,20 +90,36 @@ def classify_service_conflict(inspection) -> str:
     return "stale"
 
 
-def handle_service_conflict(paths: AppPaths, app_lock: LockFile) -> None:
+def inspect_service_conflict(app_lock: LockFile) -> ServiceConflict | None:
     inspection = app_lock.inspect()
     conflict = classify_service_conflict(inspection)
     if conflict == "clear" or not inspection.metadata:
-        return
-
+        return None
     metadata = inspection.metadata
-    if conflict == "live_same_app":
+    orphan_codex_active = bool(
+        conflict == "stale"
+        and metadata.child_codex_pid
+        and process_exists(metadata.child_codex_pid)
+        and is_owned_codex(metadata.child_codex_pid, metadata.cwd)
+    )
+    return ServiceConflict(kind=conflict, metadata=metadata, orphan_codex_active=orphan_codex_active)
+
+
+def handle_service_conflict(paths: AppPaths, app_lock: LockFile, choices: ServiceConflictChoices | None = None) -> None:
+    conflict = inspect_service_conflict(app_lock)
+    if conflict is None:
+        return
+    metadata = conflict.metadata
+    selected = choices.conflict_choice if choices else None
+    orphan_selected = choices.orphan_choice if choices else None
+
+    if conflict.kind == "live_same_app":
         print("Another app instance appears to be running.")
         print(describe_process(metadata))
         if not isatty():
             append_recovery_log(paths.recovery_log, f"service conflict -> exit pid={metadata.pid}")
             raise SystemExit(1)
-        choice = ask_choice("Resolve live app conflict", ["kill", "ignore", "exit"], default="exit")
+        choice = selected or ask_choice("Resolve live app conflict", ["kill", "ignore", "exit"], default="exit")
         append_recovery_log(paths.recovery_log, f"service conflict -> {choice} pid={metadata.pid}")
         if choice == "kill":
             safe_kill(metadata.pid)
@@ -100,13 +130,13 @@ def handle_service_conflict(paths: AppPaths, app_lock: LockFile) -> None:
             raise SystemExit(1)
         return
 
-    if conflict == "live_unknown":
+    if conflict.kind == "live_unknown":
         print("A live process owns the runtime lock, but ownership could not be verified.")
         print(describe_process(metadata))
         if not isatty():
             append_recovery_log(paths.recovery_log, f"unknown live service conflict -> exit pid={metadata.pid}")
             raise SystemExit(1)
-        choice = ask_choice("Resolve unknown live app conflict", ["ignore", "exit"], default="exit")
+        choice = selected or ask_choice("Resolve unknown live app conflict", ["ignore", "exit"], default="exit")
         append_recovery_log(paths.recovery_log, f"unknown live service conflict -> {choice} pid={metadata.pid}")
         if choice == "exit":
             raise SystemExit(1)
@@ -122,12 +152,16 @@ def handle_service_conflict(paths: AppPaths, app_lock: LockFile) -> None:
             safe_kill(metadata.child_codex_pid)
         app_lock.clear()
         return
-    choice = ask_choice("Resolve stale app lock", ["heal", "ignore", "exit"], default="heal")
+    choice = selected or ask_choice("Resolve stale app lock", ["heal", "ignore", "exit"], default="heal")
     append_recovery_log(paths.recovery_log, f"stale service lock -> {choice} pid={metadata.pid}")
     if choice == "heal":
         if metadata.child_codex_pid and process_exists(metadata.child_codex_pid):
             print("A Codex process from a previous run may still be active.")
-            orphan_choice = ask_choice("Resolve orphaned Codex", ["kill", "ignore", "exit"], default="ignore")
+            orphan_choice = orphan_selected or ask_choice(
+                "Resolve orphaned Codex",
+                ["kill", "ignore", "exit"],
+                default="ignore",
+            )
             append_recovery_log(
                 paths.recovery_log,
                 f"orphan codex -> {orphan_choice} pid={metadata.child_codex_pid}",

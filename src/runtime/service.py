@@ -21,7 +21,7 @@ from integrations.telegram import (
 from setup.setup_flow import complete_pending_pairing
 from .app_server_runtime import default_transport_factory, derive_codex_state, make_app_server_start_fn
 from .approval_store import ApprovalStore
-from .control import isatty, prepare_service_lock, reset_auth, start_codex_session
+from .control import ServiceConflictChoices, isatty, prepare_service_lock, reset_auth, start_codex_session
 from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
@@ -644,14 +644,18 @@ def bootstrap_paired_codex(
     return start_codex_session_fn(config, auth, runtime, runtime_state, metadata, app_lock, telegram, handle_output)
 
 
-def run_service(paths: AppPaths, start_codex_session_fn=start_codex_session) -> None:
+def run_service(
+    paths: AppPaths,
+    start_codex_session_fn=start_codex_session,
+    conflict_choices: ServiceConflictChoices | None = None,
+) -> None:
     paths.root.mkdir(parents=True, exist_ok=True)
     config = load_json(paths.config, Config.from_dict)
     auth = load_json(paths.auth, AuthState.from_dict)
     if not config or not auth:
         raise RuntimeError("Run setup first.")
 
-    app_lock, metadata = prepare_service_lock(paths)
+    app_lock, metadata = prepare_service_lock(paths, choices=conflict_choices)
 
     runtime_state = RuntimeState(
         session_id=str(uuid.uuid4()),

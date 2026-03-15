@@ -1,0 +1,621 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from app_shell import AppShell, DefaultAppShellBackend
+from core.json_store import save_json
+from core.models import AuthState, Config, LockMetadata, RuntimeState, SetupState
+from core.paths import build_paths
+from runtime.control import ServiceConflict
+
+
+class FakeUi:
+    def __init__(
+        self,
+        keys: list[str],
+        inputs: list[str] | None = None,
+        timed_keys: list[str | None] | None = None,
+    ) -> None:
+        self.is_tty = True
+        self._keys = list(keys)
+        self._inputs = list(inputs or [])
+        self._timed_keys = list(timed_keys or [])
+        self.begin_called = False
+        self.end_called = False
+        self.pause_messages: list[str] = []
+        self.renders: list[list[str]] = []
+        self.spinners: list[tuple[str, float]] = []
+
+    def begin(self) -> None:
+        self.begin_called = True
+
+    def end(self) -> None:
+        self.end_called = True
+
+    def render(self, lines: list[str]) -> None:
+        self.renders.append(lines)
+
+    def read_key(self) -> str:
+        if self._keys:
+            return self._keys.pop(0)
+        return "q"
+
+    def pause(self, message: str = "Press Enter to continue...") -> None:
+        self.pause_messages.append(message)
+
+    def input_section(
+        self,
+        prompt: str,
+        panel_width: int,
+        typed: str = "",
+        title: str = "Input",
+    ) -> list[str]:
+        return [f"INPUT {title} {prompt}"]
+
+    def input_line(self, prompt: str, panel_width: int = 72, use_existing_field: bool = False) -> str:
+        if self._inputs:
+            return self._inputs.pop(0)
+        return ""
+
+    def timed_keypress(self, delay_seconds: float) -> str | None:
+        if self._timed_keys:
+            return self._timed_keys.pop(0)
+        return None
+
+    def spinner(self, text: str, duration: float = 0.8) -> None:
+        self.spinners.append((text, duration))
+
+    def print_header(self) -> list[str]:
+        return ["HEADER"]
+
+    def system_strip(
+        self,
+        service_state: str,
+        codex_state: str,
+        telegram_state: str,
+        summary: str,
+    ) -> list[str]:
+        return [f"SYSTEM {service_state} {codex_state} {telegram_state} {summary}"]
+
+    def panel(self, title: str, lines: list[str], width: int = 72, align: str = "left") -> list[str]:
+        return [f"PANEL {title}"] + list(lines)
+
+    def splash_frame(self, frame_index: int) -> list[str]:
+        return [f"SPLASH {frame_index}"]
+
+
+class FakeBackend:
+    def __init__(self) -> None:
+        self.actions: list[str] = []
+        self.setup_choices = []
+        self.service_choices = []
+        self.uninstall_calls = 0
+        self.validated_tokens: list[str] = []
+        self.pairing_polls: list[int | None] = []
+        self.pairing_confirmations: list[str] = []
+        self.poll_results: list[tuple[int | None, str, str | None]] = []
+        self.confirm_results: list[tuple[bool, str | None]] = []
+        self.update_calls = 0
+        self.update_result: tuple[bool, str | None] = (True, None)
+        self.duplicate_registrations: list[str] = []
+        self.repaired_duplicates: list[str] = []
+        self.duplicate_repair_calls = 0
+
+    def build_status(self, paths):
+        from app_shell import AppShellStatus
+
+        return AppShellStatus(
+            service_state="running",
+            codex_state="running",
+            telegram_state="paired",
+            status_line="ready",
+            detail_lines=["detail-a", "detail-b"],
+        )
+
+    def build_menu_items(self, paths):
+        from demo_ui.state import MenuItem
+
+        return [MenuItem("Run setup", "setup"), MenuItem("Exit", "exit")]
+
+    def perform_action(self, paths, action: str) -> str | None:
+        self.actions.append(action)
+        if action == "exit":
+            return "exit"
+        return None
+
+    def perform_setup(self, paths, recovery_choices=None) -> str | None:
+        self.actions.append("setup")
+        self.setup_choices.append(recovery_choices)
+        return None
+
+    def perform_service_action(self, paths, conflict_choices=None) -> str | None:
+        self.actions.append("service")
+        self.service_choices.append(conflict_choices)
+        return None
+
+    def perform_update(self, paths) -> tuple[bool, str | None]:
+        self.update_calls += 1
+        return self.update_result
+
+    def perform_uninstall(self, paths) -> str | None:
+        self.uninstall_calls += 1
+        return "exit"
+
+    def get_duplicate_service_registrations(self, paths) -> list[str]:
+        return list(self.duplicate_registrations)
+
+    def repair_duplicate_service_registrations(self, paths) -> list[str]:
+        self.duplicate_repair_calls += 1
+        self.duplicate_registrations = []
+        return list(self.repaired_duplicates)
+
+    def validate_and_save_token(self, paths, token: str) -> tuple[bool, str | None]:
+        self.validated_tokens.append(token)
+        auth = AuthState(bot_token=token)
+        save_json(paths.auth, auth.to_dict())
+        return True, None
+
+    def poll_pairing_request(self, paths, offset: int | None) -> tuple[int | None, str, str | None]:
+        self.pairing_polls.append(offset)
+        if self.poll_results:
+            result = self.poll_results.pop(0)
+        else:
+            result = (offset, "paired", None)
+        if result[1] == "code-issued":
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    pairing_code=result[2],
+                    pending_user_id=11,
+                    pending_chat_id=22,
+                ).to_dict(),
+            )
+        elif result[1] == "paired":
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+        return result
+
+    def confirm_pairing(self, paths, code: str) -> tuple[bool, str | None]:
+        self.pairing_confirmations.append(code)
+        if self.confirm_results:
+            result = self.confirm_results.pop(0)
+            if result[0]:
+                save_json(
+                    paths.auth,
+                    AuthState(
+                        bot_token="token",
+                        telegram_user_id=11,
+                        telegram_chat_id=22,
+                        paired_at="now",
+                    ).to_dict(),
+                )
+            return result
+        save_json(
+            paths.auth,
+            AuthState(
+                bot_token="token",
+                telegram_user_id=11,
+                telegram_chat_id=22,
+                paired_at="now",
+            ).to_dict(),
+        )
+        return True, None
+
+
+class AppShellTests(unittest.TestCase):
+    def test_default_backend_includes_pending_pairing_menu_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    pairing_code="123456",
+                    pending_user_id=11,
+                    pending_chat_id=22,
+                ).to_dict(),
+            )
+
+            items = DefaultAppShellBackend().build_menu_items(paths)
+
+            self.assertIn("Complete Telegram pairing", [item.label for item in items])
+
+    def test_default_backend_status_uses_runtime_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
+            save_json(
+                paths.runtime,
+                RuntimeState(
+                    session_id="1",
+                    service_state="RUNNING",
+                    codex_state="AUTH_REQUIRED",
+                    telegram_state="RUNNING",
+                    recorder_state="RUNNING",
+                    debug_state="IDLE",
+                ).to_dict(),
+            )
+
+            status = DefaultAppShellBackend().build_status(paths)
+
+            self.assertEqual(status.service_state, "running")
+            self.assertEqual(status.codex_state, "auth required")
+            self.assertEqual(status.telegram_state, "running")
+            self.assertIn("codex=AUTH_REQUIRED", status.status_line)
+
+    def test_shell_runs_startup_action_before_status_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            backend = FakeBackend()
+            ui = FakeUi(keys=["q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
+
+            self.assertEqual(backend.actions, ["setup"])
+            self.assertTrue(ui.begin_called)
+            self.assertTrue(ui.end_called)
+            self.assertTrue(ui.renders)
+            self.assertEqual(ui.pause_messages, [])
+
+    def test_shell_runs_selected_menu_action_and_pauses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            backend = FakeBackend()
+            ui = FakeUi(keys=["enter", "q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run()
+
+            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(ui.pause_messages, ["Press Enter to return to Tele Cli..."])
+            rendered_text = "\n".join(ui.renders[-1])
+            self.assertIn("PANEL Status", rendered_text)
+            self.assertIn("PANEL Menu", rendered_text)
+
+    def test_shell_setup_action_uses_token_screen_before_backend_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            backend = FakeBackend()
+            ui = FakeUi(keys=["q"], inputs=["bot-token"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
+
+            self.assertEqual(backend.validated_tokens, ["bot-token"])
+            self.assertEqual(backend.actions, ["setup"])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Telegram Bot Setup", rendered_text)
+
+    def test_shell_retries_token_screen_on_validation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+
+            class RetryingBackend(FakeBackend):
+                def validate_and_save_token(self, paths, token: str) -> tuple[bool, str | None]:
+                    self.validated_tokens.append(token)
+                    if len(self.validated_tokens) == 1:
+                        return False, "bad token"
+                    return True, None
+
+            backend = RetryingBackend()
+            ui = FakeUi(keys=["q"], inputs=["bad", "good"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
+
+            self.assertEqual(backend.validated_tokens, ["bad", "good"])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("bad token", rendered_text)
+
+    def test_shell_setup_action_uses_pairing_screen_before_backend_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.auth, AuthState(bot_token="token").to_dict())
+            backend = FakeBackend()
+            backend.poll_results = [
+                (1, "waiting", None),
+                (2, "code-issued", "123456"),
+            ]
+            ui = FakeUi(keys=["q"], inputs=["123456"], timed_keys=[None, None, "enter"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
+
+            self.assertGreaterEqual(len(backend.pairing_polls), 2)
+            self.assertEqual(backend.pairing_polls[:2], [None, 1])
+            self.assertEqual(backend.pairing_confirmations, ["123456"])
+            self.assertEqual(backend.actions, ["setup"])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Telegram Pairing", rendered_text)
+
+    def test_shell_pairing_screen_retries_bad_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.auth, AuthState(bot_token="token").to_dict())
+            backend = FakeBackend()
+            backend.poll_results = [
+                (1, "code-issued", "123456"),
+                (2, "code-issued", "123456"),
+            ]
+            backend.confirm_results = [
+                (False, "Invalid pairing code. Enter the current code from Telegram."),
+                (True, None),
+            ]
+            ui = FakeUi(keys=["q"], inputs=["bad", "123456"], timed_keys=[None, "enter", "enter"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
+
+            self.assertEqual(backend.pairing_confirmations, ["bad", "123456"])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Invalid pairing code", rendered_text)
+
+    def test_shell_runs_update_flow_in_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            backend = FakeBackend()
+            ui = FakeUi(keys=["q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="update")
+
+            self.assertEqual(backend.update_calls, 1)
+            self.assertNotIn("update", backend.actions)
+            self.assertEqual(ui.spinners, [("Updating Tele Cli", 0.5)])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Updating Tele Cli", rendered_text)
+            self.assertIn("Update complete.", rendered_text)
+
+    def test_shell_shows_update_failure_in_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            backend = FakeBackend()
+            backend.update_result = (False, "repair declined")
+            ui = FakeUi(keys=["q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="update")
+
+            self.assertEqual(backend.update_calls, 1)
+            self.assertEqual(ui.pause_messages, ["Press Enter to return to Tele Cli..."])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Update failed.", rendered_text)
+            self.assertIn("repair declined", rendered_text)
+
+    def test_shell_repairs_duplicate_services_before_update(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            backend = FakeBackend()
+            backend.duplicate_registrations = ["tele-cli-copy (launchd)"]
+            backend.repaired_duplicates = ["tele-cli-copy (launchd)"]
+            ui = FakeUi(keys=["r", "q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="update")
+
+            self.assertEqual(backend.duplicate_repair_calls, 1)
+            self.assertEqual(backend.update_calls, 1)
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Duplicate Services", rendered_text)
+            self.assertIn("Duplicate registrations removed.", rendered_text)
+
+    def test_shell_cancels_update_when_duplicate_repair_is_declined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            backend = FakeBackend()
+            backend.duplicate_registrations = ["tele-cli-copy (launchd)"]
+            ui = FakeUi(keys=["c", "q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="update")
+
+            self.assertEqual(backend.duplicate_repair_calls, 0)
+            self.assertEqual(backend.update_calls, 0)
+            self.assertEqual(ui.pause_messages, ["Press Enter to return to Tele Cli..."])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Update cancelled.", rendered_text)
+
+    def test_shell_repairs_duplicate_services_before_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            backend = FakeBackend()
+            backend.duplicate_registrations = ["tele-cli-copy (launchd)"]
+            backend.repaired_duplicates = ["tele-cli-copy (launchd)"]
+            ui = FakeUi(keys=["r", "q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
+
+            self.assertEqual(backend.duplicate_repair_calls, 1)
+            self.assertEqual(backend.actions, ["setup"])
+
+    def test_shell_collects_interrupted_setup_resolution_before_running_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.setup_lock,
+                SetupState(
+                    status="failed",
+                    pid=0,
+                    timestamp="now",
+                    npm_installed=True,
+                    codex_installed=True,
+                    telegram_token_saved=True,
+                    telegram_validated=False,
+                ).to_dict(),
+            )
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            backend = FakeBackend()
+            ui = FakeUi(keys=["r", "q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
+
+            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(backend.setup_choices[0].setup_choice, "resume")
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Interrupted Setup", rendered_text)
+
+    def test_shell_collects_lock_resolution_before_running_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.app_lock,
+                LockMetadata(
+                    pid=999999,
+                    hostname="host",
+                    username="user",
+                    started_at="earlier",
+                    mode="service",
+                    timestamp="now",
+                    app_version="1",
+                    command=["python", "-m", "cli"],
+                    cwd=str(paths.root),
+                ).to_dict(),
+            )
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            backend = FakeBackend()
+            ui = FakeUi(keys=["h", "q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
+
+            self.assertEqual(backend.actions, ["setup"])
+            self.assertEqual(backend.setup_choices[0].app_lock_choice, "heal")
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Stale App Lock", rendered_text)
+
+    def test_shell_runs_uninstall_inside_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            backend = FakeBackend()
+            ui = FakeUi(keys=[], inputs=["uninstall"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="uninstall")
+
+            self.assertEqual(backend.uninstall_calls, 1)
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Uninstall Tele Cli", rendered_text)
+
+    def test_shell_uninstall_cancel_returns_to_status_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            backend = FakeBackend()
+            ui = FakeUi(keys=["q"], inputs=["q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="uninstall")
+
+            self.assertEqual(backend.uninstall_calls, 0)
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("PANEL Menu", rendered_text)
+
+    def test_shell_collects_stale_service_conflict_before_service_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.config,
+                Config(state_dir=str(paths.root)).to_dict(),
+            )
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            save_json(
+                paths.app_lock,
+                LockMetadata(
+                    pid=999999,
+                    hostname="host",
+                    username="user",
+                    started_at="earlier",
+                    mode="service",
+                    timestamp="now",
+                    app_version="1",
+                    child_codex_pid=888888,
+                    command=["python", "-m", "cli"],
+                    cwd=str(paths.root),
+                ).to_dict(),
+            )
+            backend = FakeBackend()
+            ui = FakeUi(keys=["h", "k", "q"])
+
+            with (
+                patch("app_shell.time.sleep", return_value=None),
+                patch("runtime.control.process_exists", side_effect=lambda pid: pid == 888888),
+                patch("runtime.control.is_owned_codex", return_value=True),
+            ):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="service")
+
+            self.assertEqual(backend.actions, ["service"])
+            choices = backend.service_choices[0]
+            self.assertEqual(choices.conflict_choice, "heal")
+            self.assertEqual(choices.orphan_choice, "kill")
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Stale Runtime Lock", rendered_text)
+            self.assertIn("Orphaned Codex", rendered_text)
+
+
+if __name__ == "__main__":
+    unittest.main()

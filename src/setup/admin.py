@@ -33,10 +33,11 @@ def run_update(paths: AppPaths | None = None) -> None:
     print("Update complete.")
 
 
-def run_uninstall(paths: AppPaths) -> None:
-    confirmation = ask_text("Type uninstall to confirm removal")
-    if confirmation.strip() != "uninstall":
-        raise SystemExit("Uninstall cancelled.")
+def run_uninstall(paths: AppPaths, require_confirmation: bool = True) -> None:
+    if require_confirmation:
+        confirmation = ask_text("Type uninstall to confirm removal")
+        if confirmation.strip() != "uninstall":
+            raise SystemExit("Uninstall cancelled.")
     uninstall(paths)
     raise SystemExit(0)
 

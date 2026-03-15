@@ -12,15 +12,14 @@ from core.prompts import ask_text
 from integrations.telegram import TelegramClient, is_auth_paired
 from .host_service import build_service_registration, current_service_manager, resolve_duplicate_registrations
 from .pairing import complete_pending_pairing, pair_authorized_operator
-from .recovery import handle_existing_setup as _handle_existing_setup
-from .recovery import initialize_setup
+from .recovery import SetupRecoveryChoices, initialize_setup
 from .service_manager import ensure_service_registration
 from .state import save_setup_state
 
 
-def run_setup(paths: AppPaths) -> None:
+def run_setup(paths: AppPaths, recovery_choices: SetupRecoveryChoices | None = None) -> None:
     paths.root.mkdir(parents=True, exist_ok=True)
-    app_lock, setup_state = initialize_setup(paths)
+    app_lock, setup_state = initialize_setup(paths, choices=recovery_choices)
     setup_state.pid = os.getpid()
     save_setup_state(paths, setup_state)
     installer = current_installer()

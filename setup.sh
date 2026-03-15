@@ -32,6 +32,10 @@ prompt_input() {
   printf -v "$answer_var" '%s' "$response"
 }
 
+is_interactive_terminal() {
+  [ -t 0 ] && [ -t 1 ]
+}
+
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     printf 'Missing required command: %s\n' "$1" >&2
@@ -222,18 +226,6 @@ is_installed() {
   return 1
 }
 
-prompt_existing_install_action() {
-  local answer
-  echo
-  log "${PROJECT_NAME} appears to already be installed."
-  prompt_input 'Press Enter to update it, or type uninstall to remove it: ' answer
-  if [ "$answer" = "uninstall" ]; then
-    confirm_uninstall
-    uninstall_all
-    exit 0
-  fi
-}
-
 confirm_uninstall() {
   local confirmation
   prompt_input 'Type uninstall to confirm removal: ' confirmation
@@ -257,6 +249,19 @@ run_setup_if_needed() {
   echo
   log "Starting ${PROJECT_NAME} setup..."
   "$PYTHON_BIN" -m cli setup
+}
+
+launch_app_shell() {
+  local startup_action="${1:-}"
+
+  echo
+  if [ -n "$startup_action" ]; then
+    log "Launching ${PROJECT_NAME}..."
+    "${USER_BIN_DIR}/tele-cli" "$startup_action"
+  else
+    log "Launching ${PROJECT_NAME}..."
+    "${USER_BIN_DIR}/tele-cli"
+  fi
 }
 
 install_launchd_service() {
@@ -482,8 +487,9 @@ if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
   exit 1
 fi
 
+WAS_INSTALLED=0
 if is_installed; then
-  prompt_existing_install_action
+  WAS_INSTALLED=1
 fi
 
 if ! command -v git >/dev/null 2>&1; then
@@ -494,10 +500,20 @@ ensure_macos_prereqs
 append_path_hint
 install_or_upgrade_package
 write_launcher
+
+if is_interactive_terminal; then
+  launch_app_shell
+  exit 0
+fi
+
 run_setup_if_needed
 install_and_start_service
 
 echo
-log "Setup complete."
+if [ "$WAS_INSTALLED" -eq 1 ]; then
+  log "Update complete."
+else
+  log "Setup complete."
+fi
 log "Background service is installed and started."
 log "Launcher path: ${USER_BIN_DIR}/tele-cli"

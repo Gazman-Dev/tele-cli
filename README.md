@@ -10,7 +10,7 @@ It is designed for Linux and macOS and focuses on one local operator, one Telegr
 - Separate setup and service conflict handling with recovery prompts
 - Single-instance protection with runtime metadata and stale lock detection
 - Single-controller Telegram pairing with local `reset-auth` support
-- Terminal recording and local debug mirroring
+- Terminal recording and local runtime output mirroring
 - Docker-based Linux validation harness
 
 ## Project Layout
@@ -52,25 +52,21 @@ curl -fsSL https://raw.github.com/Gazman-Dev/tele-cli/refs/heads/master/install.
 The setup script now:
 
 - installs or updates Tele Cli
-- runs setup immediately if the app is not configured yet
-- installs a managed background service
-- starts or restarts that service on every install run
-- offers uninstall when it detects an existing install
+- bootstraps only enough to launch `tele-cli`
+- opens the full-screen app shell for interactive installs and reinstalls
+- keeps non-interactive setup/service installation as a fallback path
 - avoids duplicate service ownership through the service manager and runtime lock checks
 
-If `Tele Cli` is already installed, running `setup.sh` again will prompt you to either:
-
-- press Enter to update the existing install
-- type `uninstall` to start removal
-
-Uninstall requires a second confirmation where you must type `uninstall` again. It removes the background service, launcher scripts, installed package, and the default state directory at `~/.tele-cli`.
+If `Tele Cli` is already installed, running `setup.sh` again now relaunches the same app shell after bootstrap so update, repair, restart, or uninstall decisions stay in one place.
 
 ## Commands
 
 ```bash
+tele-cli
 tele-cli setup
 tele-cli service
-tele-cli debug
+tele-cli update
+tele-cli uninstall
 tele-cli reset-auth
 ```
 
@@ -88,7 +84,7 @@ If installed as a package:
 tele-cli-ux-demo
 ```
 
-The demo is a mock TUI for the UX spec in [`spec/ux_spec.md`](/C:/git/MiniC/spec/ux_spec.md). It includes the setup screens, status dashboard, debug view, update flow, and uninstall confirmation, but it does not touch the real service or Telegram integration.
+The demo is a mock TUI for the UX spec in [`spec/ux_spec.md`](/C:/git/MiniC/spec/ux_spec.md). It includes the setup screens, status dashboard, update flow, and uninstall confirmation, but it does not touch the real service or Telegram integration.
 
 Use `--state-dir` if you want state files somewhere other than `~/.tele-cli`.
 
@@ -124,16 +120,6 @@ Tele Cli now starts Codex App Server threads in full-access mode by default thro
 - `approval_policy = "never"`
 
 That means Codex threads are created without local sandboxing and without approval prompts unless you override those values in `config.json`.
-
-## Debug Mode
-
-Run:
-
-```bash
-tele-cli debug
-```
-
-`debug` runs the service in the foreground and keeps the local debug mirror on your terminal. If another Tele Cli instance already owns the runtime, the app will prompt with `kill`, `ignore`, or `exit`. Use `kill` to terminate the other owned instance and let the current debug run take over.
 
 ## License
 

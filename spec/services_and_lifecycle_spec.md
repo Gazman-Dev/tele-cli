@@ -303,7 +303,6 @@ If the user runs install again:
 If two processes or services appear to exist, Tele Cli must distinguish these cases:
 
 - same service, old process still shutting down
-- one live service and one foreground debug process
 - stale lock from a dead process
 - genuinely duplicated service registrations
 
@@ -331,8 +330,8 @@ Conflict resolution should be deterministic.
 
 If a new Tele Cli process starts and finds a live owner:
 
-- if the user explicitly launched a foreground debug session, offer `attach-like status`, `stop other`, or `exit`
 - if this is a background service start, background start should exit without taking ownership
+- if this is an operator-initiated foreground service start, offer `stop other`, `ignore`, or `exit` inside the app shell
 
 ### 12.2 Stale lock
 
@@ -452,20 +451,15 @@ Expected outcome:
 - stale state is cleaned up on next startup
 - no duplicate Telegram pollers remain active
 
-## 17. Foreground Debug Mode Versus Background Service
+## 17. Foreground Service Start Versus Background Service
 
-Foreground debug must not create a second long-lived owner accidentally.
+An operator-initiated foreground service start must not create a second long-lived owner accidentally.
 
 Rules:
 
-- debug mode should detect the active background owner before starting
-- debug mode may temporarily take over only through explicit conflict resolution
-- when debug mode exits, background service should be restartable cleanly
-
-Recommended policy:
-
-- background service is canonical for always-on operation
-- foreground debug is temporary and operator initiated
+- a foreground service start should detect the active background owner before starting
+- foreground takeover may happen only through explicit conflict resolution
+- background service remains canonical for always-on operation
 
 ## 18. State Durability Rules
 
@@ -496,7 +490,6 @@ Minimum commands:
 Recommended local/admin commands:
 
 - `tele-cli service`
-- `tele-cli debug`
 - `tele-cli reset-auth`
 - `tele-cli repair`
 - `tele-cli uninstall`
@@ -523,7 +516,7 @@ The implementation must explicitly handle all of these.
 - service registered twice accidentally
 - stale `app.lock` with no live process
 - stale `app.lock` with orphaned Codex child
-- live Tele Cli service plus manual debug run
+- live Tele Cli service plus manual foreground service start
 - Tele Cli crash loop caused by bad config
 - Codex App Server crash loop
 - Telegram network outage

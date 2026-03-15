@@ -140,38 +140,6 @@ def show_service_restart(ui: TerminalUI, state: DemoState) -> None:
     state.status_line = "waiting for Telegram commands"
 
 
-def show_debug(ui: TerminalUI, state: DemoState) -> None:
-    frames = [
-        [
-            f"{Colors.blue}$ codex{Colors.reset}",
-            f"{Colors.cyan}> Thinking...{Colors.reset}",
-            "> Reviewing Telegram command stream",
-            "> Ready for operator input",
-        ],
-        [
-            f"{Colors.blue}$ codex{Colors.reset}",
-            f"{Colors.cyan}> Thinking...{Colors.reset}",
-            "> Building response draft",
-            f"{Colors.green}> Waiting for next prompt{Colors.reset}",
-        ],
-    ]
-    frame_index = 0
-    while True:
-        ui.render(
-            ui.print_header()
-            + ui.panel(
-                "Debug Mode",
-                [f"{Colors.dim}Displaying the Codex terminal session.{Colors.reset}", "", *frames[frame_index % len(frames)]],
-                width=76,
-            )
-        )
-        frame_index += 1
-        key = ui.timed_keypress(0.85)
-        if key in {"q", "esc"}:
-            state.status_line = "returned from debug mode"
-            return
-
-
 def show_update(ui: TerminalUI, state: DemoState) -> None:
     ui.render(
         ui.print_header()

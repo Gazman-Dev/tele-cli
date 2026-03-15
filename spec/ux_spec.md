@@ -15,7 +15,6 @@ The CLI is only used for:
 * installation
 * setup
 * status
-* debugging
 * lifecycle control
 
 Once configured, the CLI should rarely be opened.
@@ -327,34 +326,7 @@ User returns automatically to the **main status screen**.
 
 ---
 
-# 11. Debug Mode
-
-Debug mode focuses only on **Codex interaction**.
-
-Entering debug mode launches a **full-screen passthrough view** of Codex.
-
-Important:
-
-Codex is an **interactive terminal application**, not STDOUT logs.
-
-Therefore debug mode simply **mirrors the Codex terminal session**.
-
-Behavior:
-
-```
-Debug Mode
-
-Displaying Codex terminal session.
-Press q to exit.
-```
-
-Tele-Cli does not alter the output.
-
-It only shows the raw interface exactly as Codex presents it.
-
----
-
-# 12. Logging Behavior
+# 11. Logging Behavior
 
 Logs are always enabled.
 
@@ -386,7 +358,7 @@ Users access them via filesystem.
 
 ---
 
-# 13. Auto Start Behavior
+# 12. Auto Start Behavior
 
 After installation:
 
@@ -408,7 +380,7 @@ Kill it and start Tele-Cli?
 
 ---
 
-# 14. Status Indicators
+# 13. Status Indicators
 
 The main screen shows three system states:
 
@@ -442,7 +414,7 @@ connecting
 
 ---
 
-# 15. Uninstall Flow
+# 14. Uninstall Flow
 
 Uninstall must require **intent confirmation**.
 
@@ -486,7 +458,7 @@ Tele-Cli successfully removed.
 
 ---
 
-# 16. Version Visibility
+# 15. Version Visibility
 
 Version should appear in:
 
@@ -508,7 +480,7 @@ Tele-Cli 0.1.0
 
 ---
 
-# 17. Error Philosophy
+# 16. Error Philosophy
 
 Errors must always appear as a **single line status message** on the main screen.
 
@@ -530,7 +502,7 @@ This prevents clutter while keeping users informed.
 
 ---
 
-# 18. UX Principles
+# 17. UX Principles
 
 Tele-Cli CLI design follows these principles:
 
@@ -550,6 +522,6 @@ Service, Codex, and Telegram always visible.
 
 After setup, the CLI is rarely needed.
 
-### 5. Transparent debugging
+### 5. Single interactive shell
 
-Codex debug mode shows the real session.
+Install, setup, update, repair, and uninstall decisions stay in the same app shell.

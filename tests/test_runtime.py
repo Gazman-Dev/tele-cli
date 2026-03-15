@@ -16,7 +16,7 @@ from integrations.telegram import (
 )
 from runtime.runtime import ServiceRuntime
 from runtime.service import reset_auth
-from setup.setup_flow import _handle_existing_setup
+from setup.recovery import handle_existing_setup
 
 
 class RuntimeTests(unittest.TestCase):
@@ -83,7 +83,7 @@ class RuntimeTests(unittest.TestCase):
                 paths.setup_lock,
                 SetupState(status="completed", pid=123, timestamp="now").to_dict(),
             )
-            state = _handle_existing_setup(paths)
+            state = handle_existing_setup(paths)
             self.assertEqual(state.status, "started")
             self.assertEqual(state.pid, 0)
 

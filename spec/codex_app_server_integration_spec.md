@@ -289,7 +289,7 @@ Codex can issue server requests for approval. Tele Cli needs an approval broker:
 
 1. receive approval request from app server
 2. persist it in `approvals.json`
-3. notify the operator via Telegram/debug UI
+3. notify the operator via Telegram/app shell UI
 4. accept allow/deny input
 5. answer the pending JSON-RPC request
 
@@ -514,7 +514,7 @@ Mitigation:
 - use typing indicators while work is active
 - send final answers by default
 - send intermediate messages only after meaningful idle gaps
-- expose verbose event streaming only in debug mode
+- expose verbose event streaming only in internal diagnostics, not the main app shell
 
 ### 14.3 Session/thread divergence
 

@@ -11,7 +11,7 @@
 ## Setup Flow
 
 - `setup.sh` is the recommended one-line entrypoint for install and update
-- running `setup.sh` on an existing install offers uninstall with explicit typed confirmation
+- interactive `setup.sh` runs now bootstrap into the unified `tele-cli` app shell instead of managing reinstall and uninstall in raw shell prompts
 
 ## Core Ideas
 

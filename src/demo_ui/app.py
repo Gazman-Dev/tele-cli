@@ -6,7 +6,6 @@ from .state import Colors, DemoExit, DemoState, MenuItem
 from .flows import (
     run_pairing_screen,
     run_token_screen,
-    show_debug,
     show_service_restart,
     show_setup_complete,
     show_uninstall,
@@ -129,7 +128,6 @@ class TeleCliUxDemo:
             MenuItem("Status refresh", "refresh"),
             MenuItem("Setup", "setup"),
             MenuItem("Restart service", "service"),
-            MenuItem("Debug mode", "debug"),
             MenuItem("Update Tele-Cli", "update"),
             MenuItem("Uninstall", "uninstall"),
             MenuItem("Quit", "quit"),
@@ -144,8 +142,6 @@ class TeleCliUxDemo:
             self._setup_complete_screen()
         elif action == "service":
             self._service_restart_screen()
-        elif action == "debug":
-            self._debug_screen()
         elif action == "update":
             self._update_screen()
         elif action == "uninstall":
@@ -155,9 +151,6 @@ class TeleCliUxDemo:
 
     def _service_restart_screen(self) -> None:
         show_service_restart(self.ui, self.state)
-
-    def _debug_screen(self) -> None:
-        show_debug(self.ui, self.state)
 
     def _update_screen(self) -> None:
         show_update(self.ui, self.state)

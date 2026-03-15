@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import sys
 import unittest
+from unittest.mock import patch
 
-from cli import build_parser
+from cli import build_parser, main
 
 
 class CliTests(unittest.TestCase):
@@ -22,9 +24,6 @@ class CliTests(unittest.TestCase):
         args = parser.parse_args(["service"])
         self.assertEqual(args.command, "service")
 
-        args = parser.parse_args(["debug"])
-        self.assertEqual(args.command, "debug")
-
         args = parser.parse_args(["reset-auth"])
         self.assertEqual(args.command, "reset-auth")
 
@@ -36,6 +35,96 @@ class CliTests(unittest.TestCase):
 
         args = parser.parse_args(["complete-pairing"])
         self.assertEqual(args.command, "complete-pairing")
+
+    def test_main_returns_to_menu_after_setup_in_interactive_terminal(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli", "setup"]),
+            patch("cli.run_app_shell") as run_app_shell_mock,
+            patch("cli._is_interactive_terminal", return_value=True),
+        ):
+            main()
+
+        run_app_shell_mock.assert_called_once()
+        _, kwargs = run_app_shell_mock.call_args
+        self.assertEqual(kwargs["startup_action"], "setup")
+
+    def test_main_returns_to_menu_after_update_in_interactive_terminal(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli", "update"]),
+            patch("cli.run_app_shell") as run_app_shell_mock,
+            patch("cli._is_interactive_terminal", return_value=True),
+        ):
+            main()
+
+        run_app_shell_mock.assert_called_once()
+        _, kwargs = run_app_shell_mock.call_args
+        self.assertEqual(kwargs["startup_action"], "update")
+
+    def test_main_uses_app_shell_for_default_interactive_launch(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli"]),
+            patch("cli.run_app_shell") as run_app_shell_mock,
+        ):
+            main()
+
+        run_app_shell_mock.assert_called_once()
+        _, kwargs = run_app_shell_mock.call_args
+        self.assertIsNone(kwargs.get("startup_action"))
+
+    def test_main_runs_setup_directly_without_tty(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli", "setup"]),
+            patch("cli.run_setup") as run_setup_mock,
+            patch("cli.run_app_shell") as run_app_shell_mock,
+            patch("cli._is_interactive_terminal", return_value=False),
+        ):
+            main()
+
+        run_setup_mock.assert_called_once()
+        run_app_shell_mock.assert_not_called()
+
+    def test_main_runs_update_directly_without_tty(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli", "update"]),
+            patch("cli.run_update") as run_update_mock,
+            patch("cli.run_app_shell") as run_app_shell_mock,
+            patch("cli._is_interactive_terminal", return_value=False),
+        ):
+            main()
+
+        run_update_mock.assert_called_once()
+        run_app_shell_mock.assert_not_called()
+
+    def test_main_routes_uninstall_to_app_shell_in_interactive_terminal(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli", "uninstall"]),
+            patch("cli.run_app_shell") as run_app_shell_mock,
+            patch("cli._is_interactive_terminal", return_value=True),
+        ):
+            main()
+
+        run_app_shell_mock.assert_called_once()
+        _, kwargs = run_app_shell_mock.call_args
+        self.assertEqual(kwargs["startup_action"], "uninstall")
+
+    def test_main_runs_uninstall_directly_without_tty(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli", "uninstall"]),
+            patch("cli.run_uninstall") as run_uninstall_mock,
+            patch("cli.run_app_shell") as run_app_shell_mock,
+            patch("cli._is_interactive_terminal", return_value=False),
+        ):
+            main()
+
+        run_uninstall_mock.assert_called_once()
+        run_app_shell_mock.assert_not_called()
 
 
 if __name__ == "__main__":
