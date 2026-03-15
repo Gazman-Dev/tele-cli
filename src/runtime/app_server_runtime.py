@@ -141,6 +141,9 @@ class AppServerSession:
             return bool(transport.is_alive())
         return True
 
+    def read_thread(self, thread_id: str, include_turns: bool = True) -> dict[str, Any]:
+        return self.client.thread_read(thread_id, include_turns=include_turns)
+
 
 def recover_inflight_sessions(client: AppServerClient, session_store: SessionStore) -> None:
     for session in session_store.mark_recovering_turns():

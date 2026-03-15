@@ -107,6 +107,50 @@ def extract_assistant_text(params: dict) -> str | None:
     for candidate in candidates:
         if isinstance(candidate, str) and candidate.strip():
             return candidate
+    turn = params.get("turn")
+    if isinstance(turn, dict):
+        for item in turn.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "agentMessage":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text
+    return None
+
+
+def extract_turn_id(params: dict) -> str | None:
+    turn_id = params.get("turnId")
+    if isinstance(turn_id, str) and turn_id:
+        return turn_id
+    turn = params.get("turn")
+    if isinstance(turn, dict):
+        nested = turn.get("id")
+        if isinstance(nested, str) and nested:
+            return nested
+    return None
+
+
+def extract_latest_agent_message(thread_payload: dict) -> str | None:
+    thread = thread_payload.get("thread")
+    if not isinstance(thread, dict):
+        return None
+    turns = thread.get("turns")
+    if not isinstance(turns, list):
+        return None
+    for turn in reversed(turns):
+        if not isinstance(turn, dict):
+            continue
+        items = turn.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in reversed(items):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "agentMessage":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text
     return None
 
 
@@ -639,7 +683,7 @@ def drain_codex_notifications(
                 flush_buffer(session.session_id, auth, telegram, recorder, session_store, mark_agent=False)
             continue
         if method in {"turn/completed", "turn/failed"}:
-            turn_id = params.get("turnId")
+            turn_id = extract_turn_id(params)
             if not turn_id:
                 continue
             session = session_store.find_by_turn_id(str(turn_id))
@@ -651,6 +695,11 @@ def drain_codex_notifications(
             if not session_store.is_recoverable(session):
                 continue
             assistant_text = extract_assistant_text(params)
+            if not assistant_text and session.thread_id and hasattr(codex, "read_thread"):
+                try:
+                    assistant_text = extract_latest_agent_message(codex.read_thread(session.thread_id, include_turns=True))
+                except Exception:
+                    assistant_text = None
             if assistant_text:
                 session_store.append_pending_output(session, assistant_text)
             session.active_turn_id = None

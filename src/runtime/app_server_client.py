@@ -55,6 +55,10 @@ def _normalize_turn_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _text_input(text: str) -> list[dict[str, str]]:
+    return [{"type": "text", "text": text}]
+
+
 class AppServerClient:
     def __init__(self, rpc: JsonRpcClient):
         self.rpc = rpc
@@ -99,10 +103,15 @@ class AppServerClient:
         return _normalize_thread_payload(self.rpc.request("thread/resume", {"threadId": thread_id}))
 
     def turn_start(self, thread_id: str, text: str) -> dict[str, Any]:
-        return _normalize_turn_payload(self.rpc.request("turn/start", {"threadId": thread_id, "input": text}))
+        return _normalize_turn_payload(self.rpc.request("turn/start", {"threadId": thread_id, "input": _text_input(text)}))
 
     def turn_steer(self, turn_id: str, text: str) -> dict[str, Any]:
-        return _normalize_turn_payload(self.rpc.request("turn/steer", {"turnId": turn_id, "input": text}))
+        return _normalize_turn_payload(self.rpc.request("turn/steer", {"turnId": turn_id, "input": _text_input(text)}))
 
     def turn_interrupt(self, turn_id: str) -> dict[str, Any]:
         return self.rpc.request("turn/interrupt", {"turnId": turn_id})
+
+    def thread_read(self, thread_id: str, include_turns: bool = True) -> dict[str, Any]:
+        return _normalize_thread_payload(
+            self.rpc.request("thread/read", {"threadId": thread_id, "includeTurns": include_turns})
+        )

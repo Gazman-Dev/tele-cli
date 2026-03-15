@@ -91,7 +91,23 @@ class AppServerClientTests(unittest.TestCase):
 
         self.assertEqual(result["turnId"], "turn-1")
         self.assertEqual(self.server.received[0]["params"]["threadId"], "thread-1")
-        self.assertEqual(self.server.received[0]["params"]["input"], "hello")
+        self.assertEqual(self.server.received[0]["params"]["input"], [{"type": "text", "text": "hello"}])
+
+    def test_turn_steer_sends_typed_text_input(self) -> None:
+        self.server.on("turn/steer", lambda payload: {"turn": {"id": payload["params"]["turnId"]}})
+
+        result = self.client.turn_steer("turn-1", "again")
+
+        self.assertEqual(result["turnId"], "turn-1")
+        self.assertEqual(self.server.received[0]["params"]["input"], [{"type": "text", "text": "again"}])
+
+    def test_thread_read_requests_turns(self) -> None:
+        self.server.on("thread/read", lambda payload: {"thread": {"id": payload["params"]["threadId"], "turns": []}})
+
+        result = self.client.thread_read("thread-1")
+
+        self.assertEqual(result["threadId"], "thread-1")
+        self.assertTrue(self.server.received[0]["params"]["includeTurns"])
 
     def test_get_account_falls_back_to_legacy_method(self) -> None:
         self.server.on("account/read", lambda payload: {})

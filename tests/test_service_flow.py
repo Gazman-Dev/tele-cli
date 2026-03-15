@@ -937,6 +937,54 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [(22, "Final answer from Codex")])
         self.assertEqual(self.recorder.records, [("assistant", "Final answer from Codex")])
 
+    def test_drain_codex_notifications_reads_nested_turn_id_and_thread_fallback_text(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        class ReadableCodex(FakeCodex):
+            def read_thread(self, thread_id: str, include_turns: bool = True):
+                return {
+                    "thread": {
+                        "id": thread_id,
+                        "turns": [
+                            {
+                                "id": "turn-1",
+                                "items": [
+                                    {"id": "m-1", "type": "agentMessage", "text": "Reply from thread/read"}
+                                ],
+                            }
+                        ],
+                    }
+                }
+
+        telegram = FakeTelegramClient()
+        codex = ReadableCodex()
+        codex.pending_notifications.append(
+            Notification("turn/completed", {"threadId": "thread-1", "turn": {"id": "turn-1", "items": []}})
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertIsNone(updated.active_turn_id)
+        self.assertEqual(updated.last_completed_turn_id, "turn-1")
+        self.assertEqual(telegram.messages, [(22, "Reply from thread/read")])
+        self.assertEqual(self.recorder.records, [("assistant", "Reply from thread/read")])
+
     def test_drain_codex_notifications_marks_auth_ready_after_login_completion(self) -> None:
         auth = AuthState(
             bot_token="token",
