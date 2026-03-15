@@ -24,7 +24,6 @@ from integrations.telegram import (
     is_auth_paired,
     register_pairing_request,
 )
-from runtime.control import ServiceConflict, ServiceConflictChoices, inspect_service_conflict
 from runtime.service import reset_auth
 from setup.admin import run_uninstall, run_update
 from setup.host_service import build_service_registration, current_service_manager
@@ -95,15 +94,11 @@ class AppShellBackend(Protocol):
 
     def build_menu_items(self, paths: AppPaths) -> list[MenuItem]: ...
 
+    def ensure_service_running(self, paths: AppPaths) -> str | None: ...
+
     def perform_action(self, paths: AppPaths, action: str) -> str | None: ...
 
     def perform_setup(self, paths: AppPaths, recovery_choices: SetupRecoveryChoices | None = None) -> str | None: ...
-
-    def perform_service_action(
-        self,
-        paths: AppPaths,
-        conflict_choices: ServiceConflictChoices | None = None,
-    ) -> str | None: ...
 
     def perform_update(self, paths: AppPaths) -> tuple[bool, str | None]: ...
 
@@ -138,21 +133,23 @@ class DefaultAppShellBackend:
         config = load_json(paths.config, Config.from_dict)
         inspection = LockFile(paths.app_lock).inspect()
 
-        service_state = "stopped"
+        service_state = "error" if auth and is_auth_paired(auth) else "stopped"
         if inspection.exists and inspection.metadata:
             if inspection.live:
                 service_state = "running"
             else:
-                service_state = "blocked"
+                service_state = "error"
 
-        codex_state = "not authenticated"
-        telegram_state = "not paired"
+        codex_state = "error" if auth and is_auth_paired(auth) else "stopped"
+        telegram_state = "error" if auth and is_auth_paired(auth) else "stopped"
         status_line = "Configuration required"
-        if runtime:
+        if runtime and inspection.exists and inspection.metadata and inspection.live:
             service_state = runtime.service_state.lower()
             codex_state = runtime.codex_state.lower().replace("_", " ")
             telegram_state = runtime.telegram_state.lower().replace("_", " ")
             status_line = f"service={runtime.service_state} telegram={runtime.telegram_state} codex={runtime.codex_state}"
+        elif auth and is_auth_paired(auth):
+            status_line = "AI Service (Codex) failed to start."
         elif setup:
             status_line = setup.status
 
@@ -188,7 +185,6 @@ class DefaultAppShellBackend:
         items = [
             MenuItem("Status refresh", "refresh"),
             MenuItem("Run setup", "setup"),
-            MenuItem("Start service", "service"),
         ]
         auth = load_json(paths.auth, AuthState.from_dict)
         if auth and has_pending_pairing(auth):
@@ -202,6 +198,14 @@ class DefaultAppShellBackend:
             ]
         )
         return items
+
+    def ensure_service_running(self, paths: AppPaths) -> str | None:
+        manager = current_service_manager()
+        desired = build_service_registration(paths)
+        result = ensure_service_registration(manager, desired)
+        if result.action == "repair_required":
+            return "Duplicate service registrations must be repaired before the app can start its background service."
+        return None
 
     def perform_action(self, paths: AppPaths, action: str) -> str | None:
         print("\033[2J\033[H", end="")
@@ -226,18 +230,6 @@ class DefaultAppShellBackend:
 
     def perform_setup(self, paths: AppPaths, recovery_choices: SetupRecoveryChoices | None = None) -> str | None:
         run_setup(paths, recovery_choices=recovery_choices)
-        return None
-
-    def perform_service_action(
-        self,
-        paths: AppPaths,
-        conflict_choices: ServiceConflictChoices | None = None,
-    ) -> str | None:
-        manager = current_service_manager()
-        desired = build_service_registration(paths)
-        result = ensure_service_registration(manager, desired)
-        if result.action == "repair_required":
-            raise RuntimeError("Duplicate service registrations must be repaired before starting the service.")
         return None
 
     def perform_update(self, paths: AppPaths) -> tuple[bool, str | None]:
@@ -361,6 +353,7 @@ class AppShell:
         self.backend = backend or DefaultAppShellBackend()
         self.ui = ui or TerminalUI()
         self.selection = 0
+        self.service_error: str | None = None
 
     def run(self, startup_action: str | None = None) -> None:
         if not self.ui.is_tty:
@@ -385,14 +378,21 @@ class AppShell:
                         result = self._run_action(action, pause=False)
                         if result == "exit":
                             return
+                    self.service_error = self._ensure_service_running()
                     self._status_loop()
                     return
                 except (DemoExit, KeyboardInterrupt):
                     self.selection = 0
                     pending_action = None
                     pending_initial_setup = False
+                    self.service_error = None
         finally:
             self.ui.end()
+
+    def _ensure_service_running(self) -> str | None:
+        if self._needs_initial_setup():
+            return None
+        return self.backend.ensure_service_running(self.paths)
 
     def _show_startup_splash(self) -> None:
         for frame in range(19):
@@ -475,6 +475,17 @@ class AppShell:
 
     def _render_status_screen(self, items: list[MenuItem]) -> None:
         status = self.backend.build_status(self.paths)
+        if self.service_error:
+            status = AppShellStatus(
+                service_state="error",
+                codex_state="error",
+                telegram_state="error",
+                status_line="AI Service (Codex) failed to start.",
+                detail_lines=[
+                    f"{Colors.red}{Colors.bold}Startup error:{Colors.reset} {self.service_error}",
+                    *status.detail_lines,
+                ],
+            )
         menu_lines: list[str] = []
         for index, item in enumerate(items):
             prefix = ">" if index == self.selection else " "
@@ -520,50 +531,14 @@ class AppShell:
                 return result
         if action == "setup":
             result = self.backend.perform_setup(self.paths, recovery_choices=recovery_choices)
-            if result != "exit" and pause:
-                self.ui.pause("Press Enter to return to Tele Cli...")
-            return result
-        if action == "service":
-            result = self._resolve_duplicate_service_conflicts(action)
-            if result is not None:
-                if result == "handled":
-                    return None
-                return result
-            conflict_choices = self._resolve_service_runtime_conflict()
-            if conflict_choices == "cancel":
-                return "cancel"
-            try:
-                result = self.backend.perform_service_action(self.paths, conflict_choices=conflict_choices)
-            except Exception as exc:
-                self.ui.render(
-                    self.ui.print_header()
-                    + self.ui.panel(
-                        "Starting Service",
-                        [
-                            f"{Colors.red}{Colors.bold}Service start failed.{Colors.reset}",
-                            "",
-                            str(exc),
-                        ],
-                        width=76,
-                        align="center",
-                    )
-                )
-                self.ui.pause("Press Enter to return to Tele Cli...")
-                return None
-            self.ui.render(
-                self.ui.print_header()
-                + self.ui.panel(
-                    "Starting Service",
-                    [f"{Colors.green}{Colors.bold}Background service start requested.{Colors.reset}"],
-                    width=76,
-                    align="center",
-                )
-            )
+            self.service_error = self._ensure_service_running()
             if result != "exit" and pause:
                 self.ui.pause("Press Enter to return to Tele Cli...")
             return result
         if action == "update":
-            return self._run_update_flow()
+            result = self._run_update_flow()
+            self.service_error = self._ensure_service_running()
+            return result
         if action == "uninstall":
             return self._run_uninstall_flow()
         result = self.backend.perform_action(self.paths, action)
@@ -662,89 +637,6 @@ class AppShell:
                 return "resume"
             if conflict.kind == "interrupted" and key == "n":
                 return "restart"
-            if key == "i":
-                return "ignore"
-            if key in {"e", "q", "esc"}:
-                return "cancel"
-
-    def _resolve_service_runtime_conflict(self) -> ServiceConflictChoices | str | None:
-        conflict = inspect_service_conflict(LockFile(self.paths.app_lock))
-        if conflict is None:
-            return None
-        choices = ServiceConflictChoices()
-        selected = self._show_service_conflict(conflict)
-        if selected == "cancel":
-            return "cancel"
-        choices.conflict_choice = selected
-        if conflict.kind == "stale" and selected == "heal" and conflict.orphan_codex_active:
-            orphan = self._show_orphan_codex_conflict(conflict)
-            if orphan == "cancel":
-                return "cancel"
-            choices.orphan_choice = orphan
-        return choices
-
-    def _show_service_conflict(self, conflict: ServiceConflict) -> str:
-        while True:
-            if conflict.kind == "live_same_app":
-                title = "Live Service Conflict"
-                lines = [
-                    "Another Tele Cli runtime appears to be active.",
-                    "",
-                    describe_process(conflict.metadata),
-                    "",
-                    f"{Colors.muted}Press k to stop it and continue.{Colors.reset}",
-                    f"{Colors.muted}Press i to leave it running and continue anyway.{Colors.reset}",
-                    f"{Colors.muted}Press e to cancel and return to the shell.{Colors.reset}",
-                ]
-            elif conflict.kind == "live_unknown":
-                title = "Unknown Runtime Owner"
-                lines = [
-                    "A live process owns the Tele Cli runtime lock, but ownership is unclear.",
-                    "",
-                    describe_process(conflict.metadata),
-                    "",
-                    f"{Colors.muted}Press i to ignore the conflict and continue.{Colors.reset}",
-                    f"{Colors.muted}Press e to cancel and return to the shell.{Colors.reset}",
-                ]
-            else:
-                title = "Stale Runtime Lock"
-                lines = [
-                    "A stale Tele Cli runtime lock was found.",
-                    "",
-                    describe_process(conflict.metadata),
-                    "",
-                    f"{Colors.muted}Press h to clear it and continue.{Colors.reset}",
-                    f"{Colors.muted}Press i to ignore it and continue.{Colors.reset}",
-                    f"{Colors.muted}Press e to cancel and return to the shell.{Colors.reset}",
-                ]
-            self.ui.render(self.ui.print_header() + self.ui.panel(title, lines, width=76))
-            key = self.ui.read_key()
-            if conflict.kind == "live_same_app" and key == "k":
-                return "kill"
-            if conflict.kind == "live_unknown" and key == "i":
-                return "ignore"
-            if conflict.kind == "stale" and key == "h":
-                return "heal"
-            if key == "i":
-                return "ignore"
-            if key in {"e", "q", "esc"}:
-                return "cancel"
-
-    def _show_orphan_codex_conflict(self, conflict: ServiceConflict) -> str:
-        while True:
-            lines = [
-                "A Codex child process from a previous run may still be active.",
-                "",
-                f"child_codex_pid={conflict.metadata.child_codex_pid}",
-                "",
-                f"{Colors.muted}Press k to stop the orphaned Codex process.{Colors.reset}",
-                f"{Colors.muted}Press i to leave it alone and continue.{Colors.reset}",
-                f"{Colors.muted}Press e to cancel and return to the shell.{Colors.reset}",
-            ]
-            self.ui.render(self.ui.print_header() + self.ui.panel("Orphaned Codex", lines, width=76))
-            key = self.ui.read_key()
-            if key == "k":
-                return "kill"
             if key == "i":
                 return "ignore"
             if key in {"e", "q", "esc"}:

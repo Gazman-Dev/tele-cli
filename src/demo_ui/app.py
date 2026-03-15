@@ -6,7 +6,6 @@ from .state import Colors, DemoExit, DemoState, MenuItem
 from .flows import (
     run_pairing_screen,
     run_token_screen,
-    show_service_restart,
     show_setup_complete,
     show_uninstall,
     show_update,
@@ -34,8 +33,8 @@ class TeleCliUxDemo:
 
     def _startup_screen(self) -> None:
         tasks = [
-            "Loading local background service",
-            "Synchronizing AI engine",
+            "Loading AI Service (Codex)",
+            "Synchronizing AI service state",
             "Wiring Telegram API handlers",
             "Installing required Python packages",
         ]
@@ -127,7 +126,6 @@ class TeleCliUxDemo:
         return[
             MenuItem("Status refresh", "refresh"),
             MenuItem("Setup", "setup"),
-            MenuItem("Restart service", "service"),
             MenuItem("Update Tele-Cli", "update"),
             MenuItem("Uninstall", "uninstall"),
             MenuItem("Quit", "quit"),
@@ -140,17 +138,12 @@ class TeleCliUxDemo:
             self._telegram_token_screen()
             self._telegram_pairing_screen()
             self._setup_complete_screen()
-        elif action == "service":
-            self._service_restart_screen()
         elif action == "update":
             self._update_screen()
         elif action == "uninstall":
             self._uninstall_screen()
         elif action == "quit":
             self.state.running = False
-
-    def _service_restart_screen(self) -> None:
-        show_service_restart(self.ui, self.state)
 
     def _update_screen(self) -> None:
         show_update(self.ui, self.state)

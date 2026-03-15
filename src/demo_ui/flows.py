@@ -115,42 +115,24 @@ def show_setup_complete(ui: TerminalUI, state: DemoState) -> None:
         ui.print_header()
         + ui.panel(
             "Setup Complete",
-            [f"{Colors.green}{Colors.bold}Setup complete.{Colors.reset}", "", "Starting Tele-Cli service..."],
+            [f"{Colors.green}{Colors.bold}Setup complete.{Colors.reset}", "", "Starting AI Service (Codex)..."],
             align="center",
         )
     )
     time.sleep(1.0)
 
 
-def show_service_restart(ui: TerminalUI, state: DemoState) -> None:
-    state.service_state = "starting"
-    state.status_line = "service restarting after crash"
-    ui.render(
-        ui.print_header()
-        + ui.panel(
-            "Service Restart",
-            ["Existing Tele-Cli instance detected.", "", "Restarting the local background service now."],
-            align="center",
-        )
-    )
-    print()
-    ui.spinner("Stopping previous instance", 0.65)
-    ui.spinner("Starting Tele-Cli", 0.75)
-    state.service_state = "running"
-    state.status_line = "waiting for Telegram commands"
-
-
 def show_update(ui: TerminalUI, state: DemoState) -> None:
     ui.render(
         ui.print_header()
-        + ui.panel("Updating Tele-Cli", ["Preparing package refresh and service restart."], align="center")
+        + ui.panel("Updating Tele-Cli", ["Preparing package refresh and AI service restart."], align="center")
     )
     print()
     for step in [
         "Installing dependencies",
         "Installing Codex",
         "Creating configuration",
-        "Starting Tele-Cli service",
+        "Starting AI Service (Codex)",
     ]:
         ui.spinner(step, 0.6)
     state.status_line = "Tele-Cli updated successfully"

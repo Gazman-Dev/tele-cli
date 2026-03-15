@@ -10,7 +10,6 @@ from core.json_store import save_json
 from core.models import AuthState, Config, LockMetadata, RuntimeState, SetupState
 from core.paths import build_paths
 from demo_ui.state import DemoExit
-from setup.service_manager import ServiceEnsureResult, ServiceRegistrationAnalysis
 
 
 class FakeUi:
@@ -112,7 +111,6 @@ class FakeBackend:
     def __init__(self) -> None:
         self.actions: list[str] = []
         self.setup_choices = []
-        self.service_choices = []
         self.uninstall_calls = 0
         self.dependency_steps: list[str] = []
         self.dependency_error: str | None = None
@@ -143,6 +141,10 @@ class FakeBackend:
 
         return [MenuItem("Run setup", "setup"), MenuItem("Exit", "exit")]
 
+    def ensure_service_running(self, paths) -> str | None:
+        self.actions.append("ensure-service")
+        return None
+
     def perform_action(self, paths, action: str) -> str | None:
         self.actions.append(action)
         if action == "exit":
@@ -152,11 +154,6 @@ class FakeBackend:
     def perform_setup(self, paths, recovery_choices=None) -> str | None:
         self.actions.append("setup")
         self.setup_choices.append(recovery_choices)
-        return None
-
-    def perform_service_action(self, paths, conflict_choices=None) -> str | None:
-        self.actions.append("service")
-        self.service_choices.append(conflict_choices)
         return None
 
     def perform_update(self, paths) -> tuple[bool, str | None]:
@@ -263,6 +260,19 @@ class AppShellTests(unittest.TestCase):
             paths = build_paths(Path(tmp))
             save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
             save_json(
+                paths.app_lock,
+                LockMetadata(
+                    pid=1,
+                    hostname="host",
+                    username="user",
+                    started_at="now",
+                    mode="service",
+                    timestamp="now",
+                    app_version="1",
+                    cwd=str(paths.root),
+                ).to_dict(),
+            )
+            save_json(
                 paths.runtime,
                 RuntimeState(
                     session_id="1",
@@ -274,14 +284,65 @@ class AppShellTests(unittest.TestCase):
                 ).to_dict(),
             )
 
-            status = DefaultAppShellBackend().build_status(paths)
+            with patch("app_shell.LockFile.inspect") as inspect:
+                inspect.return_value = type(
+                    "Inspection",
+                    (),
+                    {
+                        "exists": True,
+                        "metadata": LockMetadata(
+                            pid=1,
+                            hostname="host",
+                            username="user",
+                            started_at="now",
+                            mode="service",
+                            timestamp="now",
+                            app_version="1",
+                            cwd=str(paths.root),
+                        ),
+                        "live": True,
+                    },
+                )()
+                status = DefaultAppShellBackend().build_status(paths)
 
             self.assertEqual(status.service_state, "running")
             self.assertEqual(status.codex_state, "auth required")
             self.assertEqual(status.telegram_state, "running")
             self.assertIn("codex=AUTH_REQUIRED", status.status_line)
 
-    def test_default_backend_service_action_starts_managed_service(self) -> None:
+    def test_default_backend_status_ignores_stale_runtime_when_service_is_not_live(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            save_json(
+                paths.runtime,
+                RuntimeState(
+                    session_id="1",
+                    service_state="RUNNING",
+                    codex_state="RUNNING",
+                    telegram_state="RUNNING",
+                    recorder_state="RUNNING",
+                    debug_state="RUNNING",
+                ).to_dict(),
+            )
+
+            status = DefaultAppShellBackend().build_status(paths)
+
+            self.assertEqual(status.service_state, "error")
+            self.assertEqual(status.codex_state, "error")
+            self.assertEqual(status.telegram_state, "error")
+            self.assertEqual(status.status_line, "AI Service (Codex) failed to start.")
+
+    def test_default_backend_ensure_service_running_starts_managed_service(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             backend = DefaultAppShellBackend()
@@ -291,15 +352,14 @@ class AppShellTests(unittest.TestCase):
                 patch("app_shell.ensure_service_registration") as ensure_registration,
             ):
                 current_manager.return_value = object()
-                ensure_registration.return_value = ServiceEnsureResult(
-                    action="started",
-                    analysis=ServiceRegistrationAnalysis(
-                        state_dir=str(paths.root),
-                        canonical=None,
-                        duplicates=(),
-                    ),
-                )
-                backend.perform_service_action(paths)
+                ensure_registration.return_value = type(
+                    "EnsureResult",
+                    (),
+                    {
+                        "action": "started",
+                    },
+                )()
+                self.assertIsNone(backend.ensure_service_running(paths))
 
             ensure_registration.assert_called_once()
 
@@ -321,7 +381,7 @@ class AppShellTests(unittest.TestCase):
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
-            self.assertEqual(backend.actions, ["setup", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
             self.assertTrue(ui.begin_called)
             self.assertTrue(ui.end_called)
             self.assertTrue(ui.renders)
@@ -337,7 +397,7 @@ class AppShellTests(unittest.TestCase):
                 AppShell(paths, backend=backend, ui=ui).run()
 
             self.assertEqual(backend.validated_tokens, ["bot-token"])
-            self.assertEqual(backend.actions, ["setup", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Telegram Bot Setup", rendered_text)
 
@@ -359,7 +419,7 @@ class AppShellTests(unittest.TestCase):
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run()
 
-            self.assertEqual(backend.actions, ["exit"])
+            self.assertEqual(backend.actions, ["ensure-service", "exit"])
             rendered_text = "\n".join(ui.renders[-1])
             self.assertIn("PANEL Status", rendered_text)
             self.assertIn("PANEL Menu", rendered_text)
@@ -433,7 +493,7 @@ class AppShellTests(unittest.TestCase):
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run()
 
-            self.assertEqual(backend.actions, ["setup", "exit"])
+            self.assertEqual(backend.actions, ["ensure-service", "setup", "ensure-service", "exit"])
             self.assertEqual(ui.pause_messages, ["Press Enter to return to Tele Cli..."])
             rendered_text = "\n".join(ui.renders[-1])
             self.assertIn("PANEL Status", rendered_text)
@@ -449,7 +509,7 @@ class AppShellTests(unittest.TestCase):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
             self.assertEqual(backend.validated_tokens, ["bot-token"])
-            self.assertEqual(backend.actions, ["setup", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Telegram Bot Setup", rendered_text)
 
@@ -487,7 +547,7 @@ class AppShellTests(unittest.TestCase):
 
             self.assertEqual(backend.pairing_polls, [None])
             self.assertEqual(backend.pairing_confirmations, ["123456"])
-            self.assertEqual(backend.actions, ["setup", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Telegram Pairing", rendered_text)
             self.assertNotIn("123456", rendered_text)
@@ -552,7 +612,7 @@ class AppShellTests(unittest.TestCase):
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run()
 
-            self.assertEqual(backend.actions, ["exit"])
+            self.assertEqual(backend.actions, ["ensure-service", "ensure-service", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("PANEL Menu", rendered_text)
 
@@ -662,7 +722,7 @@ class AppShellTests(unittest.TestCase):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
             self.assertEqual(backend.duplicate_repair_calls, 1)
-            self.assertEqual(backend.actions, ["setup", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
 
     def test_shell_collects_interrupted_setup_resolution_before_running_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -694,7 +754,7 @@ class AppShellTests(unittest.TestCase):
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
-            self.assertEqual(backend.actions, ["setup", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
             self.assertEqual(backend.setup_choices[0].setup_choice, "resume")
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Interrupted Setup", rendered_text)
@@ -731,7 +791,7 @@ class AppShellTests(unittest.TestCase):
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="setup")
 
-            self.assertEqual(backend.actions, ["setup", "exit"])
+            self.assertEqual(backend.actions, ["setup", "ensure-service", "exit"])
             self.assertEqual(backend.setup_choices[0].app_lock_choice, "heal")
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Stale App Lock", rendered_text)
@@ -762,13 +822,9 @@ class AppShellTests(unittest.TestCase):
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("PANEL Menu", rendered_text)
 
-    def test_shell_collects_stale_service_conflict_before_service_start(self) -> None:
+    def test_shell_surfaces_service_start_error_without_manual_service_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
-            save_json(
-                paths.config,
-                Config(state_dir=str(paths.root)).to_dict(),
-            )
             save_json(
                 paths.auth,
                 AuthState(
@@ -778,38 +834,22 @@ class AppShellTests(unittest.TestCase):
                     paired_at="now",
                 ).to_dict(),
             )
-            save_json(
-                paths.app_lock,
-                LockMetadata(
-                    pid=999999,
-                    hostname="host",
-                    username="user",
-                    started_at="earlier",
-                    mode="service",
-                    timestamp="now",
-                    app_version="1",
-                    child_codex_pid=888888,
-                    command=["python", "-m", "cli"],
-                    cwd=str(paths.root),
-                ).to_dict(),
-            )
-            backend = FakeBackend()
-            ui = FakeUi(keys=["h", "k", "down", "enter"])
 
-            with (
-                patch("app_shell.time.sleep", return_value=None),
-                patch("runtime.control.process_exists", side_effect=lambda pid: pid == 888888),
-                patch("runtime.control.is_owned_codex", return_value=True),
-            ):
-                AppShell(paths, backend=backend, ui=ui).run(startup_action="service")
+            class ErrorBackend(FakeBackend):
+                def ensure_service_running(self, paths) -> str | None:
+                    self.actions.append("ensure-service")
+                    return "service start failed"
 
-            self.assertEqual(backend.actions, ["service", "exit"])
-            choices = backend.service_choices[0]
-            self.assertEqual(choices.conflict_choice, "heal")
-            self.assertEqual(choices.orphan_choice, "kill")
+            backend = ErrorBackend()
+            ui = FakeUi(keys=["down", "enter"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run()
+
+            self.assertEqual(backend.actions, ["ensure-service", "exit"])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
-            self.assertIn("Stale Runtime Lock", rendered_text)
-            self.assertIn("Orphaned Codex", rendered_text)
+            self.assertIn("AI Service (Codex) failed to start.", rendered_text)
+            self.assertIn("service start failed", rendered_text)
 
 
 if __name__ == "__main__":

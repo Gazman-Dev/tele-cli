@@ -99,17 +99,16 @@ class TerminalUI:
         telegram_state: str,
         summary: str,
     ) -> list[str]:
-        telegram_running = telegram_state.lower() in {"paired", "running", "connected"}
-        codex_running = codex_state.lower() in {"authenticated", "running"}
-        service_running = service_state.lower() in {"running"}
+        telegram_running = service_state.lower() in {"running"} and telegram_state.lower() in {"running", "connected"}
+        ai_service_running = service_state.lower() in {"running"} and codex_state.lower() in {"authenticated", "running"}
 
-        def status_value(is_on: bool) -> str:
-            color = Colors.green if is_on else Colors.red
-            word = "running" if is_on else "stopped"
+        def status_value(is_running: bool) -> str:
+            color = Colors.green if is_running else Colors.red
+            word = "running" if is_running else "error"
             return f"{color}o{Colors.reset} {Colors.text}{word}{Colors.reset}"
 
         def cell(text: str) -> str:
-            return text + (" " * max(0, 22 - visible_len(text)))
+            return text + (" " * max(0, 34 - visible_len(text)))
 
         rows = [
             f"{Colors.muted}System overview{Colors.reset}",
@@ -117,15 +116,13 @@ class TerminalUI:
             "  ".join(
                 [
                     cell(f"{Colors.blue}{Colors.bold}Telegram{Colors.reset}"),
-                    cell(f"{Colors.green}{Colors.bold}AI Engine{Colors.reset}"),
-                    cell(f"{Colors.cyan}{Colors.bold}Tele Cli Service{Colors.reset}"),
+                    cell(f"{Colors.green}{Colors.bold}AI Service (Codex){Colors.reset}"),
                 ]
             ),
             "  ".join(
                 [
                     cell(status_value(telegram_running)),
-                    cell(status_value(codex_running)),
-                    cell(status_value(service_running)),
+                    cell(status_value(ai_service_running)),
                 ]
             ),
             "",
@@ -324,9 +321,9 @@ class TerminalUI:
                 box_line(
                     f"{Colors.muted}telegram interface{Colors.reset}  "
                     f"{Colors.green_dim}<->{Colors.reset}  "
-                    f"{Colors.text}ai engine{Colors.reset}  "
+                    f"{Colors.text}AI Service (Codex){Colors.reset}  "
                     f"{Colors.green_dim}<->{Colors.reset}  "
-                    f"{Colors.cyan}tele cli service{Colors.reset}"
+                    f"{Colors.cyan}operator shell{Colors.reset}"
                 ),
                 box_line(f"{Colors.muted}current phase:{Colors.reset} {Colors.text}{phase}{Colors.reset}"),
                 empty_box_line(),
@@ -351,8 +348,8 @@ class TerminalUI:
 
     def splash_frame(self, frame_index: int) -> list[str]:
         tasks = [
-            "Loading local background service",
-            "Synchronizing AI engine",
+            "Loading AI Service (Codex)",
+            "Synchronizing AI service state",
             "Wiring Telegram API handlers",
             "Installing required Python packages",
         ]
