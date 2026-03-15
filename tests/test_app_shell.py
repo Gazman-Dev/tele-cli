@@ -124,6 +124,7 @@ class FakeBackend:
         self.duplicate_registrations: list[str] = []
         self.repaired_duplicates: list[str] = []
         self.duplicate_repair_calls = 0
+        self.codex_login_runs = 0
 
     def build_status(self, paths):
         from app_shell import AppShellStatus
@@ -147,6 +148,8 @@ class FakeBackend:
 
     def perform_action(self, paths, action: str) -> str | None:
         self.actions.append(action)
+        if action == "login-codex":
+            self.codex_login_runs += 1
         if action == "exit":
             return "exit"
         return None
@@ -254,6 +257,26 @@ class AppShellTests(unittest.TestCase):
             items = DefaultAppShellBackend().build_menu_items(paths)
 
             self.assertIn("Complete Telegram pairing", [item.label for item in items])
+
+    def test_default_backend_includes_codex_login_menu_item_when_auth_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
+            save_json(
+                paths.codex_server,
+                CodexServerState(
+                    transport="stdio://",
+                    initialized=True,
+                    auth_required=True,
+                    login_type="chatgpt",
+                    login_url="https://example.test/login",
+                    capabilities={"threads": True},
+                ).to_dict(),
+            )
+
+            items = DefaultAppShellBackend().build_menu_items(paths)
+
+            self.assertIn("Log In Codex", [item.label for item in items])
 
     def test_default_backend_status_uses_runtime_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -562,6 +585,36 @@ class AppShellTests(unittest.TestCase):
             rendered_text = "\n".join(ui.renders[-1])
             self.assertIn("PANEL Status", rendered_text)
             self.assertIn("PANEL Menu", rendered_text)
+
+    def test_shell_runs_codex_login_action_inside_shell_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+
+            class LoginBackend(FakeBackend):
+                def build_menu_items(self, paths):
+                    from demo_ui.state import MenuItem
+
+                    return [MenuItem("Log In Codex", "login-codex"), MenuItem("Exit", "exit")]
+
+            backend = LoginBackend()
+            ui = FakeUi(keys=["enter", "down", "enter"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run()
+
+            self.assertEqual(backend.codex_login_runs, 1)
+            self.assertEqual(backend.actions, ["ensure-service", "login-codex", "exit"])
+            self.assertTrue(ui.end_called)
+            self.assertEqual(ui.pause_messages, ["Press Enter to return to Tele Cli..."])
 
     def test_shell_setup_action_uses_token_screen_before_backend_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

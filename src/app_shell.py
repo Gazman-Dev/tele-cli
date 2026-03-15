@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -200,8 +201,11 @@ class DefaultAppShellBackend:
             MenuItem("Run setup", "setup"),
         ]
         auth = load_json(paths.auth, AuthState.from_dict)
+        codex_server = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
         if auth and has_pending_pairing(auth):
             items.append(MenuItem("Complete Telegram pairing", "complete-pairing"))
+        if codex_server and codex_server.auth_required:
+            items.append(MenuItem("Log In Codex", "login-codex"))
         items.extend(
             [
                 MenuItem("Reset Telegram auth", "reset-auth"),
@@ -223,6 +227,17 @@ class DefaultAppShellBackend:
     def perform_action(self, paths: AppPaths, action: str) -> str | None:
         print("\033[2J\033[H", end="")
         if action == "refresh":
+            return None
+        if action == "login-codex":
+            config = load_json(paths.config, Config.from_dict) or Config(state_dir=str(paths.root))
+            result = subprocess.run([*config.codex_command, "login", "--device-auth"], check=False)
+            if result.returncode != 0:
+                print("Codex login did not complete.")
+                return None
+            manager = current_service_manager()
+            desired = build_service_registration(paths)
+            manager.restart(desired.service_name)
+            print("Codex login complete. Restarted the background service.")
             return None
         if action == "complete-pairing":
             auth = load_json(paths.auth, AuthState.from_dict)
@@ -554,6 +569,15 @@ class AppShell:
             return result
         if action == "uninstall":
             return self._run_uninstall_flow()
+        if action == "login-codex":
+            self.ui.end()
+            try:
+                result = self.backend.perform_action(self.paths, action)
+            finally:
+                self.ui.begin()
+            if pause:
+                self.ui.pause("Press Enter to return to Tele Cli...")
+            return result
         result = self.backend.perform_action(self.paths, action)
         if result != "exit" and pause:
             self.ui.pause("Press Enter to return to Tele Cli...")
