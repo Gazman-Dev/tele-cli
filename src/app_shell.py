@@ -366,6 +366,10 @@ class AppShell:
         try:
             self._show_startup_splash()
             self._bootstrap_dependencies()
+            if startup_action is None and self._needs_initial_setup():
+                result = self._run_action("setup", pause=False)
+                if result == "exit":
+                    return
             if startup_action:
                 result = self._run_action(startup_action, pause=False)
                 if result == "exit":
@@ -432,6 +436,9 @@ class AppShell:
     def _needs_pairing_setup(self) -> bool:
         auth = load_json(self.paths.auth, AuthState.from_dict)
         return not bool(auth and is_auth_paired(auth))
+
+    def _needs_initial_setup(self) -> bool:
+        return self._needs_token_setup() or self._needs_pairing_setup()
 
     def _status_loop(self) -> None:
         while True:

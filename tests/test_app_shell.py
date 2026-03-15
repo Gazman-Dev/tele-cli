@@ -284,6 +284,43 @@ class AppShellTests(unittest.TestCase):
             self.assertTrue(ui.renders)
             self.assertEqual(ui.pause_messages, [])
 
+    def test_unconfigured_launch_auto_enters_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            backend = FakeBackend()
+            ui = FakeUi(keys=["q"], inputs=["bot-token"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run()
+
+            self.assertEqual(backend.validated_tokens, ["bot-token"])
+            self.assertEqual(backend.actions, ["setup"])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Telegram Bot Setup", rendered_text)
+
+    def test_configured_launch_stays_on_status_screen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            backend = FakeBackend()
+            ui = FakeUi(keys=["q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run()
+
+            self.assertEqual(backend.actions, [])
+            rendered_text = "\n".join(ui.renders[-1])
+            self.assertIn("PANEL Status", rendered_text)
+            self.assertIn("PANEL Menu", rendered_text)
+
     def test_shell_bootstraps_missing_dependencies_on_startup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
