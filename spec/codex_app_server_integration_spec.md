@@ -86,7 +86,7 @@ Tele Cli should own:
 - Telegram pairing and authorization
 - mapping incoming external messages to a Tele Cli session
 - mapping each Tele Cli session to a Codex `threadId`
-- policy for when to create, reuse, archive, or fork a Codex thread
+- policy for when to create, reuse, detach, or retire a Codex thread from Telegram visibility
 - persistence of operator/session metadata
 - service lifecycle, health checks, reconnects, and observability
 
@@ -178,8 +178,10 @@ Default routing for Telegram:
 
 - one authorized Telegram chat or group topic maps to one implicit active Tele Cli session
 - additional sessions may be created on demand
-- older sessions may exist in persisted history, but only one session is writable for a given chat or topic at a time
-- when a user starts a new session, that session replaces the current implicit session for that chat or topic and the prior session becomes archived history
+- older sessions may exist in persisted history, but only one session is attached to Telegram for a given chat or topic at a time
+- when a user starts a new session, that session replaces the current implicit session for that chat or topic and the prior session becomes detached from Telegram
+- a detached session may continue running in the background until its turn finishes
+- once a detached session is idle and has no buffered output left, Tele Cli may prune it automatically
 - Telegram does not expose manual session reactivation because that creates avoidable routing collisions
 - replies without an explicit session selector route to the current implicit session for that chat or topic
 
@@ -188,6 +190,12 @@ Suggested first commands:
 - `/new`
 - `/sessions`
 - `/status`
+
+Danger-mode default for Telegram-created threads:
+
+- Tele Cli starts new Codex threads with `sandbox = "danger-full-access"`
+- Tele Cli starts new Codex threads with `approvalPolicy = "never"`
+- approval handling remains a compatibility path if the app server emits an approval request anyway
 
 ## 8. Protocol Integration Plan
 
@@ -424,7 +432,8 @@ Exit criteria:
 - implement `thread/start` and `thread/resume`
 - map one Telegram chat/topic to one implicit durable Codex thread
 - add `/new` so a user can replace the implicit session with a newly created one
-- archive the prior session automatically so Telegram keeps exactly one writable session per chat/topic
+- detach the prior session automatically so Telegram keeps exactly one attached writable session per chat/topic
+- allow detached sessions to finish in the background without surfacing replies into the new Telegram session
 
 Exit criteria:
 
@@ -474,6 +483,7 @@ Exit criteria:
 - allow multiple durable sessions in storage per operator/chat, but only one writable current session in Telegram
 - keep exactly one implicit active session per Telegram chat or group topic
 - do not expose manual session switching in Telegram
+- use detached-session semantics when `/new` is used during an in-flight turn
 - add thread title/session title synchronization rules for diagnostics only
 
 Exit criteria:
@@ -522,7 +532,7 @@ Mitigation:
 Before implementation, decide:
 
 1. For pause-based partial flushes, should the 3-second threshold be configurable in `config.json` or hard-coded initially?
-2. Should archived sessions remain visible in `/sessions`, or only appear in local diagnostics and logs?
+2. Should detached background sessions remain visible in `/sessions`, or only appear in local diagnostics and logs?
 
 ## 16. Proposed First Implementation Cut
 
@@ -534,6 +544,7 @@ I recommend the smallest viable integration be:
 - ChatGPT login-link flow via Telegram first, with API key auth added as a second path
 - one implicit session per authorized Telegram chat or group topic
 - `/new` support so the implicit session can be replaced on demand without manual session switching
+- dangerous-mode defaults for Telegram-created threads: `danger-full-access` plus `approvalPolicy = never`
 - durable `sessions.json`
 - `thread/start`, `thread/resume`, `turn/start`, `turn/steer`, `turn/interrupt`
 - Telegram typing mode during active turns

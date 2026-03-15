@@ -167,7 +167,8 @@ Recommended service-level states:
 - `RUNNING_TURN`
 - `WAITING_APPROVAL`
 - `INTERRUPTED`
-- `ARCHIVED`
+- `RECOVERING_TURN`
+- `DETACHED`
 - `DEGRADED`
 
 ## 6. Startup Lifecycle
@@ -203,6 +204,9 @@ Normal behavior:
 - incoming Telegram messages are accepted
 - `/status` reports both Telegram and Codex subsystem health
 - user messages route to the active session
+- new Telegram-created Codex threads use dangerous-mode defaults unless config overrides them
+  - `sandbox = "danger-full-access"`
+  - `approvalPolicy = "never"`
 - Codex turns can continue through short-lived network or app-server restarts when safe
 
 ## 8. Shutdown Lifecycle

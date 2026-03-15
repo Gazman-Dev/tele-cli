@@ -252,16 +252,17 @@ Tasks:
 
 - add `/sessions`, `/new`, and `/status`
 - track exactly one writable implicit active session per chat/topic
-- archive prior sessions automatically when `/new` replaces the current one
-- keep archived sessions read-only from Telegram
+- detach prior sessions automatically when `/new` replaces the current one
+- keep detached sessions hidden from Telegram replies while they finish in the background
 - expose degraded and interrupted session states
 - handle duplicate Telegram deliveries and restart races
 
 Tests:
 
-- `/sessions` lists current and archived sessions
-- `/new` replaces the implicit mapping and archives the prior session
-- archived sessions are never reactivated by Telegram commands
+- `/sessions` lists the attached current session and any still-retained detached background sessions
+- `/new` replaces the implicit mapping and detaches the prior session
+- detached session replies are not delivered into the current Telegram conversation
+- detached idle sessions are pruned automatically
 - duplicate Telegram update does not start duplicate turns
 - service restart during active turn resumes safely without duplicating the final message
 
