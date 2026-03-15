@@ -36,7 +36,7 @@ from setup.recovery import (
     inspect_existing_setup,
 )
 from setup.service_manager import analyze_service_registrations, repair_duplicate_registrations
-from setup.setup_flow import complete_pending_pairing, run_setup
+from setup.setup_flow import complete_pending_pairing, ensure_local_dependencies, run_setup
 
 
 @dataclass
@@ -108,6 +108,8 @@ class AppShellBackend(Protocol):
     def perform_update(self, paths: AppPaths) -> tuple[bool, str | None]: ...
 
     def perform_uninstall(self, paths: AppPaths) -> str | None: ...
+
+    def ensure_dependencies(self, paths: AppPaths) -> tuple[list[str], str | None]: ...
 
     def validate_and_save_token(self, paths: AppPaths, token: str) -> tuple[bool, str | None]: ...
 
@@ -248,6 +250,12 @@ class DefaultAppShellBackend:
         run_uninstall(paths, require_confirmation=False)
         return "exit"
 
+    def ensure_dependencies(self, paths: AppPaths) -> tuple[list[str], str | None]:
+        try:
+            return ensure_local_dependencies(paths), None
+        except Exception as exc:
+            return [], str(exc)
+
     def validate_and_save_token(self, paths: AppPaths, token: str) -> tuple[bool, str | None]:
         candidate = token.strip()
         if not candidate:
@@ -357,6 +365,7 @@ class AppShell:
         self.ui.begin()
         try:
             self._show_startup_splash()
+            self._bootstrap_dependencies()
             if startup_action:
                 result = self._run_action(startup_action, pause=False)
                 if result == "exit":
@@ -369,6 +378,52 @@ class AppShell:
         for frame in range(19):
             self.ui.render(self.ui.splash_frame(frame))
             time.sleep(0.08)
+
+    def _bootstrap_dependencies(self) -> None:
+        steps, error = self.backend.ensure_dependencies(self.paths)
+        if not steps and not error:
+            return
+        if steps:
+            self.ui.render(
+                self.ui.print_header()
+                + self.ui.panel(
+                    "Checking Dependencies",
+                    [
+                        "Tele Cli is preparing required local tools before continuing.",
+                        "",
+                        f"{Colors.muted}Missing dependencies will be installed automatically.{Colors.reset}",
+                    ],
+                    width=76,
+                    align="center",
+                )
+            )
+            for step in steps:
+                self.ui.spinner(step, 0.45)
+            self.ui.render(
+                self.ui.print_header()
+                + self.ui.panel(
+                    "Checking Dependencies",
+                    [f"{Colors.green}{Colors.bold}Dependencies are ready.{Colors.reset}"],
+                    width=76,
+                    align="center",
+                )
+            )
+            time.sleep(0.5)
+        if error:
+            self.ui.render(
+                self.ui.print_header()
+                + self.ui.panel(
+                    "Checking Dependencies",
+                    [
+                        f"{Colors.red}{Colors.bold}Automatic dependency install failed.{Colors.reset}",
+                        "",
+                        error,
+                    ],
+                    width=76,
+                    align="center",
+                )
+            )
+            self.ui.pause("Press Enter to continue to Tele Cli...")
 
     def _needs_token_setup(self) -> bool:
         auth = load_json(self.paths.auth, AuthState.from_dict)

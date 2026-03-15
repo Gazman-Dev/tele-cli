@@ -93,6 +93,8 @@ class FakeBackend:
         self.setup_choices = []
         self.service_choices = []
         self.uninstall_calls = 0
+        self.dependency_steps: list[str] = []
+        self.dependency_error: str | None = None
         self.validated_tokens: list[str] = []
         self.pairing_polls: list[int | None] = []
         self.pairing_confirmations: list[str] = []
@@ -143,6 +145,9 @@ class FakeBackend:
     def perform_uninstall(self, paths) -> str | None:
         self.uninstall_calls += 1
         return "exit"
+
+    def ensure_dependencies(self, paths) -> tuple[list[str], str | None]:
+        return list(self.dependency_steps), self.dependency_error
 
     def get_duplicate_service_registrations(self, paths) -> list[str]:
         return list(self.duplicate_registrations)
@@ -278,6 +283,57 @@ class AppShellTests(unittest.TestCase):
             self.assertTrue(ui.end_called)
             self.assertTrue(ui.renders)
             self.assertEqual(ui.pause_messages, [])
+
+    def test_shell_bootstraps_missing_dependencies_on_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            backend = FakeBackend()
+            backend.dependency_steps = ["Installing npm via brew", "Installing Codex CLI"]
+            ui = FakeUi(keys=["q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run()
+
+            self.assertEqual(
+                ui.spinners,
+                [("Installing npm via brew", 0.45), ("Installing Codex CLI", 0.45)],
+            )
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Checking Dependencies", rendered_text)
+            self.assertIn("Dependencies are ready.", rendered_text)
+
+    def test_shell_reports_dependency_bootstrap_failure_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    telegram_user_id=11,
+                    telegram_chat_id=22,
+                    paired_at="now",
+                ).to_dict(),
+            )
+            backend = FakeBackend()
+            backend.dependency_error = "npm install failed"
+            ui = FakeUi(keys=["q"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run()
+
+            self.assertEqual(ui.pause_messages, ["Press Enter to continue to Tele Cli..."])
+            rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
+            self.assertIn("Automatic dependency install failed.", rendered_text)
+            self.assertIn("npm install failed", rendered_text)
 
     def test_shell_runs_selected_menu_action_and_pauses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -14,7 +14,42 @@ from .host_service import build_service_registration, current_service_manager, r
 from .pairing import complete_pending_pairing, pair_authorized_operator
 from .recovery import SetupRecoveryChoices, initialize_setup
 from .service_manager import ensure_service_registration
-from .state import save_setup_state
+from .state import load_setup_state, save_setup_state
+
+
+def ensure_local_dependencies(paths: AppPaths, setup_state=None) -> list[str]:
+    paths.root.mkdir(parents=True, exist_ok=True)
+    installer = current_installer()
+    config = load_json(paths.config, Config.from_dict) or Config(state_dir=str(paths.root))
+    if not paths.config.exists():
+        save_json(paths.config, config.to_dict())
+
+    state = setup_state or load_setup_state(paths)
+    steps: list[str] = []
+
+    if shutil.which("npm"):
+        if state is not None:
+            state.npm_installed = True
+    else:
+        plan = installer.install_npm(allow_homebrew_install=config.install_homebrew_if_missing)
+        installer.run(plan)
+        steps.append(f"Installing npm via {plan.manager or 'system package manager'}")
+        if state is not None:
+            state.npm_installed = True
+            save_setup_state(paths, state)
+
+    if shutil.which("codex"):
+        if state is not None:
+            state.codex_installed = True
+    else:
+        plan = installer.install_codex()
+        installer.run(plan)
+        steps.append("Installing Codex CLI")
+        if state is not None:
+            state.codex_installed = True
+            save_setup_state(paths, state)
+
+    return steps
 
 
 def run_setup(paths: AppPaths, recovery_choices: SetupRecoveryChoices | None = None) -> None:
@@ -22,27 +57,11 @@ def run_setup(paths: AppPaths, recovery_choices: SetupRecoveryChoices | None = N
     app_lock, setup_state = initialize_setup(paths, choices=recovery_choices)
     setup_state.pid = os.getpid()
     save_setup_state(paths, setup_state)
-    installer = current_installer()
     config = load_json(paths.config, Config.from_dict) or Config(state_dir=str(paths.root))
     existing_auth = load_json(paths.auth, AuthState.from_dict)
     try:
-        if shutil.which("npm"):
-            setup_state.npm_installed = True
-        else:
-            plan = installer.install_npm(allow_homebrew_install=config.install_homebrew_if_missing)
-            print(f"Installing npm via {plan.manager}: {' '.join(plan.command)}")
-            installer.run(plan)
-            setup_state.npm_installed = True
-            save_setup_state(paths, setup_state)
-
-        if shutil.which("codex"):
-            setup_state.codex_installed = True
-        else:
-            plan = installer.install_codex()
-            print(f"Installing Codex: {' '.join(plan.command)}")
-            installer.run(plan)
-            setup_state.codex_installed = True
-            save_setup_state(paths, setup_state)
+        for step in ensure_local_dependencies(paths, setup_state):
+            print(step)
 
         if existing_auth and existing_auth.bot_token:
             auth = existing_auth
