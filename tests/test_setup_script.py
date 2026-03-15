@@ -9,6 +9,7 @@ class SetupScriptTests(unittest.TestCase):
         script = (Path(__file__).resolve().parents[1] / "setup.sh").read_text(encoding="utf-8")
 
         self.assertIn("is_interactive_terminal()", script)
+        self.assertIn("[ -r /dev/tty ] && [ -t 1 ]", script)
         self.assertIn("launch_app_shell()", script)
         self.assertIn('if is_interactive_terminal; then', script)
         self.assertIn("launch_app_shell", script)

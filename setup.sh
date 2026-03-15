@@ -33,7 +33,7 @@ prompt_input() {
 }
 
 is_interactive_terminal() {
-  [ -t 0 ] && [ -t 1 ]
+  [ -r /dev/tty ] && [ -t 1 ]
 }
 
 need_cmd() {
