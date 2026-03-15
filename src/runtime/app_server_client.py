@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app_meta import APP_VERSION
+
 from .jsonrpc import JsonRpcClient
 
 
@@ -10,7 +12,17 @@ class AppServerClient:
         self.rpc = rpc
 
     def initialize(self, client_name: str = "tele-cli") -> dict[str, Any]:
-        return self.rpc.request("initialize", {"client": client_name})
+        return self.rpc.request(
+            "initialize",
+            {
+                "protocolVersion": "2026-02-04",
+                "clientInfo": {
+                    "name": client_name,
+                    "version": APP_VERSION,
+                },
+                "capabilities": {},
+            },
+        )
 
     def get_account(self) -> dict[str, Any]:
         return self.rpc.request("getAccount", {})

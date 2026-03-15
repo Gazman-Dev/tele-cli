@@ -31,6 +31,8 @@ class AppServerClientTests(unittest.TestCase):
 
         self.assertEqual(result["protocolVersion"], "2026-02-04")
         self.assertTrue(result["capabilities"]["threads"])
+        self.assertEqual(self.server.received[0]["params"]["protocolVersion"], "2026-02-04")
+        self.assertEqual(self.server.received[0]["params"]["clientInfo"]["name"], "tele-cli")
 
     def test_get_account_returns_auth_state(self) -> None:
         self.server.on(

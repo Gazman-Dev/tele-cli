@@ -99,8 +99,8 @@ class TerminalUI:
         telegram_state: str,
         summary: str,
     ) -> list[str]:
-        telegram_running = service_state.lower() in {"running"} and telegram_state.lower() in {"running", "connected"}
-        ai_service_running = service_state.lower() in {"running"} and codex_state.lower() in {"authenticated", "running"}
+        telegram_running = telegram_state.lower() in {"paired", "running", "connected"}
+        ai_service_running = codex_state.lower() in {"authenticated", "running"}
 
         def status_value(is_running: bool) -> str:
             color = Colors.green if is_running else Colors.red

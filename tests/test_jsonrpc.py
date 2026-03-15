@@ -19,7 +19,14 @@ class JsonRpcTests(unittest.TestCase):
         client = JsonRpcClient(transport)
         client.start()
         try:
-            result = client.request("initialize", {"client": "tele-cli"})
+            result = client.request(
+                "initialize",
+                {
+                    "protocolVersion": "2026-02-04",
+                    "clientInfo": {"name": "tele-cli", "version": "0.1.0"},
+                    "capabilities": {},
+                },
+            )
             notification = client.get_notification(timeout=1)
         finally:
             client.close()

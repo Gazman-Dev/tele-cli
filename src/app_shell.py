@@ -143,11 +143,14 @@ class DefaultAppShellBackend:
         codex_state = "error" if auth and is_auth_paired(auth) else "stopped"
         telegram_state = "error" if auth and is_auth_paired(auth) else "stopped"
         status_line = "Configuration required"
-        if runtime and inspection.exists and inspection.metadata and inspection.live:
-            service_state = runtime.service_state.lower()
+        if runtime:
             codex_state = runtime.codex_state.lower().replace("_", " ")
             telegram_state = runtime.telegram_state.lower().replace("_", " ")
-            status_line = f"service={runtime.service_state} telegram={runtime.telegram_state} codex={runtime.codex_state}"
+            if inspection.exists and inspection.metadata and inspection.live:
+                service_state = runtime.service_state.lower()
+                status_line = f"service={runtime.service_state} telegram={runtime.telegram_state} codex={runtime.codex_state}"
+            else:
+                status_line = f"last known telegram={runtime.telegram_state} codex={runtime.codex_state}"
         elif auth and is_auth_paired(auth):
             status_line = "AI Service (Codex) failed to start."
         elif setup:
@@ -479,11 +482,10 @@ class AppShell:
             status = AppShellStatus(
                 service_state="error",
                 codex_state="error",
-                telegram_state="error",
+                telegram_state=status.telegram_state,
                 status_line="AI Service (Codex) failed to start.",
                 detail_lines=[
                     f"{Colors.red}{Colors.bold}Startup error:{Colors.reset} {self.service_error}",
-                    f"{Colors.yellow}Telegram is unavailable until the background service starts successfully.{Colors.reset}",
                     *status.detail_lines,
                 ],
             )
