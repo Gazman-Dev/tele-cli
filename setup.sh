@@ -87,8 +87,10 @@ service_path() {
   )
   local ordered=()
   local segment entry existing
+  local -a entries=()
 
   for segment in "${segments[@]}"; do
+    entries=()
     IFS=':' read -r -a entries <<< "$segment"
     for entry in "${entries[@]}"; do
       [ -n "$entry" ] || continue
