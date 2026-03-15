@@ -13,6 +13,7 @@ from runtime.app_server_runtime import (
     build_app_server_command,
     derive_codex_state,
     make_app_server_start_fn,
+    normalize_initialize_result,
     validate_initialize_result,
 )
 from runtime.runtime import ServiceRuntime
@@ -36,6 +37,14 @@ class AppServerRuntimeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             validate_initialize_result({"protocolVersion": "1.0", "capabilities": {}})
         validate_initialize_result({"protocolVersion": "1.0", "capabilities": {"threads": True}})
+
+    def test_validate_initialize_result_accepts_user_agent_only_response(self) -> None:
+        normalized = normalize_initialize_result({"userAgent": "tele-cli/0.114.0"})
+
+        validate_initialize_result(normalized)
+
+        self.assertEqual(normalized["protocolVersion"], "user-agent-only")
+        self.assertTrue(normalized["capabilities"]["threads"])
 
     def test_bootstrap_persists_codex_server_state_and_runtime_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

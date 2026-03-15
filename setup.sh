@@ -75,6 +75,47 @@ detect_package_manager() {
   echo ""
 }
 
+service_path() {
+  local segments=(
+    "${PATH:-}"
+    "/opt/homebrew/bin"
+    "/usr/local/bin"
+    "/usr/bin"
+    "/bin"
+    "/usr/sbin"
+    "/sbin"
+  )
+  local ordered=()
+  local segment entry existing
+
+  for segment in "${segments[@]}"; do
+    IFS=':' read -r -a entries <<< "$segment"
+    for entry in "${entries[@]}"; do
+      [ -n "$entry" ] || continue
+      existing=0
+      for candidate in "${ordered[@]}"; do
+        if [ "$candidate" = "$entry" ]; then
+          existing=1
+          break
+        fi
+      done
+      if [ "$existing" -eq 0 ]; then
+        ordered+=("$entry")
+      fi
+    done
+  done
+
+  local joined=""
+  for entry in "${ordered[@]}"; do
+    if [ -n "$joined" ]; then
+      joined="${joined}:$entry"
+    else
+      joined="$entry"
+    fi
+  done
+  printf '%s\n' "$joined"
+}
+
 install_git() {
   local pm
   pm="$(detect_package_manager)"
@@ -271,9 +312,10 @@ launch_app_shell() {
 }
 
 install_launchd_service() {
-  local plist_dir plist_path
+  local plist_dir plist_path launch_path
   plist_dir="${HOME}/Library/LaunchAgents"
   plist_path="${plist_dir}/${LAUNCHD_LABEL}.plist"
+  launch_path="$(service_path)"
   ensure_dir "$plist_dir"
   ensure_dir "$STATE_DIR"
 
@@ -286,10 +328,9 @@ install_launchd_service() {
     <string>${LAUNCHD_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-      <string>${PYTHON_BIN}</string>
-      <string>-m</string>
-      <string>cli</string>
-      <string>service</string>
+      <string>/bin/sh</string>
+      <string>-lc</string>
+      <string>PATH="${launch_path}"; export PATH; exec "${PYTHON_BIN}" -m cli service</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -304,7 +345,7 @@ install_launchd_service() {
     <key>EnvironmentVariables</key>
     <dict>
       <key>PATH</key>
-      <string>${PATH}</string>
+      <string>${launch_path}</string>
     </dict>
   </dict>
 </plist>
@@ -317,9 +358,10 @@ EOF
 }
 
 install_systemd_user_service() {
-  local unit_dir unit_path
+  local unit_dir unit_path service_env_path
   unit_dir="${HOME}/.config/systemd/user"
   unit_path="${unit_dir}/${SERVICE_NAME}.service"
+  service_env_path="$(service_path)"
   ensure_dir "$unit_dir"
   ensure_dir "$STATE_DIR"
 
@@ -335,7 +377,7 @@ ExecStart=${PYTHON_BIN} -m cli service
 WorkingDirectory=${HOME}
 Restart=always
 RestartSec=5
-Environment=PATH=${PATH}
+Environment=PATH=${service_env_path}
 
 [Install]
 WantedBy=default.target

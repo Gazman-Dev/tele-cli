@@ -15,11 +15,25 @@ from .runtime import ServiceRuntime
 from .session_store import SessionStore
 
 
+def normalize_initialize_result(initialize_result: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(initialize_result)
+    capabilities = normalized.get("capabilities")
+    if not isinstance(capabilities, dict):
+        capabilities = {}
+    user_agent = normalized.get("userAgent")
+    if isinstance(user_agent, str) and user_agent.strip():
+        normalized.setdefault("protocolVersion", "user-agent-only")
+        capabilities.setdefault("threads", True)
+    normalized["capabilities"] = capabilities
+    return normalized
+
+
 def validate_initialize_result(initialize_result: dict[str, Any]) -> None:
-    protocol_version = initialize_result.get("protocolVersion")
+    normalized = normalize_initialize_result(initialize_result)
+    protocol_version = normalized.get("protocolVersion")
     if not isinstance(protocol_version, str) or not protocol_version.strip():
         raise RuntimeError("App server did not report a usable protocol version.")
-    capabilities = initialize_result.get("capabilities")
+    capabilities = normalized.get("capabilities")
     if not isinstance(capabilities, dict):
         raise RuntimeError("App server did not report capabilities.")
     if not capabilities.get("threads"):
@@ -27,6 +41,8 @@ def validate_initialize_result(initialize_result: dict[str, Any]) -> None:
 
 
 def derive_codex_state(account: dict[str, Any]) -> str:
+    if account.get("requiresOpenaiAuth") is True:
+        return "AUTH_REQUIRED"
     status = str(account.get("status") or account.get("state") or "").lower()
     if status in {"auth_required", "login_required", "expired"}:
         return "AUTH_REQUIRED"
@@ -142,12 +158,13 @@ def build_codex_server_state(
     last_error: str | None = None,
 ) -> CodexServerState:
     login_payload = login_result or {}
+    account_info = account_result.get("account") if isinstance(account_result.get("account"), dict) else {}
     return CodexServerState(
         transport=transport,
         initialized=True,
         protocol_version=initialize_result.get("protocolVersion"),
         account_status=account_result.get("status") or account_result.get("state"),
-        account_type=account_result.get("accountType") or account_result.get("type"),
+        account_type=account_result.get("accountType") or account_result.get("type") or account_info.get("accountType") or account_info.get("type"),
         auth_required=derive_codex_state(account_result) == "AUTH_REQUIRED",
         login_type=login_payload.get("type") or login_payload.get("loginType"),
         login_url=login_payload.get("url") or login_payload.get("authUrl") or login_payload.get("loginUrl"),
@@ -185,7 +202,7 @@ def bootstrap_app_server_session(
     rpc = JsonRpcClient(transport)
     rpc.start()
     client = client_factory(rpc)
-    initialize_result = client.initialize()
+    initialize_result = normalize_initialize_result(client.initialize())
     validate_initialize_result(initialize_result)
     account_result = client.get_account()
     login_result: dict[str, Any] | None = None

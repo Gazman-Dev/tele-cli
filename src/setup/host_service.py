@@ -41,7 +41,7 @@ def launchd_path() -> str:
 
 
 def build_service_command(paths: AppPaths) -> str:
-    return f'"{sys.executable}" -m cli --state-dir "{paths.root}" service'
+    return f'PATH="{launchd_path()}"; export PATH; exec "{sys.executable}" -m cli --state-dir "{paths.root}" service'
 
 
 def build_service_registration(paths: AppPaths) -> ServiceRegistration:
