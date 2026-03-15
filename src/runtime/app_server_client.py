@@ -27,7 +27,8 @@ def _normalize_account_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if "status" not in normalized and "state" not in normalized:
             normalized["status"] = account.get("status") or account.get("state") or "ready"
     requires_openai_auth = normalized.get("requiresOpenaiAuth")
-    if requires_openai_auth is True:
+    has_account = isinstance(account, dict) and bool(account)
+    if requires_openai_auth is True and not has_account:
         normalized["status"] = "auth_required"
     elif requires_openai_auth is False and "status" not in normalized and "state" not in normalized:
         normalized["status"] = "ready"

@@ -30,6 +30,10 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(derive_codex_state({"status": "auth_required"}), "AUTH_REQUIRED")
         self.assertEqual(derive_codex_state({"status": "expired"}), "AUTH_REQUIRED")
         self.assertEqual(derive_codex_state({"status": "ready"}), "RUNNING")
+        self.assertEqual(
+            derive_codex_state({"account": {"accountType": "chatgpt"}, "requiresOpenaiAuth": True}),
+            "RUNNING",
+        )
 
     def test_validate_initialize_result_requires_protocol_version_and_threads(self) -> None:
         with self.assertRaises(RuntimeError):

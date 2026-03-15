@@ -41,6 +41,14 @@ def validate_initialize_result(initialize_result: dict[str, Any]) -> None:
 
 
 def derive_codex_state(account: dict[str, Any]) -> str:
+    account_info = account.get("account")
+    if isinstance(account_info, dict) and (
+        account_info.get("accountType")
+        or account_info.get("type")
+        or account.get("accountType")
+        or account.get("type")
+    ):
+        return "RUNNING"
     if account.get("requiresOpenaiAuth") is True:
         return "AUTH_REQUIRED"
     status = str(account.get("status") or account.get("state") or "").lower()

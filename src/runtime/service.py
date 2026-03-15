@@ -158,8 +158,14 @@ def update_codex_auth_state(
     persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
     if persisted is None:
         persisted = CodexServerState(transport="stdio://", initialized=True)
+    account_info = account_payload.get("account") if isinstance(account_payload.get("account"), dict) else {}
     persisted.account_status = account_payload.get("status") or account_payload.get("state")
-    persisted.account_type = account_payload.get("accountType") or account_payload.get("type")
+    persisted.account_type = (
+        account_payload.get("accountType")
+        or account_payload.get("type")
+        or account_info.get("accountType")
+        or account_info.get("type")
+    )
     persisted.auth_required = derive_codex_state(account_payload) == "AUTH_REQUIRED"
     if not persisted.auth_required:
         persisted.login_url = None

@@ -45,6 +45,20 @@ class AppServerClientTests(unittest.TestCase):
         self.assertEqual(result["status"], "auth_required")
         self.assertIn("chatgpt", result["supports"])
 
+    def test_get_account_prefers_real_account_over_requires_openai_auth_flag(self) -> None:
+        self.server.on(
+            "account/read",
+            lambda payload: {
+                "account": {"accountType": "chatgpt"},
+                "requiresOpenaiAuth": True,
+            },
+        )
+
+        result = self.client.get_account()
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["accountType"], "chatgpt")
+
     def test_login_account_requests_chatgpt_login_flow(self) -> None:
         self.server.on(
             "account/login/start",
