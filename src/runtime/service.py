@@ -302,6 +302,26 @@ def extract_update_topic_id(update: dict) -> int | None:
 
 
 def extract_assistant_text(params: dict) -> str | None:
+    def _coerce_message_text(value: object) -> str | None:
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, list):
+            parts = [_coerce_message_text(part) for part in value]
+            filtered = [part for part in parts if part]
+            if filtered:
+                return "\n".join(filtered)
+            return None
+        if isinstance(value, dict):
+            for key in ("text", "delta", "outputText", "finalText", "message", "value"):
+                text = _coerce_message_text(value.get(key))
+                if text:
+                    return text
+            for key in ("content", "items", "parts"):
+                text = _coerce_message_text(value.get(key))
+                if text:
+                    return text
+        return None
+
     candidates = [
         params.get("outputText"),
         params.get("delta"),
@@ -311,24 +331,25 @@ def extract_assistant_text(params: dict) -> str | None:
         (params.get("result") or {}).get("text") if isinstance(params.get("result"), dict) else None,
     ]
     for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate
+        text = _coerce_message_text(candidate)
+        if text:
+            return text
     turn = params.get("turn")
     if isinstance(turn, dict):
         for item in turn.get("items") or []:
             if not isinstance(item, dict):
                 continue
             if item.get("type") == "agentMessage":
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
+                text = _coerce_message_text(item.get("text"))
+                if text:
                     return text
     item = params.get("item")
     if isinstance(item, dict) and item.get("type") == "agentMessage":
         phase = item.get("phase")
         if phase == "commentary":
             return None
-        text = item.get("text")
-        if isinstance(text, str) and text.strip():
+        text = _coerce_message_text(item.get("text"))
+        if text:
             return text
     return None
 
@@ -348,6 +369,11 @@ def _shorten_activity_text(text: str, limit: int = 96) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
+
+
+def _humanize_status_label(value: str) -> str:
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value).replace("_", " ").replace("-", " ").split()
+    return " ".join(word.capitalize() for word in words)
 
 
 def _extract_search_hint(arguments: object) -> str | None:
@@ -414,12 +440,23 @@ def extract_event_driven_status(method: str, params: dict) -> str | None:
     if method == "item/agentMessage/delta":
         return "Drafting answer..."
     if method == "thread/status/changed":
-        status = str(params.get("status") or "").lower()
-        if status:
-            words = status.replace("_", " ").replace("-", " ").split()
-            label = " ".join(word.capitalize() for word in words)
-            if label:
-                return label
+        status_value = params.get("status")
+        if isinstance(status_value, dict):
+            status_type = status_value.get("type")
+            if isinstance(status_type, str) and status_type:
+                if status_type == "active":
+                    active_flags = status_value.get("activeFlags")
+                    if isinstance(active_flags, list) and active_flags:
+                        first_flag = active_flags[0]
+                        if isinstance(first_flag, str) and first_flag:
+                            label = _humanize_status_label(first_flag)
+                            if label:
+                                return label
+                    return "Active"
+                label = _humanize_status_label(status_type)
+                if label:
+                    return label
+        status = str(status_value or "").lower()
         if status in {"running", "in_progress", "working"}:
             return "Working..."
     if method == "thread/tokenUsage/updated":
@@ -442,6 +479,40 @@ def build_drafting_preview(current_text: str | None, delta: str | None) -> str:
     if not preview.endswith("..."):
         preview = f"{preview}..."
     return f"Drafting: {preview}"
+
+
+def maybe_stream_partial_output(
+    auth: AuthState,
+    telegram: TelegramClient,
+    recorder: Recorder,
+    session_store: SessionStore,
+    session,
+    *,
+    performance: PerformanceTracker | None = None,
+    now: datetime | None = None,
+    min_interval_seconds: float = 0.6,
+    min_initial_chars: int = 48,
+) -> None:
+    combined = f"{session.streaming_output_text}{session.pending_output_text}".strip()
+    if not combined:
+        return
+    if not session.streaming_output_text:
+        if len(combined) < min_initial_chars and not any(token in combined for token in ("\n", ". ", "! ", "? ", ": ")):
+            return
+    else:
+        last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
+        now = now or datetime.now(timezone.utc)
+        if last_sent_at is not None and (now - last_sent_at).total_seconds() < min_interval_seconds:
+            return
+    flush_buffer(
+        session.session_id,
+        auth,
+        telegram,
+        recorder,
+        session_store,
+        mark_agent=False,
+        performance=performance,
+    )
 
 
 def extract_thinking_text(params: dict) -> str | None:
@@ -851,13 +922,12 @@ def flush_buffer(
     session.streaming_output_text = text
     session.thinking_message_text = ""
     session_store.mark_delivered_output(session, text)
+    session_store.mark_agent_message(session)
     if mark_agent:
         session.streaming_message_id = None
         session.streaming_output_text = ""
         session.thinking_message_text = ""
         session_store.save_session(session)
-    if mark_agent:
-        session_store.mark_agent_message(session)
     session_store.consume_pending_output(session)
     pruned = session_store.prune_detached_sessions()
     if pruned:
@@ -1577,7 +1647,14 @@ def drain_codex_notifications(
             append_thinking_delta(auth, telegram, session, thinking_delta, performance=performance)
             session_store.save_session(session)
             continue
-        if method in {"assistant/message.delta", "item/updated", "item/started", "item/completed", "turn/output"}:
+        if method in {
+            "assistant/message.delta",
+            "item/agentMessage/delta",
+            "item/updated",
+            "item/started",
+            "item/completed",
+            "turn/output",
+        }:
             text = extract_assistant_text(params)
             thinking_text = extract_thinking_text(params)
             activity_text = extract_activity_text(method, params)
@@ -1585,6 +1662,14 @@ def drain_codex_notifications(
                 if performance is not None:
                     performance.mark_reply_started(session, trigger=method)
                 session_store.append_pending_output(session, text)
+                maybe_stream_partial_output(
+                    auth,
+                    telegram,
+                    recorder,
+                    session_store,
+                    session,
+                    performance=performance,
+                )
             elif session is not None and thinking_text:
                 ensure_thinking_message(auth, telegram, session, text=thinking_text, performance=performance)
                 session_store.save_session(session)
@@ -1593,10 +1678,7 @@ def drain_codex_notifications(
                 session_store.save_session(session)
             continue
         if session is not None:
-            if method == "item/agentMessage/delta":
-                status_text = build_drafting_preview(session.thinking_message_text, params.get("delta"))
-            else:
-                status_text = extract_event_driven_status(method, params)
+            status_text = extract_event_driven_status(method, params)
             if status_text:
                 ensure_thinking_message(auth, telegram, session, text=status_text, performance=performance)
                 session_store.save_session(session)
