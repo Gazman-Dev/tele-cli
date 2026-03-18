@@ -437,8 +437,6 @@ def extract_activity_text(method: str, params: dict) -> str | None:
 
 
 def extract_event_driven_status(method: str, params: dict) -> str | None:
-    if method == "item/agentMessage/delta":
-        return "Drafting answer..."
     if method == "thread/status/changed":
         status_value = params.get("status")
         if isinstance(status_value, dict):
@@ -464,23 +462,6 @@ def extract_event_driven_status(method: str, params: dict) -> str | None:
     return None
 
 
-def build_drafting_preview(current_text: str | None, delta: str | None) -> str:
-    if not isinstance(delta, str) or not delta:
-        return "Drafting answer..."
-    existing = ""
-    if isinstance(current_text, str) and current_text.startswith("Drafting: ") and current_text.endswith("..."):
-        existing = current_text[len("Drafting: ") : -3]
-    candidate = f"{existing}{delta}"
-    candidate = candidate.splitlines()[0]
-    candidate = " ".join(candidate.split())
-    if len(candidate) < 12:
-        return "Drafting answer..."
-    preview = _shorten_activity_text(candidate, limit=72).rstrip(". ")
-    if not preview.endswith("..."):
-        preview = f"{preview}..."
-    return f"Drafting: {preview}"
-
-
 def maybe_stream_partial_output(
     auth: AuthState,
     telegram: TelegramClient,
@@ -491,15 +472,11 @@ def maybe_stream_partial_output(
     performance: PerformanceTracker | None = None,
     now: datetime | None = None,
     min_interval_seconds: float = 0.6,
-    min_initial_chars: int = 48,
 ) -> None:
     combined = f"{session.streaming_output_text}{session.pending_output_text}".strip()
     if not combined:
         return
-    if not session.streaming_output_text:
-        if len(combined) < min_initial_chars and not any(token in combined for token in ("\n", ". ", "! ", "? ", ": ")):
-            return
-    else:
+    if session.streaming_output_text:
         last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
         now = now or datetime.now(timezone.utc)
         if last_sent_at is not None and (now - last_sent_at).total_seconds() < min_interval_seconds:
@@ -1662,14 +1639,15 @@ def drain_codex_notifications(
                 if performance is not None:
                     performance.mark_reply_started(session, trigger=method)
                 session_store.append_pending_output(session, text)
-                maybe_stream_partial_output(
-                    auth,
-                    telegram,
-                    recorder,
-                    session_store,
-                    session,
-                    performance=performance,
-                )
+                if method == "item/agentMessage/delta":
+                    maybe_stream_partial_output(
+                        auth,
+                        telegram,
+                        recorder,
+                        session_store,
+                        session,
+                        performance=performance,
+                    )
             elif session is not None and thinking_text:
                 ensure_thinking_message(auth, telegram, session, text=thinking_text, performance=performance)
                 session_store.save_session(session)

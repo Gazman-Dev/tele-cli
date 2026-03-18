@@ -17,7 +17,6 @@ from runtime.app_server_runtime import make_app_server_start_fn
 from runtime.performance import PerformanceTracker
 from runtime.runtime import ServiceRuntime
 from runtime.service import (
-    build_drafting_preview,
     bootstrap_paired_codex,
     drain_codex_approvals,
     drain_codex_notifications,
@@ -1816,7 +1815,7 @@ class ServiceFlowTests(unittest.TestCase):
 
     def test_extract_event_driven_status_from_agent_message_delta(self) -> None:
         text = extract_event_driven_status("item/agentMessage/delta", {})
-        self.assertEqual(text, "Drafting answer...")
+        self.assertIsNone(text)
 
     def test_extract_event_driven_status_from_thread_status_changed(self) -> None:
         text = extract_event_driven_status("thread/status/changed", {"status": {"type": "active"}})
@@ -1828,10 +1827,6 @@ class ServiceFlowTests(unittest.TestCase):
             {"status": {"type": "active", "activeFlags": ["waitingOnApproval"]}},
         )
         self.assertEqual(text, "Waiting On Approval")
-
-    def test_build_drafting_preview_uses_first_line(self) -> None:
-        text = build_drafting_preview(None, "Collecting release notes\nand grouping changes")
-        self.assertEqual(text, "Drafting: Collecting release notes...")
 
     def test_non_default_thinking_text_is_not_overwritten_by_idle_refresh(self) -> None:
         auth = AuthState(
@@ -1929,7 +1924,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [(22, "Checking docs\nComparing schemas")])
         self.assertEqual(updated.thinking_message_text, "Checking docs\nComparing schemas")
 
-    def test_drain_codex_notifications_buffers_short_item_agent_message_delta(self) -> None:
+    def test_drain_codex_notifications_streams_short_item_agent_message_delta(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -1941,6 +1936,8 @@ class ServiceFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.thinking_message_text = "Thinking..."
         store.save_session(session)
 
         class Notification:
@@ -1957,10 +1954,10 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(updated.streaming_output_text, "")
-        self.assertEqual(updated.pending_output_text, "Hello")
+        self.assertEqual(updated.streaming_output_text, "Hello")
+        self.assertEqual(updated.pending_output_text, "")
         self.assertEqual(updated.thinking_message_text, "")
-        self.assertEqual(telegram.messages, [])
+        self.assertEqual(telegram.edits, [(22, 1, "Hello")])
 
     def test_drain_codex_notifications_streams_item_agent_message_delta(self) -> None:
         auth = AuthState(
