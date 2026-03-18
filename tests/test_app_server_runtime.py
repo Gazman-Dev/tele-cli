@@ -162,7 +162,7 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(thread_start["params"]["cwd"], str(paths.root))
         turn_start = next(payload for payload in server.received if payload["method"] == "turn/start")
         self.assertEqual(turn_start["params"]["approvalPolicy"], "never")
-        self.assertEqual(turn_start["params"]["sandboxPolicy"], "danger-full-access")
+        self.assertEqual(turn_start["params"]["sandboxPolicy"], {"type": "dangerFullAccess"})
         self.assertEqual(turn_start["params"]["cwd"], str(paths.root))
         turn_steer = next(payload for payload in server.received if payload["method"] == "turn/steer")
         self.assertEqual(turn_steer["params"]["turnId"], "turn-1")

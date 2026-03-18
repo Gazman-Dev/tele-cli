@@ -59,6 +59,17 @@ def _text_input(text: str) -> list[dict[str, str]]:
     return [{"type": "text", "text": text}]
 
 
+def _normalize_sandbox_policy(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    mapping = {
+        "danger-full-access": {"type": "dangerFullAccess"},
+        "read-only": {"type": "readOnly"},
+        "workspace-write": {"type": "workspaceWrite"},
+    }
+    return mapping.get(value, value)
+
+
 class AppServerClient:
     def __init__(self, rpc: JsonRpcClient):
         self.rpc = rpc
@@ -103,6 +114,8 @@ class AppServerClient:
         return _normalize_thread_payload(self.rpc.request("thread/resume", {"threadId": thread_id}))
 
     def turn_start(self, thread_id: str, text: str, **params: Any) -> dict[str, Any]:
+        if "sandboxPolicy" in params:
+            params["sandboxPolicy"] = _normalize_sandbox_policy(params["sandboxPolicy"])
         payload = {"threadId": thread_id, "input": _text_input(text), **params}
         return _normalize_turn_payload(self.rpc.request("turn/start", payload))
 

@@ -93,7 +93,7 @@ class AppServerClientTests(unittest.TestCase):
         self.assertEqual(self.server.received[0]["params"]["threadId"], "thread-1")
         self.assertEqual(self.server.received[0]["params"]["input"], [{"type": "text", "text": "hello"}])
         self.assertEqual(self.server.received[0]["params"]["approvalPolicy"], "never")
-        self.assertEqual(self.server.received[0]["params"]["sandboxPolicy"], "danger-full-access")
+        self.assertEqual(self.server.received[0]["params"]["sandboxPolicy"], {"type": "dangerFullAccess"})
 
     def test_turn_steer_sends_typed_text_input(self) -> None:
         self.server.on("turn/steer", lambda payload: {"turn": {"id": payload["params"]["turnId"]}})
