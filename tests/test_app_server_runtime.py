@@ -463,7 +463,6 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertEqual(
                 telegram.messages,
                 [
-                    (22, "Tele Cli service connected to Codex App Server."),
                     (
                         22,
                         "A previous turn is still recovering after restart. This chat stays blocked until recovery finishes, /stop is used, or /new starts fresh.",
@@ -503,7 +502,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             )
 
             self.assertIsNotNone(session)
-            self.assertEqual(telegram.messages, [(22, "Tele Cli service connected to Codex App Server.")])
+            self.assertEqual(telegram.messages, [])
 
     def test_start_fn_sends_login_link_when_auth_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -588,7 +587,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertTrue(persisted.initialized)
-            self.assertIn(("telegram", "startup notification failed: telegram timed out"), output)
+            self.assertEqual(output, [])
 
     def test_start_fn_returns_none_when_bootstrap_fails_and_failure_notification_fails(self) -> None:
         class BrokenTelegramClient(FakeTelegramClient):

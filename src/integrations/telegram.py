@@ -40,8 +40,11 @@ class TelegramClient:
             params["offset"] = offset
         return self._request("getUpdates", params=params)
 
-    def send_message(self, chat_id: int, text: str) -> None:
-        self._request("sendMessage", params={"chat_id": chat_id, "text": text})
+    def send_message(self, chat_id: int, text: str) -> dict:
+        return self._request("sendMessage", params={"chat_id": chat_id, "text": text})
+
+    def edit_message_text(self, chat_id: int, message_id: int, text: str) -> dict:
+        return self._request("editMessageText", params={"chat_id": chat_id, "message_id": message_id, "text": text})
 
     def send_typing(self, chat_id: int) -> None:
         self._request("sendChatAction", params={"chat_id": chat_id, "action": "typing"})

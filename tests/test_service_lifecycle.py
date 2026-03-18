@@ -27,9 +27,15 @@ class FakeLockFile:
 class FakeTelegram:
     def __init__(self) -> None:
         self.messages: list[tuple[int, str]] = []
+        self.edits: list[tuple[int, int, str]] = []
 
-    def send_message(self, chat_id: int, text: str) -> None:
+    def send_message(self, chat_id: int, text: str) -> dict:
         self.messages.append((chat_id, text))
+        return {"message_id": len(self.messages)}
+
+    def edit_message_text(self, chat_id: int, message_id: int, text: str) -> dict:
+        self.edits.append((chat_id, message_id, text))
+        return {"message_id": message_id}
 
 
 class FakeRecorder:

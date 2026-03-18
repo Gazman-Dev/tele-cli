@@ -30,7 +30,7 @@ from .app_server_runtime import default_transport_factory, derive_codex_state, m
 from .approval_store import ApprovalStore
 from .codex_cli_config import read_codex_cli_preferences, write_codex_cli_preferences
 from .control import ServiceConflictChoices, isatty, prepare_service_lock, reset_auth, start_codex_session
-from .performance import PerformanceTracker, send_telegram_message
+from .performance import PerformanceTracker, edit_telegram_message, send_telegram_message
 from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
@@ -423,9 +423,16 @@ def flush_buffer(
     session = next((item for item in session_store.load().sessions if item.session_id == session_id), None)
     if session is None:
         return
-    text = session.pending_output_text.strip()
-    if not text:
+    pending_text = session.pending_output_text
+    if not pending_text.strip():
         return
+    text = pending_text.strip()
+    if session.streaming_output_text:
+        streamed_text = session.streaming_output_text.strip()
+        if text.startswith(streamed_text):
+            text = text
+        else:
+            text = f"{session.streaming_output_text}{pending_text}".strip()
     if not session.attached or not auth.telegram_chat_id:
         append_recovery_log(
             session_store.paths.recovery_log,
@@ -439,20 +446,45 @@ def flush_buffer(
             append_recovery_log(session_store.paths.recovery_log, f"detached_sessions_pruned count={pruned}")
         return
     if text == session.last_delivered_output_text:
+        if mark_agent:
+            session.streaming_message_id = None
+            session.streaming_output_text = ""
+            session_store.save_session(session)
         session_store.consume_pending_output(session)
         return
-    send_telegram_message(
-        telegram,
-        auth.telegram_chat_id,
-        text,
-        performance=performance,
-        category="assistant_output",
-        session_id=session.session_id,
-        thread_id=session.thread_id,
-        turn_id=session.active_turn_id or session.last_completed_turn_id,
-    )
+    if session.streaming_message_id is not None:
+        edit_telegram_message(
+            telegram,
+            auth.telegram_chat_id,
+            session.streaming_message_id,
+            text,
+            performance=performance,
+            category="assistant_output",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id or session.last_completed_turn_id,
+        )
+    else:
+        message_id = send_telegram_message(
+            telegram,
+            auth.telegram_chat_id,
+            text,
+            performance=performance,
+            category="assistant_output",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id or session.last_completed_turn_id,
+        )
+        if not mark_agent:
+            session.streaming_message_id = message_id
+            session_store.save_session(session)
     recorder.record("assistant", text)
+    session.streaming_output_text = text
     session_store.mark_delivered_output(session, text)
+    if mark_agent:
+        session.streaming_message_id = None
+        session.streaming_output_text = ""
+        session_store.save_session(session)
     if mark_agent:
         session_store.mark_agent_message(session)
     session_store.consume_pending_output(session)

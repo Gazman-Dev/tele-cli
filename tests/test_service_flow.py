@@ -482,7 +482,7 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertIsNotNone(codex)
         self.assertEqual(self.runtime_state.codex_state, "RUNNING")
-        self.assertEqual(telegram.messages, [(22, "Tele Cli service connected to Codex App Server.")])
+        self.assertEqual(telegram.messages, [])
 
     def test_bootstrap_paired_codex_reports_auth_required_without_failing(self) -> None:
         auth = AuthState(
@@ -1532,6 +1532,46 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.pending_output_text, "")
         self.assertEqual(telegram.messages, [(22, "Hello")])
         self.assertEqual(self.recorder.records, [("assistant", "Hello")])
+
+    def test_partial_stream_is_edited_in_place_until_completion(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": "Hello"}),
+                Notification("assistant/message.partial", {"threadId": "thread-1"}),
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": " world"}),
+                Notification("assistant/message.partial", {"threadId": "thread-1"}),
+                Notification("turn/completed", {"turnId": "turn-1", "outputText": "!"}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.messages, [(22, "Hello")])
+        self.assertEqual(telegram.edits, [(22, 1, "Hello world"), (22, 1, "Hello world!")])
+        self.assertEqual(updated.streaming_message_id, None)
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(updated.last_delivered_output_text, "Hello world!")
 
     def test_flush_idle_partial_outputs_flushes_after_idle_gap(self) -> None:
         auth = AuthState(

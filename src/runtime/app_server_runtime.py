@@ -156,6 +156,10 @@ class AppServerSession:
                     self.performance.mark_thread_ready(session, trigger="thread_start_retry")
         if not thread_id:
             raise RuntimeError("App server did not return a thread id.")
+        session.last_delivered_output_text = ""
+        session.streaming_message_id = None
+        session.streaming_output_text = ""
+        self.session_store.save_session(session)
         turn = self.client.turn_start(thread_id, text)
         session.active_turn_id = turn.get("turnId")
         session.pending_output_text = ""
@@ -346,14 +350,6 @@ def make_app_server_start_fn(
                             handle_output,
                             performance,
                         )
-                else:
-                    notify_telegram_best_effort(
-                        telegram,
-                        auth.telegram_chat_id,
-                        "Tele Cli service connected to Codex App Server.",
-                        handle_output,
-                        performance,
-                    )
                 if session.session_store.has_recovering_session(auth):
                     notify_telegram_best_effort(
                         telegram,

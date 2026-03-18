@@ -146,12 +146,12 @@ def send_telegram_message(
     *,
     performance: PerformanceTracker | None = None,
     **context: Any,
-) -> None:
+) -> int | None:
     started_at = time.monotonic()
     if performance is not None:
         performance.log("telegram_send_started", chat_id=chat_id, text_chars=len(text), **context)
     try:
-        telegram.send_message(chat_id, text)
+        result = telegram.send_message(chat_id, text)
     except Exception as exc:
         if performance is not None:
             performance.log(
@@ -167,6 +167,54 @@ def send_telegram_message(
         performance.log(
             "telegram_send_completed",
             chat_id=chat_id,
+            text_chars=len(text),
+            duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
+            **context,
+        )
+    if isinstance(result, dict):
+        message_id = result.get("message_id")
+        if isinstance(message_id, int):
+            return message_id
+    return None
+
+
+def edit_telegram_message(
+    telegram,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    *,
+    performance: PerformanceTracker | None = None,
+    **context: Any,
+) -> None:
+    started_at = time.monotonic()
+    if performance is not None:
+        performance.log(
+            "telegram_edit_started",
+            chat_id=chat_id,
+            message_id=message_id,
+            text_chars=len(text),
+            **context,
+        )
+    try:
+        telegram.edit_message_text(chat_id, message_id, text)
+    except Exception as exc:
+        if performance is not None:
+            performance.log(
+                "telegram_edit_failed",
+                chat_id=chat_id,
+                message_id=message_id,
+                text_chars=len(text),
+                duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
+                error=str(exc),
+                **context,
+            )
+        raise
+    if performance is not None:
+        performance.log(
+            "telegram_edit_completed",
+            chat_id=chat_id,
+            message_id=message_id,
             text_chars=len(text),
             duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
             **context,
