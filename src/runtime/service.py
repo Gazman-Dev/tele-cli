@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import inspect
+import json
 import queue
 import time
 import threading
@@ -38,6 +39,7 @@ from .telegram_update_store import TelegramUpdateStore
 
 
 LOCAL_AUTH_CALLBACK_RE = re.compile(r"https?://(?:localhost|127\.0\.0\.1):1455/auth/callback\?[^\s]+", re.IGNORECASE)
+TELEGRAM_TEXT_LIMIT = 4000
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -45,6 +47,45 @@ def service_tick_seconds(config: Config) -> float:
     if configured == 0.0:
         return 0.05
     return max(min(configured, 0.1), 0.01)
+
+
+def append_app_server_notification_log(paths: AppPaths, method: str, params: dict) -> None:
+    paths.root.mkdir(parents=True, exist_ok=True)
+    item = params.get("item") if isinstance(params.get("item"), dict) else {}
+    record = {
+        "timestamp": utc_now(),
+        "method": method,
+        "thread_id": params.get("threadId") or params.get("thread_id"),
+        "turn_id": params.get("turnId") or params.get("turn_id"),
+        "item_type": item.get("type"),
+    }
+    with paths.root.joinpath("app_server_notifications.log").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def split_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+    chunks: list[str] = []
+    remaining = stripped
+    while len(remaining) > limit:
+        split_at = remaining.rfind("\n\n", 0, limit + 1)
+        if split_at <= 0:
+            split_at = remaining.rfind("\n", 0, limit + 1)
+        if split_at <= 0:
+            split_at = remaining.rfind(" ", 0, limit + 1)
+        if split_at <= 0:
+            split_at = limit
+        chunk = remaining[:split_at].strip()
+        if not chunk:
+            chunk = remaining[:limit].strip()
+            split_at = limit
+        chunks.append(chunk)
+        remaining = remaining[split_at:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
 
 
 def start_telegram_polling_thread(
@@ -635,32 +676,63 @@ def flush_buffer(
             session_store.save_session(session)
         session_store.consume_pending_output(session)
         return
-    if session.streaming_message_id is not None:
-        edit_telegram_message(
-            telegram,
-            auth.telegram_chat_id,
-            session.streaming_message_id,
-            text,
-            performance=performance,
-            category="assistant_output",
-            session_id=session.session_id,
-            thread_id=session.thread_id,
-            turn_id=session.active_turn_id or session.last_completed_turn_id,
-        )
-    else:
-        message_id = send_telegram_message(
-            telegram,
-            auth.telegram_chat_id,
-            text,
-            performance=performance,
-            category="assistant_output",
-            session_id=session.session_id,
-            thread_id=session.thread_id,
-            turn_id=session.active_turn_id or session.last_completed_turn_id,
-        )
-        if not mark_agent:
-            session.streaming_message_id = message_id
-            session_store.save_session(session)
+    chunks = split_telegram_text(text)
+    if not chunks:
+        return
+    context = {
+        "performance": performance,
+        "category": "assistant_output",
+        "session_id": session.session_id,
+        "thread_id": session.thread_id,
+        "turn_id": session.active_turn_id or session.last_completed_turn_id,
+    }
+    try:
+        if session.streaming_message_id is not None:
+            edit_telegram_message(
+                telegram,
+                auth.telegram_chat_id,
+                session.streaming_message_id,
+                chunks[0],
+                **context,
+            )
+        else:
+            message_id = send_telegram_message(
+                telegram,
+                auth.telegram_chat_id,
+                chunks[0],
+                **context,
+            )
+            if not mark_agent:
+                session.streaming_message_id = message_id
+                session_store.save_session(session)
+        for chunk in chunks[1:]:
+            send_telegram_message(
+                telegram,
+                auth.telegram_chat_id,
+                chunk,
+                **context,
+            )
+    except TelegramError:
+        if session.streaming_message_id is not None:
+            try:
+                edit_telegram_message(
+                    telegram,
+                    auth.telegram_chat_id,
+                    session.streaming_message_id,
+                    "Reply continues below.",
+                    **context,
+                )
+            except TelegramError:
+                pass
+        for chunk in chunks:
+            send_telegram_message(
+                telegram,
+                auth.telegram_chat_id,
+                chunk,
+                **context,
+            )
+        session.streaming_message_id = None
+        session_store.save_session(session)
     recorder.record("assistant", text)
     session.streaming_output_text = text
     session.thinking_message_text = ""
@@ -1382,6 +1454,7 @@ def drain_codex_notifications(
             break
         method = notification.method
         params = notification.params or {}
+        append_app_server_notification_log(paths, method, params)
         if performance is not None:
             performance.mark_notification_received(method, params)
         session = resolve_notification_session(session_store, auth, params)
@@ -1451,7 +1524,7 @@ def drain_codex_notifications(
             if not session_store.is_recoverable(session):
                 continue
             assistant_text = extract_assistant_text(params)
-            if not assistant_text and session.thread_id and hasattr(codex, "read_thread"):
+            if not assistant_text and not session.pending_output_text.strip() and session.thread_id and hasattr(codex, "read_thread"):
                 try:
                     assistant_text = extract_latest_agent_message(codex.read_thread(session.thread_id, include_turns=True))
                 except Exception:

@@ -11,6 +11,7 @@ from core.json_store import load_json
 from core.models import AuthState, CodexServerState, Config, RuntimeState
 from core.paths import build_paths
 from core.state_versions import load_versioned_state
+from integrations.telegram import TelegramError
 from runtime.approval_store import ApprovalRecord, ApprovalStore
 from runtime.app_server_runtime import make_app_server_start_fn
 from runtime.performance import PerformanceTracker
@@ -21,6 +22,7 @@ from runtime.service import (
     drain_codex_notifications,
     ensure_thinking_message,
     extract_assistant_text,
+    flush_buffer,
     flush_idle_partial_outputs,
     maybe_refresh_thinking_message,
     maybe_send_typing_indicator,
@@ -1575,6 +1577,105 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.streaming_message_id, None)
         self.assertEqual(updated.streaming_output_text, "")
         self.assertEqual(updated.last_delivered_output_text, "Hello world!")
+
+    def test_turn_completed_does_not_duplicate_item_completed_agent_message(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        class ThreadReadingCodex(FakeCodex):
+            def read_thread(self, thread_id: str, include_turns: bool = True):
+                return {
+                    "thread": {
+                        "turns": [
+                            {
+                                "items": [
+                                    {
+                                        "type": "agentMessage",
+                                        "text": "Final answer",
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+
+        telegram = FakeTelegramClient()
+        codex = ThreadReadingCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification(
+                    "item/completed",
+                    {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "item": {"type": "agentMessage", "text": "Final answer", "phase": "final_answer"},
+                    },
+                ),
+                Notification("turn/completed", {"threadId": "thread-1", "turn": {"id": "turn-1"}}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.messages, [(22, "Final answer")])
+        self.assertEqual(updated.last_delivered_output_text, "Final answer")
+
+    def test_final_reply_is_chunked_when_placeholder_edit_is_too_large(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.thinking_message_text = "Thinking..."
+        session.pending_output_text = "A" * 5000
+        store.save_session(session)
+
+        class FailingEditTelegram(FakeTelegramClient):
+            def edit_message_text(self, chat_id: int, message_id: int, text: str) -> dict:
+                if len(text) > 4000:
+                    raise TelegramError("HTTP Error 400: Bad Request")
+                return super().edit_message_text(chat_id, message_id, text)
+
+        telegram = FailingEditTelegram()
+
+        flush_buffer(
+            session.session_id,
+            auth,
+            telegram,
+            self.recorder,
+            store,
+            mark_agent=True,
+        )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(len(telegram.edits), 1)
+        self.assertEqual(len(telegram.edits[0][2]), 4000)
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertEqual(len(telegram.messages[0][1]), 1000)
+        self.assertEqual(updated.last_delivered_output_text, "A" * 5000)
 
     def test_ensure_thinking_message_sends_placeholder(self) -> None:
         auth = AuthState(
