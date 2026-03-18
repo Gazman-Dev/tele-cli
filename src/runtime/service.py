@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import inspect
+import queue
 import time
+import threading
 import uuid
 import re
 from urllib.error import HTTPError, URLError
@@ -35,6 +37,61 @@ from .telegram_update_store import TelegramUpdateStore
 
 
 LOCAL_AUTH_CALLBACK_RE = re.compile(r"https?://(?:localhost|127\.0\.0\.1):1455/auth/callback\?[^\s]+", re.IGNORECASE)
+
+
+def service_tick_seconds(config: Config) -> float:
+    configured = max(config.poll_interval_seconds, 0.0)
+    if configured == 0.0:
+        return 0.05
+    return max(min(configured, 0.1), 0.01)
+
+
+def start_telegram_polling_thread(
+    *,
+    paths: AppPaths,
+    config: Config,
+    telegram: TelegramClient,
+    runtime_state: RuntimeState,
+    update_queue: queue.Queue[dict],
+    stop_event: threading.Event,
+    poll_gate: threading.Event,
+) -> threading.Thread:
+    def worker() -> None:
+        offset: int | None = None
+        telegram_failures = 0
+        next_poll_at = 0.0
+        while not stop_event.is_set():
+            if not poll_gate.is_set() or not update_queue.empty():
+                stop_event.wait(0.01)
+                continue
+            now = time.monotonic()
+            if now < next_poll_at:
+                stop_event.wait(min(next_poll_at - now, 0.1))
+                continue
+            try:
+                updates = telegram.get_updates(offset=offset, timeout=20)
+                if runtime_state.telegram_state != "RUNNING":
+                    runtime_state.telegram_state = "RUNNING"
+                    save_json(paths.runtime, runtime_state.to_dict())
+                telegram_failures = 0
+                next_poll_at = 0.0
+            except TelegramError as exc:
+                telegram_failures += 1
+                delay = telegram_retry_delay(config, telegram_failures)
+                next_poll_at = time.monotonic() + delay
+                runtime_state.telegram_state = "BACKOFF"
+                save_json(paths.runtime, runtime_state.to_dict())
+                append_recovery_log(paths.recovery_log, f"telegram poll failed -> backoff={delay:.1f}s error={exc}")
+                continue
+            for update in updates:
+                update_id = update.get("update_id")
+                if isinstance(update_id, int):
+                    offset = update_id + 1
+                update_queue.put(update)
+
+    thread = threading.Thread(target=worker, name="telegram-poll", daemon=True)
+    thread.start()
+    return thread
 
 
 def invoke_start_codex_session_fn(
@@ -751,10 +808,6 @@ def handle_authorized_message(
             category="error",
         )
         return
-    if session_store is not None and performance is not None:
-        tracked_session = session_store.get_current_telegram_session(auth, topic_id)
-        if tracked_session is not None:
-            performance.mark_turn_registered(tracked_session)
     recorder.record("telegram", text)
 
 
@@ -1109,8 +1162,10 @@ def run_service(
     last_typing_sent_at: datetime | None = None
     codex_restart_failures = 0
     next_codex_restart_at = 0.0
-    telegram_failures = 0
-    next_telegram_poll_at = 0.0
+    updates_queue: queue.Queue[dict] = queue.Queue()
+    stop_event = threading.Event()
+    poll_gate = threading.Event()
+    poll_gate.set()
     codex = bootstrap_paired_codex(
         paths=paths,
         config=config,
@@ -1138,8 +1193,17 @@ def run_service(
             performance=performance,
             category="approval",
         )
+    telegram_thread = start_telegram_polling_thread(
+        paths=paths,
+        config=config,
+        telegram=telegram,
+        runtime_state=runtime_state,
+        update_queue=updates_queue,
+        stop_event=stop_event,
+        poll_gate=poll_gate,
+    )
+    threading.Event().wait(0.02)
 
-    offset = None
     try:
         if has_pending_pairing(auth) and isatty():
             complete_pending_pairing(paths, auth, telegram, allow_empty=True)
@@ -1158,25 +1222,14 @@ def run_service(
                 performance=performance,
             )
         while True:
-            updates: list[dict] = []
-            now = time.monotonic()
-            if now >= next_telegram_poll_at:
+            poll_gate.clear()
+            processed_updates = False
+            while True:
                 try:
-                    updates = telegram.get_updates(offset=offset, timeout=20)
-                    if runtime_state.telegram_state != "RUNNING":
-                        runtime_state.telegram_state = "RUNNING"
-                        save_json(paths.runtime, runtime_state.to_dict())
-                    telegram_failures = 0
-                    next_telegram_poll_at = 0.0
-                except TelegramError as exc:
-                    telegram_failures += 1
-                    delay = telegram_retry_delay(config, telegram_failures)
-                    next_telegram_poll_at = now + delay
-                    runtime_state.telegram_state = "BACKOFF"
-                    save_json(paths.runtime, runtime_state.to_dict())
-                    append_recovery_log(paths.recovery_log, f"telegram poll failed -> backoff={delay:.1f}s error={exc}")
-            for update in updates:
-                offset = update["update_id"] + 1
+                    update = updates_queue.get_nowait()
+                except queue.Empty:
+                    break
+                processed_updates = True
                 codex = process_telegram_update(
                     update,
                     paths=paths,
@@ -1228,6 +1281,10 @@ def run_service(
                     next_restart_at=next_codex_restart_at,
                     performance=performance,
                 )
+            if processed_updates:
+                poll_gate.set()
+                threading.Event().wait(0.02)
+                continue
             drain_codex_approvals(paths, auth, telegram, codex, performance)
             drain_codex_notifications(paths, auth, telegram, recorder, codex, runtime, runtime_state, performance)
             flush_idle_partial_outputs(
@@ -1263,8 +1320,13 @@ def run_service(
                 next_restart_at=next_codex_restart_at,
                 performance=performance,
             )
-            time.sleep(config.poll_interval_seconds)
+            poll_gate.set()
+            time.sleep(service_tick_seconds(config))
     finally:
+        threading.Event().wait(0.05)
+        stop_event.set()
+        poll_gate.set()
+        telegram_thread.join(timeout=0.5)
         if codex is not None:
             codex.stop()
             runtime.stop_codex()
