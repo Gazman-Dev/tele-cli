@@ -283,6 +283,124 @@ def extract_assistant_text(params: dict) -> str | None:
     return None
 
 
+def extract_thinking_text(params: dict) -> str | None:
+    candidates = [
+        params.get("reasoning"),
+        params.get("thinking"),
+        params.get("summary"),
+        params.get("thought"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    item = params.get("item")
+    if isinstance(item, dict):
+        item_type = str(item.get("type") or "").lower()
+        if item_type in {"reasoning", "thinking", "thought", "reasoningsummary"}:
+            for key in ("text", "summary", "content"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    items = params.get("items")
+    if isinstance(items, list):
+        for candidate in reversed(items):
+            if not isinstance(candidate, dict):
+                continue
+            item_type = str(candidate.get("type") or "").lower()
+            if item_type not in {"reasoning", "thinking", "thought", "reasoningsummary"}:
+                continue
+            for key in ("text", "summary", "content"):
+                value = candidate.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    return None
+
+
+def default_thinking_text(session) -> str:
+    if not session.last_user_message_at:
+        return "Thinking..."
+    started_at = parse_utc_timestamp(session.last_user_message_at)
+    if started_at is None:
+        return "Thinking..."
+    elapsed = max((datetime.now(timezone.utc) - started_at).total_seconds(), 0.0)
+    if elapsed < 4.0:
+        return "Thinking..."
+    if elapsed < 12.0:
+        return "Still thinking..."
+    if elapsed < 24.0:
+        return "Still thinking. Working through the request..."
+    return "Still thinking. This one is taking longer than usual..."
+
+
+def ensure_thinking_message(
+    auth: AuthState,
+    telegram: TelegramClient,
+    session,
+    *,
+    text: str | None = None,
+    performance: PerformanceTracker | None = None,
+) -> None:
+    if not auth.telegram_chat_id:
+        return
+    if session.streaming_output_text:
+        return
+    display_text = text or default_thinking_text(session)
+    if session.streaming_message_id is not None:
+        if session.thinking_message_text == display_text:
+            return
+        edit_telegram_message(
+            telegram,
+            auth.telegram_chat_id,
+            session.streaming_message_id,
+            display_text,
+            performance=performance,
+            category="assistant_placeholder",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id,
+        )
+        session.thinking_message_text = display_text
+        return
+    message_id = send_telegram_message(
+        telegram,
+        auth.telegram_chat_id,
+        display_text,
+        performance=performance,
+        category="assistant_placeholder",
+        session_id=session.session_id,
+        thread_id=session.thread_id,
+        turn_id=session.active_turn_id,
+    )
+    session.streaming_message_id = message_id
+    session.thinking_message_text = display_text
+
+
+def maybe_refresh_thinking_message(
+    paths: AppPaths,
+    auth: AuthState,
+    telegram: TelegramClient,
+    session_store: SessionStore,
+    *,
+    performance: PerformanceTracker | None = None,
+) -> None:
+    if not auth.telegram_chat_id:
+        return
+    if ApprovalStore(paths).pending():
+        return
+    current = session_store.get_current_telegram_session(auth)
+    if current is None or not current.attached or not current.active_turn_id:
+        return
+    if current.pending_output_text or current.streaming_output_text:
+        return
+    if current.streaming_message_id is None and not current.thinking_message_text:
+        return
+    next_text = default_thinking_text(current)
+    if current.thinking_message_text == next_text:
+        return
+    ensure_thinking_message(auth, telegram, current, text=next_text, performance=performance)
+    session_store.save_session(current)
+
+
 def extract_turn_id(params: dict) -> str | None:
     turn_id = params.get("turnId")
     if isinstance(turn_id, str) and turn_id:
@@ -449,6 +567,7 @@ def flush_buffer(
         if mark_agent:
             session.streaming_message_id = None
             session.streaming_output_text = ""
+            session.thinking_message_text = ""
             session_store.save_session(session)
         session_store.consume_pending_output(session)
         return
@@ -480,10 +599,12 @@ def flush_buffer(
             session_store.save_session(session)
     recorder.record("assistant", text)
     session.streaming_output_text = text
+    session.thinking_message_text = ""
     session_store.mark_delivered_output(session, text)
     if mark_agent:
         session.streaming_message_id = None
         session.streaming_output_text = ""
+        session.thinking_message_text = ""
         session_store.save_session(session)
     if mark_agent:
         session_store.mark_agent_message(session)
@@ -944,6 +1065,11 @@ def handle_authorized_message(
         )
         return
     recorder.record("telegram", text)
+    if session_store is not None and auth.telegram_chat_id:
+        thinking_session = session_store.get_current_telegram_session(auth, topic_id)
+        if thinking_session is not None and thinking_session.active_turn_id:
+            ensure_thinking_message(auth, telegram, thinking_session, performance=performance)
+            session_store.save_session(thinking_session)
 
 
 def process_telegram_update(
@@ -1194,11 +1320,15 @@ def drain_codex_notifications(
         params = notification.params or {}
         if method in {"assistant/message.delta", "item/updated", "turn/output"}:
             text = extract_assistant_text(params)
+            thinking_text = extract_thinking_text(params)
             session = resolve_notification_session(session_store, auth, params)
             if session is not None and text:
                 if performance is not None:
                     performance.mark_reply_started(session, trigger=method)
                 session_store.append_pending_output(session, text)
+            elif session is not None and thinking_text:
+                ensure_thinking_message(auth, telegram, session, text=thinking_text, performance=performance)
+                session_store.save_session(session)
             continue
         if method in {"account/updated", "account/ready", "login/completed"}:
             account_payload = extract_account_payload(params)
@@ -1481,6 +1611,13 @@ def run_service(
                     interval_seconds=config.typing_indicator_interval_seconds,
                     last_sent_at=last_typing_sent_at,
                 )
+                maybe_refresh_thinking_message(
+                    paths,
+                    auth,
+                    telegram,
+                    session_store,
+                    performance=performance,
+                )
                 codex, codex_restart_failures, next_codex_restart_at = maintain_codex_runtime(
                     paths=paths,
                     config=config,
@@ -1519,6 +1656,13 @@ def run_service(
                 session_store,
                 interval_seconds=config.typing_indicator_interval_seconds,
                 last_sent_at=last_typing_sent_at,
+            )
+            maybe_refresh_thinking_message(
+                paths,
+                auth,
+                telegram,
+                session_store,
+                performance=performance,
             )
             codex, codex_restart_failures, next_codex_restart_at = maintain_codex_runtime(
                 paths=paths,

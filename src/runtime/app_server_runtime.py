@@ -159,6 +159,7 @@ class AppServerSession:
         session.last_delivered_output_text = ""
         session.streaming_message_id = None
         session.streaming_output_text = ""
+        session.thinking_message_text = ""
         self.session_store.save_session(session)
         turn = self.client.turn_start(thread_id, text)
         session.active_turn_id = turn.get("turnId")

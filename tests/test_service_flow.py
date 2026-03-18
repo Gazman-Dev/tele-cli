@@ -19,7 +19,9 @@ from runtime.service import (
     bootstrap_paired_codex,
     drain_codex_approvals,
     drain_codex_notifications,
+    ensure_thinking_message,
     flush_idle_partial_outputs,
+    maybe_refresh_thinking_message,
     maybe_send_typing_indicator,
     process_telegram_update,
     extract_login_callback_url,
@@ -1572,6 +1574,87 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.streaming_message_id, None)
         self.assertEqual(updated.streaming_output_text, "")
         self.assertEqual(updated.last_delivered_output_text, "Hello world!")
+
+    def test_ensure_thinking_message_sends_placeholder(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        ensure_thinking_message(auth, telegram, session, text="Thinking...")
+        store.save_session(session)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.messages, [(22, "Thinking...")])
+        self.assertEqual(updated.streaming_message_id, 1)
+        self.assertEqual(updated.thinking_message_text, "Thinking...")
+        self.assertEqual(updated.streaming_output_text, "")
+
+    def test_maybe_refresh_thinking_message_edits_placeholder(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.streaming_message_id = 1
+        session.thinking_message_text = "Thinking..."
+        session.last_user_message_at = (datetime.now(timezone.utc) - timedelta(seconds=15)).isoformat()
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        maybe_refresh_thinking_message(self.paths, auth, telegram, store)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.edits, [(22, 1, "Still thinking. Working through the request...")])
+        self.assertEqual(updated.thinking_message_text, "Still thinking. Working through the request...")
+
+    def test_drain_codex_notifications_surfaces_reasoning_text_before_answer(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification(
+                "item/updated",
+                {"threadId": "thread-1", "item": {"type": "reasoning", "text": "Checking recent release notes..."}},
+            )
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.messages, [(22, "Checking recent release notes...")])
+        self.assertEqual(updated.thinking_message_text, "Checking recent release notes...")
+        self.assertEqual(updated.streaming_output_text, "")
 
     def test_flush_idle_partial_outputs_flushes_after_idle_gap(self) -> None:
         auth = AuthState(
