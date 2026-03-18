@@ -549,29 +549,19 @@ def extract_thinking_delta(method: str, params: dict) -> str | None:
 
 def default_thinking_text(session) -> str:
     if not session.last_user_message_at:
-        return "Thinking..."
+        return "Thinking"
     started_at = parse_utc_timestamp(session.last_user_message_at)
     if started_at is None:
-        return "Thinking..."
+        return "Thinking"
     elapsed = max((datetime.now(timezone.utc) - started_at).total_seconds(), 0.0)
-    if elapsed < 4.0:
-        return "Thinking..."
-    if elapsed < 12.0:
-        return "Still thinking..."
-    if elapsed < 24.0:
-        return "Still thinking. Working through the request..."
-    return "Still thinking. This one is taking longer than usual..."
+    dots = int(elapsed) % 4
+    return f"Thinking{'.' * dots}"
 
 
 def is_default_thinking_text(text: str | None) -> bool:
     if not text:
         return True
-    return text in {
-        "Thinking...",
-        "Still thinking...",
-        "Still thinking. Working through the request...",
-        "Still thinking. This one is taking longer than usual...",
-    }
+    return text in {"Thinking", "Thinking.", "Thinking..", "Thinking..."}
 
 
 def ensure_thinking_message(

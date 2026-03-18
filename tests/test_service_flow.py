@@ -1694,13 +1694,13 @@ class ServiceFlowTests(unittest.TestCase):
         store.save_session(session)
         telegram = FakeTelegramClient()
 
-        ensure_thinking_message(auth, telegram, session, text="Thinking...")
+        ensure_thinking_message(auth, telegram, session, text="Thinking")
         store.save_session(session)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Thinking...")])
+        self.assertEqual(telegram.messages, [(22, "Thinking")])
         self.assertEqual(updated.streaming_message_id, 1)
-        self.assertEqual(updated.thinking_message_text, "Thinking...")
+        self.assertEqual(updated.thinking_message_text, "Thinking")
         self.assertEqual(updated.streaming_output_text, "")
 
     def test_maybe_refresh_thinking_message_edits_placeholder(self) -> None:
@@ -1715,7 +1715,7 @@ class ServiceFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.streaming_message_id = 1
-        session.thinking_message_text = "Thinking..."
+        session.thinking_message_text = "Thinking"
         session.last_user_message_at = (datetime.now(timezone.utc) - timedelta(seconds=15)).isoformat()
         store.save_session(session)
         telegram = FakeTelegramClient()
@@ -1723,8 +1723,8 @@ class ServiceFlowTests(unittest.TestCase):
         maybe_refresh_thinking_message(self.paths, auth, telegram, store)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.edits, [(22, 1, "Still thinking. Working through the request...")])
-        self.assertEqual(updated.thinking_message_text, "Still thinking. Working through the request...")
+        self.assertEqual(telegram.edits, [(22, 1, "Thinking...")])
+        self.assertEqual(updated.thinking_message_text, "Thinking...")
 
     def test_drain_codex_notifications_surfaces_reasoning_text_before_answer(self) -> None:
         auth = AuthState(
