@@ -43,6 +43,7 @@ class FakeCodex:
         self.sent: list[str] = []
         self.sent_topics: list[int | None] = []
         self.interrupted = False
+        self.stopped = False
         self.stop_result = False
         self.interrupt_topics: list[int | None] = []
         self.approved: list[int] = []
@@ -58,6 +59,9 @@ class FakeCodex:
         self.interrupted = True
         self.interrupt_topics.append(topic_id)
         return self.stop_result
+
+    def stop(self) -> None:
+        self.stopped = True
 
     def poll_approval_request(self):
         if self.pending_approvals:
@@ -770,6 +774,178 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIs(returned, codex)
         self.assertTrue(codex.interrupted)
         self.assertEqual(telegram.messages, [(22, "No active turn to stop.")])
+
+    def test_abort_command_interrupts_active_turn(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.stop_result = True
+        update = {"update_id": 12, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "/abort"}}
+
+        with patch("runtime.service.save_json"):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=codex,
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIs(returned, codex)
+        self.assertTrue(codex.interrupted)
+        self.assertEqual(telegram.messages, [(22, "Aborted the active turn.")])
+
+    def test_model_command_updates_codex_config_and_restarts_runtime(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        restarted_codex = FakeCodex()
+        update = {"update_id": 13, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "/model gpt-5.4-mini"}}
+
+        with (
+            patch("runtime.service.save_json"),
+            patch("runtime.service.write_codex_cli_preferences") as write_config,
+            patch("runtime.service.restart_codex_runtime", return_value=restarted_codex) as restart_runtime,
+        ):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=codex,
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIs(returned, restarted_codex)
+        write_config.assert_called_once_with(model="gpt-5.4-mini")
+        restart_runtime.assert_called_once()
+        self.assertEqual(telegram.messages, [(22, 'Model set to "gpt-5.4-mini". Codex runtime restarted.')])
+
+    def test_reasoning_command_updates_codex_config_and_restarts_runtime(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        restarted_codex = FakeCodex()
+        update = {"update_id": 14, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "/reasoning low"}}
+
+        with (
+            patch("runtime.service.save_json"),
+            patch("runtime.service.write_codex_cli_preferences") as write_config,
+            patch("runtime.service.restart_codex_runtime", return_value=restarted_codex) as restart_runtime,
+        ):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=codex,
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIs(returned, restarted_codex)
+        write_config.assert_called_once_with(reasoning="low")
+        restart_runtime.assert_called_once()
+        self.assertEqual(telegram.messages, [(22, 'Reasoning set to "low". Codex runtime restarted.')])
+
+    def test_reasoning_command_rejects_unknown_values(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        update = {"update_id": 15, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "/reasoning turbo"}}
+
+        with (
+            patch("runtime.service.save_json"),
+            patch("runtime.service.write_codex_cli_preferences") as write_config,
+            patch("runtime.service.restart_codex_runtime") as restart_runtime,
+        ):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=codex,
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIs(returned, codex)
+        write_config.assert_not_called()
+        restart_runtime.assert_not_called()
+        self.assertEqual(telegram.messages, [(22, "Reasoning must be one of: minimal, low, medium, high, xhigh.")])
+
+    def test_model_command_requires_value(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        update = {"update_id": 16, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "/model"}}
+
+        with patch("runtime.service.save_json"):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=codex,
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIs(returned, codex)
+        self.assertEqual(telegram.messages, [(22, "Usage: /model <name>")])
 
     def test_drain_codex_approvals_persists_and_notifies(self) -> None:
         auth = AuthState(

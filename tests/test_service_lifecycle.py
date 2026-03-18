@@ -164,11 +164,14 @@ class ServiceLifecycleTests(unittest.TestCase):
         telegram = FakeTelegram()
         recorder = FakeRecorder()
 
-        handle_authorized_message("/status", auth, runtime_state, None, telegram, recorder)
+        with patch("runtime.service.read_codex_cli_preferences", return_value=("gpt-5.4-mini", "low")):
+            handle_authorized_message("/status", auth, runtime_state, None, telegram, recorder)
 
         self.assertEqual(len(telegram.messages), 1)
         self.assertEqual(telegram.messages[0][0], 22)
         self.assertIn("codex=DEGRADED", telegram.messages[0][1])
+        self.assertIn("model=gpt-5.4-mini", telegram.messages[0][1])
+        self.assertIn("reasoning=low", telegram.messages[0][1])
         self.assertEqual(recorder.records, [])
 
     def test_non_status_message_reports_codex_not_ready(self) -> None:

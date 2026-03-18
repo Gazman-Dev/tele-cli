@@ -28,6 +28,7 @@ from integrations.telegram import (
 from setup.setup_flow import complete_pending_pairing
 from .app_server_runtime import default_transport_factory, derive_codex_state, make_app_server_start_fn
 from .approval_store import ApprovalStore
+from .codex_cli_config import read_codex_cli_preferences, write_codex_cli_preferences
 from .control import ServiceConflictChoices, isatty, prepare_service_lock, reset_auth, start_codex_session
 from .performance import PerformanceTracker, send_telegram_message
 from .recorder import Recorder
@@ -142,6 +143,8 @@ def build_status_message(
     runtime_state: RuntimeState,
     session_store: SessionStore | None = None,
     topic_id: int | None = None,
+    model: str | None = None,
+    reasoning: str | None = None,
 ) -> str:
     session_lines: list[str] = []
     if session_store is not None and auth.telegram_chat_id:
@@ -168,6 +171,8 @@ def build_status_message(
         f"telegram={runtime_state.telegram_state}\n"
         f"codex={runtime_state.codex_state}\n"
         f"pairing={describe_pairing(auth)}"
+        + (f"\nmodel={model}" if model else "")
+        + (f"\nreasoning={reasoning}" if reasoning else "")
         + (("\n" + "\n".join(session_lines + approval_lines)) if (session_lines or approval_lines) else "")
     )
 
@@ -190,6 +195,63 @@ def parse_request_command(text: str, command: str) -> int | None:
         return int(text[len(prefix) :].strip())
     except ValueError:
         return None
+
+
+def parse_value_command(text: str, command: str) -> str | None:
+    prefix = f"{command} "
+    if not text.startswith(prefix):
+        return None
+    value = text[len(prefix) :].strip()
+    return value or None
+
+
+def restart_status_text(value: str, label: str, restarted) -> str:
+    suffix = "Codex runtime restarted." if restarted is not None else "Codex restart is pending."
+    return f'{label} set to "{value}". {suffix}'
+
+
+def stop_codex_runtime(codex) -> None:
+    if codex is None or not hasattr(codex, "stop"):
+        return
+    try:
+        codex.stop()
+    except Exception:
+        pass
+
+
+def restart_codex_runtime(
+    *,
+    paths: AppPaths,
+    config: Config,
+    auth: AuthState,
+    runtime: ServiceRuntime,
+    runtime_state: RuntimeState,
+    metadata,
+    app_lock,
+    telegram: TelegramClient,
+    handle_output,
+    codex,
+    start_codex_session_fn,
+    performance: PerformanceTracker | None = None,
+):
+    stop_codex_runtime(codex)
+    runtime.set_codex_state("STOPPED")
+    save_json(paths.runtime, runtime_state.to_dict())
+    restarted = None
+    if is_auth_paired(auth):
+        restarted = invoke_start_codex_session_fn(
+            start_codex_session_fn,
+            config,
+            auth,
+            runtime,
+            runtime_state,
+            metadata,
+            app_lock,
+            telegram,
+            handle_output,
+            performance,
+        )
+    return restarted
 
 
 def extract_update_topic_id(update: dict) -> int | None:
@@ -593,10 +655,11 @@ def handle_authorized_message(
             )
         return
     if text == "/status":
+        model, reasoning = read_codex_cli_preferences()
         send_telegram_message(
             telegram,
             auth.telegram_chat_id,
-            build_status_message(auth, runtime_state, session_store, topic_id),
+            build_status_message(auth, runtime_state, session_store, topic_id, model, reasoning),
             performance=performance,
             category="status",
         )
@@ -756,6 +819,46 @@ def handle_authorized_message(
                 category="status",
             )
         return
+    if text == "/abort":
+        if codex is None:
+            send_telegram_message(
+                telegram,
+                auth.telegram_chat_id,
+                "No active turn to abort.",
+                performance=performance,
+                category="status",
+            )
+            return
+        if not hasattr(codex, "interrupt"):
+            send_telegram_message(
+                telegram,
+                auth.telegram_chat_id,
+                "Abort is not supported by the current Codex runtime.",
+                performance=performance,
+                category="status",
+            )
+            return
+        try:
+            stopped = codex.interrupt(topic_id=topic_id)
+        except TypeError:
+            stopped = codex.interrupt()
+        if stopped:
+            send_telegram_message(
+                telegram,
+                auth.telegram_chat_id,
+                "Aborted the active turn.",
+                performance=performance,
+                category="status",
+            )
+        else:
+            send_telegram_message(
+                telegram,
+                auth.telegram_chat_id,
+                "No active turn to abort.",
+                performance=performance,
+                category="status",
+            )
+        return
     if session_store is not None:
         current = session_store.get_current_telegram_session(auth, topic_id)
         if current is not None and current.status == "RECOVERING_TURN":
@@ -890,7 +993,88 @@ def process_telegram_update(
     if not ok:
         return codex
 
-    if text in {"/status", "/sessions", "/new", "/stop"} or text.startswith("/approve ") or text.startswith("/deny "):
+    if text == "/model":
+        send_telegram_message(
+            telegram,
+            auth.telegram_chat_id,
+            'Usage: /model <name>',
+            performance=performance,
+            category="status",
+        )
+        return codex
+    model_value = parse_value_command(text, "/model")
+    if model_value is not None:
+        write_codex_cli_preferences(model=model_value)
+        codex = restart_codex_runtime(
+            paths=paths,
+            config=config,
+            auth=auth,
+            runtime=runtime,
+            runtime_state=runtime_state,
+            metadata=metadata,
+            app_lock=app_lock,
+            telegram=telegram,
+            handle_output=handle_output,
+            codex=codex,
+            start_codex_session_fn=start_codex_session_fn,
+            performance=performance,
+        )
+        send_telegram_message(
+            telegram,
+            auth.telegram_chat_id,
+            restart_status_text(model_value, "Model", codex),
+            performance=performance,
+            category="status",
+        )
+        return codex
+
+    if text == "/reasoning":
+        send_telegram_message(
+            telegram,
+            auth.telegram_chat_id,
+            'Usage: /reasoning <minimal|low|medium|high|xhigh>',
+            performance=performance,
+            category="status",
+        )
+        return codex
+    reasoning_value = parse_value_command(text, "/reasoning")
+    if reasoning_value is not None:
+        normalized_reasoning = reasoning_value.lower()
+        allowed_reasoning = {"minimal", "low", "medium", "high", "xhigh"}
+        if normalized_reasoning not in allowed_reasoning:
+            send_telegram_message(
+                telegram,
+                auth.telegram_chat_id,
+                "Reasoning must be one of: minimal, low, medium, high, xhigh.",
+                performance=performance,
+                category="status",
+            )
+            return codex
+        write_codex_cli_preferences(reasoning=normalized_reasoning)
+        codex = restart_codex_runtime(
+            paths=paths,
+            config=config,
+            auth=auth,
+            runtime=runtime,
+            runtime_state=runtime_state,
+            metadata=metadata,
+            app_lock=app_lock,
+            telegram=telegram,
+            handle_output=handle_output,
+            codex=codex,
+            start_codex_session_fn=start_codex_session_fn,
+            performance=performance,
+        )
+        send_telegram_message(
+            telegram,
+            auth.telegram_chat_id,
+            restart_status_text(normalized_reasoning, "Reasoning", codex),
+            performance=performance,
+            category="status",
+        )
+        return codex
+
+    if text in {"/status", "/sessions", "/new", "/stop", "/abort"} or text.startswith("/approve ") or text.startswith("/deny "):
         handle_authorized_message(
             text,
             auth,
