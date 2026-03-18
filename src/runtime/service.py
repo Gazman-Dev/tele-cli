@@ -343,6 +343,73 @@ def _coerce_thinking_value(value: object) -> str | None:
     return None
 
 
+def _shorten_activity_text(text: str, limit: int = 96) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
+
+
+def _extract_search_hint(arguments: object) -> str | None:
+    if not isinstance(arguments, dict):
+        return None
+    for key in ("query", "q", "searchTerm", "term", "prompt"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return _shorten_activity_text(value.strip(), limit=60)
+    return None
+
+
+def extract_activity_text(method: str, params: dict) -> str | None:
+    item = params.get("item")
+    if not isinstance(item, dict):
+        return None
+    item_type = str(item.get("type") or "")
+    if item_type == "commandExecution":
+        command = item.get("command")
+        if isinstance(command, str) and command.strip():
+            return f"Running command: {_shorten_activity_text(command.strip())}"
+        return "Running command..."
+    if item_type == "mcpToolCall":
+        server = item.get("server")
+        tool = item.get("tool")
+        if isinstance(server, str) and server and isinstance(tool, str) and tool:
+            return f"Using {server}/{tool}..."
+        if isinstance(tool, str) and tool:
+            return f"Using tool: {tool}..."
+        return "Using external tool..."
+    if item_type == "dynamicToolCall":
+        tool = item.get("tool")
+        arguments = item.get("arguments")
+        if isinstance(tool, str) and tool:
+            lowered = tool.lower()
+            hint = _extract_search_hint(arguments)
+            if "search" in lowered and hint:
+                return f"Searching: {hint}"
+            return f"Using tool: {tool}..."
+        return "Using tool..."
+    if item_type == "collabAgentToolCall":
+        tool = str(item.get("tool") or "")
+        status = str(item.get("status") or "")
+        if tool == "spawnAgent":
+            return "Spawning helper agent..."
+        if tool in {"wait", "closeAgent", "resumeAgent", "sendInput"}:
+            return "Coordinating helper agent..."
+        if status:
+            return "Coordinating helper agents..."
+        return "Using helper agent..."
+    if item_type == "fileChange":
+        return "Applying file changes..."
+    if item_type == "plan":
+        return "Planning next steps..."
+    if item_type == "search":
+        query = _extract_search_hint(item)
+        if query:
+            return f"Searching: {query}"
+        return "Searching..."
+    return None
+
+
 def extract_thinking_text(params: dict) -> str | None:
     candidates = [
         params.get("reasoning"),
@@ -414,6 +481,17 @@ def default_thinking_text(session) -> str:
     return "Still thinking. This one is taking longer than usual..."
 
 
+def is_default_thinking_text(text: str | None) -> bool:
+    if not text:
+        return True
+    return text in {
+        "Thinking...",
+        "Still thinking...",
+        "Still thinking. Working through the request...",
+        "Still thinking. This one is taking longer than usual...",
+    }
+
+
 def ensure_thinking_message(
     auth: AuthState,
     telegram: TelegramClient,
@@ -475,6 +553,8 @@ def maybe_refresh_thinking_message(
     if current.pending_output_text or current.streaming_output_text:
         return
     if current.streaming_message_id is None and not current.thinking_message_text:
+        return
+    if current.thinking_message_text and not is_default_thinking_text(current.thinking_message_text):
         return
     next_text = default_thinking_text(current)
     if current.thinking_message_text == next_text:
@@ -1466,12 +1546,16 @@ def drain_codex_notifications(
         if method in {"assistant/message.delta", "item/updated", "item/started", "item/completed", "turn/output"}:
             text = extract_assistant_text(params)
             thinking_text = extract_thinking_text(params)
+            activity_text = extract_activity_text(method, params)
             if session is not None and text:
                 if performance is not None:
                     performance.mark_reply_started(session, trigger=method)
                 session_store.append_pending_output(session, text)
             elif session is not None and thinking_text:
                 ensure_thinking_message(auth, telegram, session, text=thinking_text, performance=performance)
+                session_store.save_session(session)
+            elif session is not None and activity_text:
+                ensure_thinking_message(auth, telegram, session, text=activity_text, performance=performance)
                 session_store.save_session(session)
             continue
         if method in {"account/updated", "account/ready", "login/completed"}:

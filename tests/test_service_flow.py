@@ -21,9 +21,11 @@ from runtime.service import (
     drain_codex_approvals,
     drain_codex_notifications,
     ensure_thinking_message,
+    extract_activity_text,
     extract_assistant_text,
     flush_buffer,
     flush_idle_partial_outputs,
+    is_default_thinking_text,
     maybe_refresh_thinking_message,
     maybe_send_typing_indicator,
     process_telegram_update,
@@ -1757,6 +1759,81 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [(22, "Checking recent release notes...")])
         self.assertEqual(updated.thinking_message_text, "Checking recent release notes...")
         self.assertEqual(updated.streaming_output_text, "")
+
+    def test_drain_codex_notifications_surfaces_command_activity(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification(
+                "item/started",
+                {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "item": {"type": "commandExecution", "command": "git status --short", "status": "inProgress"},
+                },
+            )
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.messages, [(22, "Running command: git status --short")])
+        self.assertEqual(updated.thinking_message_text, "Running command: git status --short")
+
+    def test_extract_activity_text_from_search_tool(self) -> None:
+        text = extract_activity_text(
+            "item/started",
+            {
+                "item": {
+                    "type": "dynamicToolCall",
+                    "tool": "search",
+                    "arguments": {"query": "latest codex releases"},
+                }
+            },
+        )
+
+        self.assertEqual(text, "Searching: latest codex releases")
+
+    def test_non_default_thinking_text_is_not_overwritten_by_idle_refresh(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.streaming_message_id = 1
+        session.thinking_message_text = "Running command: git status --short"
+        session.last_user_message_at = (datetime.now(timezone.utc) - timedelta(seconds=20)).isoformat()
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        maybe_refresh_thinking_message(self.paths, auth, telegram, store)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.edits, [])
+        self.assertEqual(updated.thinking_message_text, "Running command: git status --short")
 
     def test_drain_codex_notifications_appends_reasoning_text_delta(self) -> None:
         auth = AuthState(
