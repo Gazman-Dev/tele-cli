@@ -11,8 +11,31 @@ from .app_server_client import AppServerClient
 from .approval_store import ApprovalRecord
 from .app_server_process import SubprocessJsonRpcTransport
 from .jsonrpc import JsonRpcClient, JsonRpcNotification, JsonRpcTransport
+from .performance import PerformanceTracker, send_telegram_message
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
+
+
+def notify_telegram_best_effort(
+    telegram,
+    chat_id: int | None,
+    text: str,
+    handle_output: Callable[[str, str], None] | None = None,
+    performance: PerformanceTracker | None = None,
+) -> None:
+    if not chat_id:
+        return
+    try:
+        send_telegram_message(
+            telegram,
+            chat_id,
+            text,
+            performance=performance,
+            category="startup_notification",
+        )
+    except Exception as exc:
+        if handle_output is not None:
+            handle_output("telegram", f"startup notification failed: {exc}")
 
 
 def normalize_initialize_result(initialize_result: dict[str, Any]) -> dict[str, Any]:
@@ -269,6 +292,7 @@ def make_app_server_start_fn(
         app_lock,
         telegram,
         handle_output,
+        performance: PerformanceTracker | None = None,
     ) -> AppServerSession:
         transport = None
         try:
@@ -284,16 +308,37 @@ def make_app_server_start_fn(
             )
             if auth.telegram_chat_id:
                 if runtime_state.codex_state == "AUTH_REQUIRED":
-                    telegram.send_message(auth.telegram_chat_id, "Codex login is required. Telegram remains available.")
+                    notify_telegram_best_effort(
+                        telegram,
+                        auth.telegram_chat_id,
+                        "Codex login is required. Telegram remains available.",
+                        handle_output,
+                        performance,
+                    )
                     persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
                     if persisted is not None and persisted.login_url:
-                        telegram.send_message(auth.telegram_chat_id, f"Complete Codex login: {persisted.login_url}")
+                        notify_telegram_best_effort(
+                            telegram,
+                            auth.telegram_chat_id,
+                            f"Complete Codex login: {persisted.login_url}",
+                            handle_output,
+                            performance,
+                        )
                 else:
-                    telegram.send_message(auth.telegram_chat_id, "Tele Cli service connected to Codex App Server.")
+                    notify_telegram_best_effort(
+                        telegram,
+                        auth.telegram_chat_id,
+                        "Tele Cli service connected to Codex App Server.",
+                        handle_output,
+                        performance,
+                    )
                 if session.session_store.has_recovering_session(auth):
-                    telegram.send_message(
+                    notify_telegram_best_effort(
+                        telegram,
                         auth.telegram_chat_id,
                         "A previous turn is still recovering after restart. This chat stays blocked until recovery finishes, /stop is used, or /new starts fresh.",
+                        handle_output,
+                        performance,
                     )
             return session
         except Exception as exc:
@@ -309,7 +354,13 @@ def make_app_server_start_fn(
                 build_failed_codex_server_state(transport=transport_name, last_error=str(exc)).to_dict(),
             )
             if auth.telegram_chat_id:
-                telegram.send_message(auth.telegram_chat_id, "Codex App Server failed to start. Telegram remains available.")
+                notify_telegram_best_effort(
+                    telegram,
+                    auth.telegram_chat_id,
+                    "Codex App Server failed to start. Telegram remains available.",
+                    handle_output,
+                    performance,
+                )
             return None
 
     return start_app_server_session

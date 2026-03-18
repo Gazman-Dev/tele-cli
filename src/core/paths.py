@@ -20,6 +20,7 @@ class AppPaths:
     codex_server: Path
     recovery_log: Path
     terminal_log: Path
+    performance_log: Path
 
 
 def default_state_dir() -> Path:
@@ -45,4 +46,5 @@ def build_paths(state_dir: Optional[Path | str] = None) -> AppPaths:
         codex_server=root / "codex_server.json",
         recovery_log=root / "recovery.log",
         terminal_log=root / "terminal.log",
+        performance_log=root / "performance.log",
     )

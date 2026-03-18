@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 import uuid
 import unittest
@@ -12,6 +13,7 @@ from core.paths import build_paths
 from core.state_versions import load_versioned_state
 from runtime.approval_store import ApprovalRecord, ApprovalStore
 from runtime.app_server_runtime import make_app_server_start_fn
+from runtime.performance import PerformanceTracker
 from runtime.runtime import ServiceRuntime
 from runtime.service import (
     bootstrap_paired_codex,
@@ -936,6 +938,66 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIsNotNone(updated.last_agent_message_at)
         self.assertEqual(telegram.messages, [(22, "Final answer from Codex")])
         self.assertEqual(self.recorder.records, [("assistant", "Final answer from Codex")])
+
+    def test_performance_log_tracks_agent_and_telegram_timing(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        performance = PerformanceTracker(self.paths.performance_log)
+        update = {"update_id": 50, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "hello"}}
+        codex = FakeCodex()
+
+        with patch("runtime.service.save_json"):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=codex,
+                handle_output=lambda source, line: None,
+                performance=performance,
+            )
+
+        self.assertIs(returned, codex)
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        codex.pending_notifications.append(Notification("assistant/message.delta", {"threadId": "thread-1", "text": "Hello "}))
+        codex.pending_notifications.append(Notification("turn/completed", {"turnId": "turn-1", "outputText": "world"}))
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex, performance=performance)
+
+        records = [
+            json.loads(line)
+            for line in self.paths.performance_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        events = [record["event"] for record in records]
+
+        self.assertIn("agent_request_started", events)
+        self.assertIn("agent_reply_started", events)
+        self.assertIn("agent_reply_finished", events)
+        self.assertIn("telegram_send_started", events)
+        self.assertIn("telegram_send_completed", events)
 
     def test_drain_codex_notifications_reads_nested_turn_id_and_thread_fallback_text(self) -> None:
         auth = AuthState(
