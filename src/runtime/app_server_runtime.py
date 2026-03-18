@@ -161,7 +161,13 @@ class AppServerSession:
         session.streaming_output_text = ""
         session.thinking_message_text = ""
         self.session_store.save_session(session)
-        turn = self.client.turn_start(thread_id, text)
+        turn = self.client.turn_start(
+            thread_id,
+            text,
+            cwd=self.config.state_dir,
+            approvalPolicy=self.config.approval_policy,
+            sandboxPolicy=self.config.sandbox_mode,
+        )
         session.active_turn_id = turn.get("turnId")
         session.pending_output_text = ""
         session.status = "RUNNING_TURN"

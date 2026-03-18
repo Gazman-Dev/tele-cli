@@ -87,11 +87,13 @@ class AppServerClientTests(unittest.TestCase):
     def test_turn_start_sends_thread_id_and_input(self) -> None:
         self.server.on("turn/start", lambda payload: {"turn": {"id": "turn-1"}})
 
-        result = self.client.turn_start("thread-1", "hello")
+        result = self.client.turn_start("thread-1", "hello", approvalPolicy="never", sandboxPolicy="danger-full-access")
 
         self.assertEqual(result["turnId"], "turn-1")
         self.assertEqual(self.server.received[0]["params"]["threadId"], "thread-1")
         self.assertEqual(self.server.received[0]["params"]["input"], [{"type": "text", "text": "hello"}])
+        self.assertEqual(self.server.received[0]["params"]["approvalPolicy"], "never")
+        self.assertEqual(self.server.received[0]["params"]["sandboxPolicy"], "danger-full-access")
 
     def test_turn_steer_sends_typed_text_input(self) -> None:
         self.server.on("turn/steer", lambda payload: {"turn": {"id": payload["params"]["turnId"]}})

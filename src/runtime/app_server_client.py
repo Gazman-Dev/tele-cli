@@ -102,8 +102,9 @@ class AppServerClient:
     def thread_resume(self, thread_id: str) -> dict[str, Any]:
         return _normalize_thread_payload(self.rpc.request("thread/resume", {"threadId": thread_id}))
 
-    def turn_start(self, thread_id: str, text: str) -> dict[str, Any]:
-        return _normalize_turn_payload(self.rpc.request("turn/start", {"threadId": thread_id, "input": _text_input(text)}))
+    def turn_start(self, thread_id: str, text: str, **params: Any) -> dict[str, Any]:
+        payload = {"threadId": thread_id, "input": _text_input(text), **params}
+        return _normalize_turn_payload(self.rpc.request("turn/start", payload))
 
     def turn_steer(self, turn_id: str, text: str) -> dict[str, Any]:
         return _normalize_turn_payload(self.rpc.request("turn/steer", {"turnId": turn_id, "input": _text_input(text)}))

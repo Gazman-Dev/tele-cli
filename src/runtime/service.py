@@ -316,6 +316,27 @@ def extract_thinking_text(params: dict) -> str | None:
     return None
 
 
+def extract_thinking_delta(method: str, params: dict) -> str | None:
+    if method in {
+        "item/reasoning/textDelta",
+        "item/reasoning/summaryTextDelta",
+        "agent_reasoning_delta",
+        "agent_reasoning_raw_content_delta",
+        "reasoning_content_delta",
+        "reasoning_raw_content_delta",
+    }:
+        delta = params.get("delta")
+        if isinstance(delta, str) and delta:
+            return delta
+    if method in {"agent_reasoning", "agent_reasoning_raw_content"}:
+        text = params.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    if method == "item/reasoning/summaryPartAdded":
+        return "\n"
+    return None
+
+
 def default_thinking_text(session) -> str:
     if not session.last_user_message_at:
         return "Thinking..."
@@ -399,6 +420,29 @@ def maybe_refresh_thinking_message(
         return
     ensure_thinking_message(auth, telegram, current, text=next_text, performance=performance)
     session_store.save_session(current)
+
+
+def append_thinking_delta(
+    auth: AuthState,
+    telegram: TelegramClient,
+    session,
+    delta: str,
+    *,
+    performance: PerformanceTracker | None = None,
+) -> None:
+    if not delta:
+        return
+    if session.thinking_message_text:
+        separator = ""
+        if (
+            not session.thinking_message_text.endswith((" ", "\n"))
+            and not delta.startswith((" ", "\n", ".", ",", ";", ":", "!", "?", ")"))
+        ):
+            separator = " "
+        next_text = f"{session.thinking_message_text}{separator}{delta}"
+    else:
+        next_text = delta
+    ensure_thinking_message(auth, telegram, session, text=next_text.strip() or next_text, performance=performance)
 
 
 def extract_turn_id(params: dict) -> str | None:
@@ -1318,10 +1362,15 @@ def drain_codex_notifications(
             break
         method = notification.method
         params = notification.params or {}
+        session = resolve_notification_session(session_store, auth, params)
+        thinking_delta = extract_thinking_delta(method, params)
+        if session is not None and thinking_delta is not None:
+            append_thinking_delta(auth, telegram, session, thinking_delta, performance=performance)
+            session_store.save_session(session)
+            continue
         if method in {"assistant/message.delta", "item/updated", "turn/output"}:
             text = extract_assistant_text(params)
             thinking_text = extract_thinking_text(params)
-            session = resolve_notification_session(session_store, auth, params)
             if session is not None and text:
                 if performance is not None:
                     performance.mark_reply_started(session, trigger=method)
