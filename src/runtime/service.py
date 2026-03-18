@@ -410,6 +410,18 @@ def extract_activity_text(method: str, params: dict) -> str | None:
     return None
 
 
+def extract_event_driven_status(method: str, params: dict) -> str | None:
+    if method == "item/agentMessage/delta":
+        return "Drafting answer..."
+    if method == "thread/status/changed":
+        status = str(params.get("status") or "").lower()
+        if status in {"running", "in_progress", "working"}:
+            return "Working..."
+    if method == "thread/tokenUsage/updated":
+        return "Finalizing answer..."
+    return None
+
+
 def extract_thinking_text(params: dict) -> str | None:
     candidates = [
         params.get("reasoning"),
@@ -1558,6 +1570,11 @@ def drain_codex_notifications(
                 ensure_thinking_message(auth, telegram, session, text=activity_text, performance=performance)
                 session_store.save_session(session)
             continue
+        if session is not None:
+            status_text = extract_event_driven_status(method, params)
+            if status_text:
+                ensure_thinking_message(auth, telegram, session, text=status_text, performance=performance)
+                session_store.save_session(session)
         if method in {"account/updated", "account/ready", "login/completed"}:
             account_payload = extract_account_payload(params)
             if account_payload is None:
