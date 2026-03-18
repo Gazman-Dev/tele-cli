@@ -20,6 +20,7 @@ from runtime.service import (
     drain_codex_approvals,
     drain_codex_notifications,
     ensure_thinking_message,
+    extract_assistant_text,
     flush_idle_partial_outputs,
     maybe_refresh_thinking_message,
     maybe_send_typing_indicator,
@@ -1729,7 +1730,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [(22, "Checking docs\nComparing schemas")])
         self.assertEqual(updated.thinking_message_text, "Checking docs\nComparing schemas")
 
-    def test_drain_codex_notifications_streams_item_agent_message_delta(self) -> None:
+    def test_drain_codex_notifications_ignores_item_agent_message_delta(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -1757,8 +1758,22 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(updated.streaming_output_text, "Hello")
-        self.assertEqual(telegram.messages, [(22, "Hello")])
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(telegram.messages, [])
+
+    def test_extract_assistant_text_ignores_commentary_agent_item(self) -> None:
+        text = extract_assistant_text(
+            {
+                "item": {
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                    "text": "I am browsing docs now.",
+                }
+            }
+        )
+
+        self.assertIsNone(text)
 
     def test_flush_idle_partial_outputs_flushes_after_idle_gap(self) -> None:
         auth = AuthState(

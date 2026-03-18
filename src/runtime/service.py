@@ -283,6 +283,9 @@ def extract_assistant_text(params: dict) -> str | None:
                     return text
     item = params.get("item")
     if isinstance(item, dict) and item.get("type") == "agentMessage":
+        phase = item.get("phase")
+        if phase == "commentary":
+            return None
         text = item.get("text")
         if isinstance(text, str) and text.strip():
             return text
@@ -1417,7 +1420,7 @@ def drain_codex_notifications(
                     category="startup_notification",
                 )
             continue
-        if method in {"assistant/message.partial", "item/agentMessage/delta"}:
+        if method == "assistant/message.partial":
             text = extract_assistant_text(params)
             session = resolve_notification_session(session_store, auth, params)
             if session is not None:
