@@ -17,6 +17,7 @@ from runtime.app_server_runtime import make_app_server_start_fn
 from runtime.performance import PerformanceTracker
 from runtime.runtime import ServiceRuntime
 from runtime.service import (
+    build_drafting_preview,
     bootstrap_paired_codex,
     drain_codex_approvals,
     drain_codex_notifications,
@@ -1817,6 +1818,14 @@ class ServiceFlowTests(unittest.TestCase):
         text = extract_event_driven_status("item/agentMessage/delta", {})
         self.assertEqual(text, "Drafting answer...")
 
+    def test_extract_event_driven_status_from_thread_status_changed(self) -> None:
+        text = extract_event_driven_status("thread/status/changed", {"status": "running_turn"})
+        self.assertEqual(text, "Running Turn")
+
+    def test_build_drafting_preview_uses_first_line(self) -> None:
+        text = build_drafting_preview(None, "Collecting release notes\nand grouping changes")
+        self.assertEqual(text, "Drafting: Collecting release notes...")
+
     def test_non_default_thinking_text_is_not_overwritten_by_idle_refresh(self) -> None:
         auth = AuthState(
             bot_token="token",
@@ -1945,6 +1954,44 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.pending_output_text, "")
         self.assertEqual(updated.thinking_message_text, "Drafting answer...")
         self.assertEqual(telegram.messages, [(22, "Drafting answer...")])
+
+    def test_drain_codex_notifications_previews_agent_message_delta(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification(
+                "item/agentMessage/delta",
+                {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "delta": "Collecting release notes and grouping changes by date.",
+                },
+            )
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.thinking_message_text, "Drafting: Collecting release notes and grouping changes by date...")
+        self.assertEqual(telegram.messages, [(22, "Drafting: Collecting release notes and grouping changes by date...")])
 
     def test_extract_assistant_text_ignores_commentary_agent_item(self) -> None:
         text = extract_assistant_text(

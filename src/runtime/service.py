@@ -415,11 +415,33 @@ def extract_event_driven_status(method: str, params: dict) -> str | None:
         return "Drafting answer..."
     if method == "thread/status/changed":
         status = str(params.get("status") or "").lower()
+        if status:
+            words = status.replace("_", " ").replace("-", " ").split()
+            label = " ".join(word.capitalize() for word in words)
+            if label:
+                return label
         if status in {"running", "in_progress", "working"}:
             return "Working..."
     if method == "thread/tokenUsage/updated":
         return "Finalizing answer..."
     return None
+
+
+def build_drafting_preview(current_text: str | None, delta: str | None) -> str:
+    if not isinstance(delta, str) or not delta:
+        return "Drafting answer..."
+    existing = ""
+    if isinstance(current_text, str) and current_text.startswith("Drafting: ") and current_text.endswith("..."):
+        existing = current_text[len("Drafting: ") : -3]
+    candidate = f"{existing}{delta}"
+    candidate = candidate.splitlines()[0]
+    candidate = " ".join(candidate.split())
+    if len(candidate) < 12:
+        return "Drafting answer..."
+    preview = _shorten_activity_text(candidate, limit=72).rstrip(". ")
+    if not preview.endswith("..."):
+        preview = f"{preview}..."
+    return f"Drafting: {preview}"
 
 
 def extract_thinking_text(params: dict) -> str | None:
@@ -1571,7 +1593,10 @@ def drain_codex_notifications(
                 session_store.save_session(session)
             continue
         if session is not None:
-            status_text = extract_event_driven_status(method, params)
+            if method == "item/agentMessage/delta":
+                status_text = build_drafting_preview(session.thinking_message_text, params.get("delta"))
+            else:
+                status_text = extract_event_driven_status(method, params)
             if status_text:
                 ensure_thinking_message(auth, telegram, session, text=status_text, performance=performance)
                 session_store.save_session(session)
