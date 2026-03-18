@@ -783,6 +783,16 @@ def process_telegram_update(
 
     session_store = SessionStore(paths)
     topic_id = extract_update_topic_id(update)
+    message = update.get("message", {}) or {}
+    chat_id = message.get("chat", {}).get("id")
+    text = (message.get("text") or "").strip()
+    if performance is not None and text:
+        performance.mark_telegram_message_received(
+            update_id=update_id if isinstance(update_id, int) else None,
+            chat_id=int(chat_id) if isinstance(chat_id, int) else None,
+            topic_id=topic_id,
+            text=text,
+        )
     ok, status = register_pairing_request(auth, update)
     save_json(paths.auth, auth.to_dict())
     if status == "already-paired":
@@ -827,7 +837,6 @@ def process_telegram_update(
     if not ok:
         return codex
 
-    text = (update.get("message", {}).get("text") or "").strip()
     if text in {"/status", "/sessions", "/new", "/stop"} or text.startswith("/approve ") or text.startswith("/deny "):
         handle_authorized_message(
             text,

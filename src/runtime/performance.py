@@ -18,6 +18,22 @@ class PerformanceTracker:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"timestamp": utc_now(), "event": event, **fields}, sort_keys=True) + "\n")
 
+    def mark_telegram_message_received(
+        self,
+        *,
+        update_id: int | None,
+        chat_id: int | None,
+        topic_id: int | None,
+        text: str,
+    ) -> None:
+        self.log(
+            "telegram_message_received",
+            update_id=update_id,
+            chat_id=chat_id,
+            topic_id=topic_id,
+            text_chars=len(text),
+        )
+
     def mark_turn_requested(self, session, *, topic_id: int | None, text: str) -> None:
         self._turns[session.session_id] = {
             "requested_at_monotonic": time.monotonic(),
@@ -35,15 +51,40 @@ class PerformanceTracker:
             text_chars=len(text),
         )
 
+    def mark_ai_dispatch_started(self, session) -> None:
+        entry = self._turns.setdefault(session.session_id, {})
+        entry["thread_id"] = session.thread_id
+        entry["turn_id"] = session.active_turn_id
+        self.log(
+            "ai_dispatch_started",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id,
+            topic_id=session.transport_topic_id,
+        )
+
+    def mark_thread_ready(self, session, *, trigger: str) -> None:
+        entry = self._turns.setdefault(session.session_id, {})
+        entry["thread_id"] = session.thread_id
+        self.log(
+            "ai_thread_ready",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id,
+            topic_id=session.transport_topic_id,
+            trigger=trigger,
+        )
+
     def mark_turn_registered(self, session) -> None:
         entry = self._turns.setdefault(session.session_id, {})
         entry["thread_id"] = session.thread_id
         entry["turn_id"] = session.active_turn_id
         self.log(
-            "agent_request_registered",
+            "ai_turn_acknowledged",
             session_id=session.session_id,
             thread_id=session.thread_id,
             turn_id=session.active_turn_id,
+            topic_id=session.transport_topic_id,
         )
 
     def mark_turn_failed(self, session_id: str, *, error: str) -> None:

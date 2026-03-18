@@ -81,11 +81,19 @@ def derive_codex_state(account: dict[str, Any]) -> str:
 
 
 class AppServerSession:
-    def __init__(self, client: AppServerClient, session_store: SessionStore, auth: AuthState, config: Config):
+    def __init__(
+        self,
+        client: AppServerClient,
+        session_store: SessionStore,
+        auth: AuthState,
+        config: Config,
+        performance: PerformanceTracker | None = None,
+    ):
         self.client = client
         self.session_store = session_store
         self.auth = auth
         self.config = config
+        self.performance = performance
         self._resumed_threads: set[str] = set()
 
     def send(self, text: str, topic_id: int | None = None) -> None:
@@ -93,6 +101,8 @@ class AppServerSession:
         if session.status == "RECOVERING_TURN":
             raise RuntimeError("Session is recovering an in-flight turn.")
         self.session_store.mark_user_message(session)
+        if self.performance is not None:
+            self.performance.mark_ai_dispatch_started(session)
         if session.status != "ARCHIVED":
             session.status = "ACTIVE"
         thread_id = session.thread_id
@@ -100,6 +110,8 @@ class AppServerSession:
             self.client.turn_steer(session.active_turn_id, text)
             session.status = "RUNNING_TURN"
             self.session_store.save_session(session)
+            if self.performance is not None:
+                self.performance.mark_turn_registered(session)
             return
         if thread_id:
             if thread_id not in self._resumed_threads:
@@ -114,6 +126,8 @@ class AppServerSession:
                     thread_id = resumed.get("threadId") or thread_id
                     session.thread_id = thread_id
                     self._resumed_threads.add(thread_id)
+                    if self.performance is not None:
+                        self.performance.mark_thread_ready(session, trigger="thread_resume")
         else:
             started = self.client.thread_start(
                 cwd=self.config.state_dir,
@@ -125,6 +139,8 @@ class AppServerSession:
             self.session_store.save_session(session)
             if thread_id:
                 self._resumed_threads.add(thread_id)
+                if self.performance is not None:
+                    self.performance.mark_thread_ready(session, trigger="thread_start")
         if not thread_id:
             started = self.client.thread_start(
                 cwd=self.config.state_dir,
@@ -136,6 +152,8 @@ class AppServerSession:
             self.session_store.save_session(session)
             if thread_id:
                 self._resumed_threads.add(thread_id)
+                if self.performance is not None:
+                    self.performance.mark_thread_ready(session, trigger="thread_start_retry")
         if not thread_id:
             raise RuntimeError("App server did not return a thread id.")
         turn = self.client.turn_start(thread_id, text)
@@ -143,6 +161,8 @@ class AppServerSession:
         session.pending_output_text = ""
         session.status = "RUNNING_TURN"
         self.session_store.save_session(session)
+        if self.performance is not None:
+            self.performance.mark_turn_registered(session)
 
     def interrupt(self, topic_id: int | None = None) -> bool:
         session = self.session_store.get_current_telegram_session(self.auth, topic_id)
@@ -251,6 +271,7 @@ def bootstrap_app_server_session(
     config: Config,
     transport_name: str = "stdio://",
     client_factory: Callable[[JsonRpcClient], AppServerClient] = AppServerClient,
+    performance: PerformanceTracker | None = None,
 ) -> AppServerSession:
     rpc = JsonRpcClient(transport)
     rpc.start()
@@ -275,7 +296,7 @@ def bootstrap_app_server_session(
     save_versioned_state(paths.codex_server, codex_server_state.to_dict())
     runtime.set_codex_state(derive_codex_state(account_result))
     save_json(paths.runtime, runtime_state.to_dict())
-    return AppServerSession(client, session_store, auth, config)
+    return AppServerSession(client, session_store, auth, config, performance=performance)
 
 
 def make_app_server_start_fn(
@@ -305,6 +326,7 @@ def make_app_server_start_fn(
                 transport=transport,
                 config=config,
                 transport_name=transport_name,
+                performance=performance,
             )
             if auth.telegram_chat_id:
                 if runtime_state.codex_state == "AUTH_REQUIRED":

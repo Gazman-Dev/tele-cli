@@ -993,6 +993,7 @@ class ServiceFlowTests(unittest.TestCase):
         ]
         events = [record["event"] for record in records]
 
+        self.assertIn("telegram_message_received", events)
         self.assertIn("agent_request_started", events)
         self.assertIn("agent_reply_started", events)
         self.assertIn("agent_reply_finished", events)
