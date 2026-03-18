@@ -18,6 +18,30 @@ class PerformanceTracker:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"timestamp": utc_now(), "event": event, **fields}, sort_keys=True) + "\n")
 
+    def mark_notification_received(self, method: str, params: dict[str, Any]) -> None:
+        item = params.get("item") if isinstance(params.get("item"), dict) else {}
+        snippet = None
+        for candidate in (
+            params.get("delta"),
+            params.get("text"),
+            params.get("outputText"),
+            params.get("reasoning"),
+            params.get("summary"),
+            item.get("text"),
+        ):
+            if isinstance(candidate, str) and candidate:
+                snippet = candidate[:160]
+                break
+        self.log(
+            "codex_notification_received",
+            method=method,
+            turn_id=params.get("turnId") or params.get("turn_id"),
+            thread_id=params.get("threadId") or params.get("thread_id"),
+            item_type=item.get("type"),
+            keys=sorted(str(key) for key in params.keys()),
+            text_excerpt=snippet,
+        )
+
     def mark_telegram_message_received(
         self,
         *,

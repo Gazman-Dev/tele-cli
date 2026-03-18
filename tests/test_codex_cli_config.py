@@ -29,6 +29,16 @@ class CodexCliConfigTests(unittest.TestCase):
             self.assertIn('model = "old"', text)
             self.assertIn('model_reasoning_effort = "medium"', text)
 
+    def test_write_preferences_can_persist_runtime_policy_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+
+            write_codex_cli_preferences(path=path, approval_policy="never", sandbox_mode="danger-full-access")
+
+            text = path.read_text(encoding="utf-8")
+            self.assertIn('approval_policy = "never"', text)
+            self.assertIn('sandbox_mode = "danger-full-access"', text)
+
 
 if __name__ == "__main__":
     unittest.main()

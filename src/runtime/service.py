@@ -263,6 +263,7 @@ def extract_update_topic_id(update: dict) -> int | None:
 def extract_assistant_text(params: dict) -> str | None:
     candidates = [
         params.get("outputText"),
+        params.get("delta"),
         params.get("text"),
         params.get("finalText"),
         (params.get("result") or {}).get("outputText") if isinstance(params.get("result"), dict) else None,
@@ -280,6 +281,21 @@ def extract_assistant_text(params: dict) -> str | None:
                 text = item.get("text")
                 if isinstance(text, str) and text.strip():
                     return text
+    item = params.get("item")
+    if isinstance(item, dict) and item.get("type") == "agentMessage":
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+    return None
+
+
+def _coerce_thinking_value(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, list):
+        parts = [part.strip() for part in value if isinstance(part, str) and part.strip()]
+        if parts:
+            return "\n".join(parts)
     return None
 
 
@@ -291,16 +307,17 @@ def extract_thinking_text(params: dict) -> str | None:
         params.get("thought"),
     ]
     for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
+        text = _coerce_thinking_value(candidate)
+        if text:
+            return text
     item = params.get("item")
     if isinstance(item, dict):
         item_type = str(item.get("type") or "").lower()
         if item_type in {"reasoning", "thinking", "thought", "reasoningsummary"}:
             for key in ("text", "summary", "content"):
-                value = item.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
+                text = _coerce_thinking_value(item.get(key))
+                if text:
+                    return text
     items = params.get("items")
     if isinstance(items, list):
         for candidate in reversed(items):
@@ -310,9 +327,9 @@ def extract_thinking_text(params: dict) -> str | None:
             if item_type not in {"reasoning", "thinking", "thought", "reasoningsummary"}:
                 continue
             for key in ("text", "summary", "content"):
-                value = candidate.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
+                text = _coerce_thinking_value(candidate.get(key))
+                if text:
+                    return text
     return None
 
 
@@ -332,7 +349,7 @@ def extract_thinking_delta(method: str, params: dict) -> str | None:
         text = params.get("text")
         if isinstance(text, str) and text.strip():
             return text.strip()
-    if method == "item/reasoning/summaryPartAdded":
+    if method in {"item/reasoning/summaryPartAdded", "agent_reasoning_section_break"}:
         return "\n"
     return None
 
@@ -1362,13 +1379,15 @@ def drain_codex_notifications(
             break
         method = notification.method
         params = notification.params or {}
+        if performance is not None:
+            performance.mark_notification_received(method, params)
         session = resolve_notification_session(session_store, auth, params)
         thinking_delta = extract_thinking_delta(method, params)
         if session is not None and thinking_delta is not None:
             append_thinking_delta(auth, telegram, session, thinking_delta, performance=performance)
             session_store.save_session(session)
             continue
-        if method in {"assistant/message.delta", "item/updated", "turn/output"}:
+        if method in {"assistant/message.delta", "item/updated", "item/started", "item/completed", "turn/output"}:
             text = extract_assistant_text(params)
             thinking_text = extract_thinking_text(params)
             if session is not None and text:
@@ -1398,7 +1417,7 @@ def drain_codex_notifications(
                     category="startup_notification",
                 )
             continue
-        if method == "assistant/message.partial":
+        if method in {"assistant/message.partial", "item/agentMessage/delta"}:
             text = extract_assistant_text(params)
             session = resolve_notification_session(session_store, auth, params)
             if session is not None:
@@ -1511,6 +1530,10 @@ def run_service(
     auth = load_json(paths.auth, AuthState.from_dict)
     if not config or not auth:
         raise RuntimeError("Run setup first.")
+    write_codex_cli_preferences(
+        approval_policy=config.approval_policy,
+        sandbox_mode=config.sandbox_mode,
+    )
 
     app_lock, metadata = prepare_service_lock(paths, choices=conflict_choices)
 

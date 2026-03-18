@@ -54,7 +54,6 @@ def start_codex_session(
     metadata.child_codex_pid = runtime_state.codex_pid
     app_lock.write(metadata)
     save_json(app_lock.path.parent / "runtime.json", runtime_state.to_dict())
-    telegram.send_message(auth.telegram_chat_id, "Tele Cli service connected. Starting Codex session.")
     return codex
 
 

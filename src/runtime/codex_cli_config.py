@@ -4,7 +4,9 @@ from pathlib import Path
 import re
 
 
-_ASSIGNMENT_RE = re.compile(r'^\s*(model|model_reasoning_effort)\s*=\s*"([^"]*)"\s*$')
+_ASSIGNMENT_RE = re.compile(
+    r'^\s*(model|model_reasoning_effort|approval_policy|sandbox_mode)\s*=\s*"([^"]*)"\s*$'
+)
 _UNSET = object()
 
 
@@ -35,6 +37,8 @@ def write_codex_cli_preferences(
     path: Path | None = None,
     model=_UNSET,
     reasoning=_UNSET,
+    approval_policy=_UNSET,
+    sandbox_mode=_UNSET,
 ) -> tuple[str | None, str | None]:
     target = path or codex_cli_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -44,6 +48,10 @@ def write_codex_cli_preferences(
         replacements["model"] = str(model)
     if reasoning is not _UNSET:
         replacements["model_reasoning_effort"] = str(reasoning)
+    if approval_policy is not _UNSET:
+        replacements["approval_policy"] = str(approval_policy)
+    if sandbox_mode is not _UNSET:
+        replacements["sandbox_mode"] = str(sandbox_mode)
 
     written: set[str] = set()
     output_lines: list[str] = []
@@ -63,7 +71,7 @@ def write_codex_cli_preferences(
             continue
         output_lines.append(line)
         written.add(key)
-    for key in ("model", "model_reasoning_effort"):
+    for key in ("model", "model_reasoning_effort", "approval_policy", "sandbox_mode"):
         if key in replacements and key not in written:
             output_lines.append(f'{key} = "{replacements[key]}"')
     text = "\n".join(output_lines).rstrip()

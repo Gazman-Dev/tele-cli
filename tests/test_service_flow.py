@@ -1691,6 +1691,75 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.edits, [(22, 1, "Checking release notes")])
         self.assertEqual(updated.thinking_message_text, "Checking release notes")
 
+    def test_drain_codex_notifications_reads_reasoning_arrays_from_completed_items(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification(
+                "item/completed",
+                {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "item": {"type": "reasoning", "summary": ["Checking docs", "Comparing schemas"]},
+                },
+            )
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.messages, [(22, "Checking docs\nComparing schemas")])
+        self.assertEqual(updated.thinking_message_text, "Checking docs\nComparing schemas")
+
+    def test_drain_codex_notifications_streams_item_agent_message_delta(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification("item/agentMessage/delta", {"threadId": "thread-1", "turnId": "turn-1", "delta": "Hello"})
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.streaming_output_text, "Hello")
+        self.assertEqual(telegram.messages, [(22, "Hello")])
+
     def test_flush_idle_partial_outputs_flushes_after_idle_gap(self) -> None:
         auth = AuthState(
             bot_token="token",
