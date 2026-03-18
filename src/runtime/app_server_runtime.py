@@ -96,8 +96,24 @@ class AppServerSession:
         self.performance = performance
         self._resumed_threads: set[str] = set()
 
-    def send(self, text: str, topic_id: int | None = None) -> None:
-        session = self.session_store.get_or_create_telegram_session(self.auth, topic_id)
+    def _scoped_auth(self, *, chat_id: int | None = None, user_id: int | None = None) -> AuthState:
+        scoped = AuthState.from_dict(self.auth.to_dict())
+        if chat_id is not None:
+            scoped.telegram_chat_id = chat_id
+        if user_id is not None:
+            scoped.telegram_user_id = user_id
+        return scoped
+
+    def send(
+        self,
+        text: str,
+        topic_id: int | None = None,
+        *,
+        chat_id: int | None = None,
+        user_id: int | None = None,
+    ) -> None:
+        scoped_auth = self._scoped_auth(chat_id=chat_id, user_id=user_id)
+        session = self.session_store.get_or_create_telegram_session(scoped_auth, topic_id)
         if session.status == "RECOVERING_TURN":
             raise RuntimeError("Session is recovering an in-flight turn.")
         self.session_store.mark_user_message(session)
@@ -175,8 +191,9 @@ class AppServerSession:
         if self.performance is not None:
             self.performance.mark_turn_registered(session)
 
-    def interrupt(self, topic_id: int | None = None) -> bool:
-        session = self.session_store.get_current_telegram_session(self.auth, topic_id)
+    def interrupt(self, topic_id: int | None = None, *, chat_id: int | None = None, user_id: int | None = None) -> bool:
+        scoped_auth = self._scoped_auth(chat_id=chat_id, user_id=user_id)
+        session = self.session_store.get_current_telegram_session(scoped_auth, topic_id)
         if session is None or not session.active_turn_id:
             return False
         self.client.turn_interrupt(session.active_turn_id)

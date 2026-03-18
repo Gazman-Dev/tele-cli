@@ -228,6 +228,15 @@ def session_log_label(session) -> str:
     )
 
 
+def scoped_auth_for_update(auth: AuthState, *, chat_id: int | None, user_id: int | None) -> AuthState:
+    scoped = AuthState.from_dict(auth.to_dict())
+    if chat_id is not None:
+        scoped.telegram_chat_id = chat_id
+    if user_id is not None:
+        scoped.telegram_user_id = user_id
+    return scoped
+
+
 def parse_request_command(text: str, command: str) -> int | None:
     prefix = f"{command} "
     if not text.startswith(prefix):
@@ -597,6 +606,7 @@ def ensure_thinking_message(
         telegram,
         auth.telegram_chat_id,
         display_text,
+        topic_id=session.transport_topic_id,
         performance=performance,
         category="assistant_placeholder",
         session_id=session.session_id,
@@ -852,6 +862,7 @@ def flush_buffer(
                 telegram,
                 auth.telegram_chat_id,
                 chunks[0],
+                topic_id=session.transport_topic_id,
                 **context,
             )
             if not mark_agent:
@@ -862,6 +873,7 @@ def flush_buffer(
                 telegram,
                 auth.telegram_chat_id,
                 chunk,
+                topic_id=session.transport_topic_id,
                 **context,
             )
     except TelegramError:
@@ -881,6 +893,7 @@ def flush_buffer(
                 telegram,
                 auth.telegram_chat_id,
                 chunk,
+                topic_id=session.transport_topic_id,
                 **context,
             )
         session.streaming_message_id = None
@@ -966,7 +979,10 @@ def maybe_send_typing_indicator(
     if last_sent_at is not None and (now - last_sent_at).total_seconds() < interval_seconds:
         return last_sent_at
     if hasattr(telegram, "send_typing"):
-        telegram.send_typing(auth.telegram_chat_id)
+        try:
+            telegram.send_typing(auth.telegram_chat_id, topic_id=current.transport_topic_id)
+        except TypeError:
+            telegram.send_typing(auth.telegram_chat_id)
         return now
     return last_sent_at
 
@@ -1082,6 +1098,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "Codex login callback received. Waiting for Codex to finish sign-in.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1090,6 +1107,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 f"Codex login callback failed: {detail}",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1100,6 +1118,7 @@ def handle_authorized_message(
             telegram,
             auth.telegram_chat_id,
             build_status_message(auth, runtime_state, session_store, topic_id, model, reasoning),
+            topic_id=topic_id,
             performance=performance,
             category="status",
         )
@@ -1111,6 +1130,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "No sessions yet.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1122,6 +1142,7 @@ def handle_authorized_message(
             telegram,
             auth.telegram_chat_id,
             "\n".join(lines),
+            topic_id=topic_id,
             performance=performance,
             category="status",
         )
@@ -1132,6 +1153,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "Session store is not available.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1151,6 +1173,7 @@ def handle_authorized_message(
             telegram,
             auth.telegram_chat_id,
             f"Started new session {session.session_id}.",
+            topic_id=topic_id,
             performance=performance,
             category="status",
             session_id=session.session_id,
@@ -1164,6 +1187,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "Approval handling is not available.",
+                topic_id=topic_id,
                 performance=performance,
                 category="approval",
             )
@@ -1174,6 +1198,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 f"No pending approval {approve_id}.",
+                topic_id=topic_id,
                 performance=performance,
                 category="approval",
             )
@@ -1184,6 +1209,7 @@ def handle_authorized_message(
             telegram,
             auth.telegram_chat_id,
             f"Approved request {approve_id}.",
+            topic_id=topic_id,
             performance=performance,
             category="approval",
         )
@@ -1195,6 +1221,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "Approval handling is not available.",
+                topic_id=topic_id,
                 performance=performance,
                 category="approval",
             )
@@ -1205,6 +1232,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 f"No pending approval {deny_id}.",
+                topic_id=topic_id,
                 performance=performance,
                 category="approval",
             )
@@ -1215,6 +1243,7 @@ def handle_authorized_message(
             telegram,
             auth.telegram_chat_id,
             f"Denied request {deny_id}.",
+            topic_id=topic_id,
             performance=performance,
             category="approval",
         )
@@ -1225,6 +1254,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "No active turn to stop.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1234,19 +1264,24 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "Stop is not supported by the current Codex runtime.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
             return
         try:
-            stopped = codex.interrupt(topic_id=topic_id)
+            stopped = codex.interrupt(topic_id=topic_id, chat_id=auth.telegram_chat_id, user_id=auth.telegram_user_id)
         except TypeError:
-            stopped = codex.interrupt()
+            try:
+                stopped = codex.interrupt(topic_id=topic_id)
+            except TypeError:
+                stopped = codex.interrupt()
         if stopped:
             send_telegram_message(
                 telegram,
                 auth.telegram_chat_id,
                 "Stopped the active turn.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1255,6 +1290,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "No active turn to stop.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1265,6 +1301,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "No active turn to abort.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1274,19 +1311,24 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "Abort is not supported by the current Codex runtime.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
             return
         try:
-            stopped = codex.interrupt(topic_id=topic_id)
+            stopped = codex.interrupt(topic_id=topic_id, chat_id=auth.telegram_chat_id, user_id=auth.telegram_user_id)
         except TypeError:
-            stopped = codex.interrupt()
+            try:
+                stopped = codex.interrupt(topic_id=topic_id)
+            except TypeError:
+                stopped = codex.interrupt()
         if stopped:
             send_telegram_message(
                 telegram,
                 auth.telegram_chat_id,
                 "Aborted the active turn.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1295,6 +1337,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "No active turn to abort.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1306,6 +1349,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 "Current session is recovering an in-flight turn. Wait for recovery, use /stop, or start fresh with /new.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1315,6 +1359,7 @@ def handle_authorized_message(
             telegram,
             auth.telegram_chat_id,
             "Codex is not ready yet.",
+            topic_id=topic_id,
             performance=performance,
             category="status",
         )
@@ -1325,10 +1370,25 @@ def handle_authorized_message(
         session_id = tracked_session.session_id
         performance.mark_turn_requested(tracked_session, topic_id=topic_id, text=text)
     try:
-        codex.send(text, topic_id=topic_id)
+        codex.send(text, topic_id=topic_id, chat_id=auth.telegram_chat_id, user_id=auth.telegram_user_id)
     except TypeError:
         try:
-            codex.send(text)
+            codex.send(text, topic_id=topic_id)
+        except TypeError:
+            try:
+                codex.send(text)
+            except Exception as exc:
+                if performance is not None and session_id is not None:
+                    performance.mark_turn_failed(session_id, error=str(exc))
+                send_telegram_message(
+                    telegram,
+                    auth.telegram_chat_id,
+                    f"Codex request failed: {exc}",
+                    topic_id=topic_id,
+                    performance=performance,
+                    category="error",
+                )
+                return
         except Exception as exc:
             if performance is not None and session_id is not None:
                 performance.mark_turn_failed(session_id, error=str(exc))
@@ -1336,6 +1396,7 @@ def handle_authorized_message(
                 telegram,
                 auth.telegram_chat_id,
                 f"Codex request failed: {exc}",
+                topic_id=topic_id,
                 performance=performance,
                 category="error",
             )
@@ -1347,6 +1408,7 @@ def handle_authorized_message(
             telegram,
             auth.telegram_chat_id,
             f"Codex request failed: {exc}",
+            topic_id=topic_id,
             performance=performance,
             category="error",
         )
@@ -1386,6 +1448,7 @@ def process_telegram_update(
     topic_id = extract_update_topic_id(update)
     message = update.get("message", {}) or {}
     chat_id = message.get("chat", {}).get("id")
+    user_id = message.get("from", {}).get("id")
     text = (message.get("text") or "").strip()
     if performance is not None and text:
         performance.mark_telegram_message_received(
@@ -1403,6 +1466,7 @@ def process_telegram_update(
                 telegram,
                 chat_id,
                 "This bot is already paired to another chat.",
+                topic_id=topic_id,
                 performance=performance,
                 category="pairing",
             )
@@ -1413,6 +1477,7 @@ def process_telegram_update(
                 telegram,
                 auth.pending_chat_id,
                 f"Pairing code: {auth.pairing_code}. Enter this code in the local Tele Cli terminal to authorize this chat.",
+                topic_id=topic_id,
                 performance=performance,
                 category="pairing",
             )
@@ -1437,12 +1502,18 @@ def process_telegram_update(
         return codex
     if not ok:
         return codex
+    scoped_auth = scoped_auth_for_update(
+        auth,
+        chat_id=int(chat_id) if isinstance(chat_id, int) else None,
+        user_id=int(user_id) if isinstance(user_id, int) else None,
+    )
 
     if text == "/model":
         send_telegram_message(
             telegram,
-            auth.telegram_chat_id,
+            scoped_auth.telegram_chat_id,
             'Usage: /model <name>',
+            topic_id=topic_id,
             performance=performance,
             category="status",
         )
@@ -1466,8 +1537,9 @@ def process_telegram_update(
         )
         send_telegram_message(
             telegram,
-            auth.telegram_chat_id,
+            scoped_auth.telegram_chat_id,
             restart_status_text(model_value, "Model", codex),
+            topic_id=topic_id,
             performance=performance,
             category="status",
         )
@@ -1476,8 +1548,9 @@ def process_telegram_update(
     if text == "/reasoning":
         send_telegram_message(
             telegram,
-            auth.telegram_chat_id,
+            scoped_auth.telegram_chat_id,
             'Usage: /reasoning <minimal|low|medium|high|xhigh>',
+            topic_id=topic_id,
             performance=performance,
             category="status",
         )
@@ -1489,8 +1562,9 @@ def process_telegram_update(
         if normalized_reasoning not in allowed_reasoning:
             send_telegram_message(
                 telegram,
-                auth.telegram_chat_id,
+                scoped_auth.telegram_chat_id,
                 "Reasoning must be one of: minimal, low, medium, high, xhigh.",
+                topic_id=topic_id,
                 performance=performance,
                 category="status",
             )
@@ -1512,8 +1586,9 @@ def process_telegram_update(
         )
         send_telegram_message(
             telegram,
-            auth.telegram_chat_id,
+            scoped_auth.telegram_chat_id,
             restart_status_text(normalized_reasoning, "Reasoning", codex),
+            topic_id=topic_id,
             performance=performance,
             category="status",
         )
@@ -1522,7 +1597,7 @@ def process_telegram_update(
     if text in {"/status", "/sessions", "/new", "/stop", "/abort"} or text.startswith("/approve ") or text.startswith("/deny "):
         handle_authorized_message(
             text,
-            auth,
+            scoped_auth,
             runtime_state,
             codex,
             telegram,
@@ -1550,7 +1625,7 @@ def process_telegram_update(
     if text:
         handle_authorized_message(
             text,
-            auth,
+            scoped_auth,
             runtime_state,
             codex,
             telegram,

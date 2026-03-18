@@ -76,6 +76,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(is_auth_paired(auth))
         self.assertEqual(describe_pairing(auth), "not paired")
 
+    def test_same_paired_user_is_authorized_from_different_chat(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        update = {"message": {"chat": {"id": 44}, "from": {"id": 11}, "text": "hello"}}
+
+        ok, status = register_pairing_request(auth, update)
+
+        self.assertTrue(ok)
+        self.assertEqual(status, "authorized")
+
     def test_completed_setup_does_not_trigger_recovery_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))

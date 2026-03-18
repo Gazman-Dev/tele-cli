@@ -168,19 +168,24 @@ def send_telegram_message(
     chat_id: int,
     text: str,
     *,
+    topic_id: int | None = None,
     performance: PerformanceTracker | None = None,
     **context: Any,
 ) -> int | None:
     started_at = time.monotonic()
     if performance is not None:
-        performance.log("telegram_send_started", chat_id=chat_id, text_chars=len(text), **context)
+        performance.log("telegram_send_started", chat_id=chat_id, topic_id=topic_id, text_chars=len(text), **context)
     try:
-        result = telegram.send_message(chat_id, text)
+        try:
+            result = telegram.send_message(chat_id, text, topic_id=topic_id)
+        except TypeError:
+            result = telegram.send_message(chat_id, text)
     except Exception as exc:
         if performance is not None:
             performance.log(
                 "telegram_send_failed",
                 chat_id=chat_id,
+                topic_id=topic_id,
                 text_chars=len(text),
                 duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
                 error=str(exc),
@@ -191,6 +196,7 @@ def send_telegram_message(
         performance.log(
             "telegram_send_completed",
             chat_id=chat_id,
+            topic_id=topic_id,
             text_chars=len(text),
             duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
             **context,

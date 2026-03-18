@@ -149,7 +149,7 @@ class ServiceLifecycleTests(unittest.TestCase):
         self.assertIn("service=RUNNING", status)
         self.assertIn("telegram=RUNNING", status)
         self.assertIn("codex=AUTH_REQUIRED", status)
-        self.assertIn("pairing=paired chat=22 user=11", status)
+        self.assertIn("pairing=paired user=11 default_chat=22", status)
         self.assertIn("stale_approvals=1", status)
 
     def test_status_command_works_without_codex(self) -> None:

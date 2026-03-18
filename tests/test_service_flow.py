@@ -251,6 +251,47 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(started_codex.sent, ["hello topic"])
         self.assertEqual(started_codex.sent_topics, [99])
 
+    def test_regular_update_allows_paired_user_in_different_chat(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        update = {
+            "update_id": 11,
+            "message": {
+                "chat": {"id": 44},
+                "from": {"id": 11},
+                "message_thread_id": 77,
+                "text": "hello group",
+            },
+        }
+        started_codex = FakeCodex()
+
+        with patch("runtime.service.save_json"):
+            codex = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=None,
+                handle_output=lambda source, line: None,
+                start_codex_session_fn=lambda *args, **kwargs: started_codex,
+            )
+
+        self.assertIs(codex, started_codex)
+        self.assertEqual(started_codex.sent, ["hello group"])
+        self.assertEqual(started_codex.sent_topics, [77])
+        self.assertEqual(telegram.messages, [])
+
     def test_regular_update_is_blocked_while_session_is_recovering(self) -> None:
         auth = AuthState(
             bot_token="token",
