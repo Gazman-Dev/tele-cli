@@ -10,3 +10,4 @@ build/
 artifacts
 .test_state
 .schema_local
+.tmp**

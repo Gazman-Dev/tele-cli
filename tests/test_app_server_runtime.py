@@ -546,6 +546,91 @@ class AppServerRuntimeTests(unittest.TestCase):
                 ],
             )
 
+    def test_start_fn_keeps_running_when_success_notification_fails(self) -> None:
+        class BrokenTelegramClient(FakeTelegramClient):
+            def send_message(self, chat_id: int, text: str) -> None:
+                raise TimeoutError("telegram timed out")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            telegram = BrokenTelegramClient()
+            output: list[tuple[str, str]] = []
+            transport = InMemoryJsonRpcTransport()
+            server = FakeAppServer(transport)
+            server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+            server.on("getAccount", lambda payload: {"status": "ready"})
+            start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
+
+            session = start_fn(
+                Config(state_dir=str(paths.root)),
+                auth,
+                runtime,
+                runtime_state,
+                object(),
+                object(),
+                telegram,
+                lambda source, line: output.append((source, line)),
+            )
+
+            self.assertIsNotNone(session)
+            self.assertEqual(runtime_state.codex_state, "RUNNING")
+            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+            self.assertIsNotNone(persisted)
+            assert persisted is not None
+            self.assertTrue(persisted.initialized)
+            self.assertIn(("telegram", "startup notification failed: telegram timed out"), output)
+
+    def test_start_fn_returns_none_when_bootstrap_fails_and_failure_notification_fails(self) -> None:
+        class BrokenTelegramClient(FakeTelegramClient):
+            def send_message(self, chat_id: int, text: str) -> None:
+                raise TimeoutError("telegram timed out")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            telegram = BrokenTelegramClient()
+            output: list[tuple[str, str]] = []
+            start_fn = make_app_server_start_fn(paths, lambda config, auth: (_ for _ in ()).throw(RuntimeError("boom")))
+
+            session = start_fn(
+                Config(state_dir=str(paths.root)),
+                auth,
+                runtime,
+                runtime_state,
+                object(),
+                object(),
+                telegram,
+                lambda source, line: output.append((source, line)),
+            )
+
+            self.assertIsNone(session)
+            self.assertEqual(runtime_state.codex_state, "DEGRADED")
+            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+            self.assertIsNotNone(persisted)
+            assert persisted is not None
+            self.assertFalse(persisted.initialized)
+            self.assertEqual(persisted.last_error, "boom")
+            self.assertIn(("telegram", "startup notification failed: telegram timed out"), output)
+
     def test_start_fn_degrades_runtime_when_transport_factory_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
