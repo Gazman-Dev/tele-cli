@@ -1721,6 +1721,42 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(len(telegram.messages[0][1]), 1000)
         self.assertEqual(updated.last_delivered_output_text, "A" * 5000)
 
+    def test_flush_buffer_routes_group_session_output_to_session_chat(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.transport_chat_id = 44
+        session.transport_topic_id = 77
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.thinking_message_text = "Thinking..."
+        session.pending_output_text = "Hello group"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        flush_buffer(
+            session.session_id,
+            auth,
+            telegram,
+            self.recorder,
+            store,
+            mark_agent=False,
+        )
+
+        updated = store.find_by_thread_id("thread-1")
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertEqual(telegram.edits, [(44, 1, "Hello group")])
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(updated.last_delivered_output_text, "Hello group")
+
     def test_ensure_thinking_message_sends_placeholder(self) -> None:
         auth = AuthState(
             bot_token="token",
@@ -1740,6 +1776,33 @@ class ServiceFlowTests(unittest.TestCase):
 
         updated = store.get_or_create_telegram_session(auth)
         self.assertEqual(telegram.messages, [(22, "Thinking")])
+        self.assertEqual(updated.streaming_message_id, 1)
+        self.assertEqual(updated.thinking_message_text, "Thinking")
+        self.assertEqual(updated.streaming_output_text, "")
+
+    def test_ensure_thinking_message_routes_to_session_chat(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.transport_chat_id = 44
+        session.transport_topic_id = 77
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        ensure_thinking_message(auth, telegram, session, text="Thinking")
+        store.save_session(session)
+
+        updated = store.find_by_thread_id("thread-1")
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertEqual(telegram.messages, [(44, "Thinking", 77)])
         self.assertEqual(updated.streaming_message_id, 1)
         self.assertEqual(updated.thinking_message_text, "Thinking")
         self.assertEqual(updated.streaming_output_text, "")
@@ -2153,6 +2216,35 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertIsNotNone(sent_at)
         self.assertEqual(telegram.typing_actions, [22])
+
+    def test_maybe_send_typing_indicator_routes_to_session_chat(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.transport_chat_id = 44
+        session.transport_topic_id = 77
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        telegram = FakeTelegramClient()
+        sent_at = maybe_send_typing_indicator(
+            self.paths,
+            auth,
+            telegram,
+            store,
+            interval_seconds=4.0,
+            last_sent_at=None,
+            now=datetime.now(timezone.utc),
+        )
+
+        self.assertIsNotNone(sent_at)
+        self.assertEqual(telegram.typing_actions, [(44, 77)])
 
     def test_maybe_send_typing_indicator_is_suppressed_while_approval_is_pending(self) -> None:
         auth = AuthState(

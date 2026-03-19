@@ -228,6 +228,35 @@ def session_log_label(session) -> str:
     )
 
 
+def get_latest_user_session(
+    session_store: SessionStore,
+    auth: AuthState,
+    *,
+    require_active_turn: bool = False,
+):
+    if not auth.telegram_user_id:
+        return None
+    sessions = [
+        session
+        for session in session_store.load().sessions
+        if session.transport == "telegram"
+        and session.transport_user_id == auth.telegram_user_id
+        and session.attached
+        and session_store.is_recoverable(session)
+        and (not require_active_turn or bool(session.active_turn_id))
+    ]
+    if not sessions:
+        return None
+
+    def sort_key(session) -> tuple[str, str]:
+        return (
+            session.last_user_message_at or "",
+            session.last_agent_message_at or "",
+        )
+
+    return max(sessions, key=sort_key)
+
+
 def scoped_auth_for_update(auth: AuthState, *, chat_id: int | None, user_id: int | None) -> AuthState:
     scoped = AuthState.from_dict(auth.to_dict())
     if chat_id is not None:
@@ -581,7 +610,8 @@ def ensure_thinking_message(
     text: str | None = None,
     performance: PerformanceTracker | None = None,
 ) -> None:
-    if not auth.telegram_chat_id:
+    target_chat_id = session.transport_chat_id or auth.telegram_chat_id
+    if not target_chat_id:
         return
     if session.streaming_output_text:
         return
@@ -591,7 +621,7 @@ def ensure_thinking_message(
             return
         edit_telegram_message(
             telegram,
-            auth.telegram_chat_id,
+            target_chat_id,
             session.streaming_message_id,
             display_text,
             performance=performance,
@@ -604,7 +634,7 @@ def ensure_thinking_message(
         return
     message_id = send_telegram_message(
         telegram,
-        auth.telegram_chat_id,
+        target_chat_id,
         display_text,
         topic_id=session.transport_topic_id,
         performance=performance,
@@ -625,11 +655,9 @@ def maybe_refresh_thinking_message(
     *,
     performance: PerformanceTracker | None = None,
 ) -> None:
-    if not auth.telegram_chat_id:
-        return
     if ApprovalStore(paths).pending():
         return
-    current = session_store.get_current_telegram_session(auth)
+    current = get_latest_user_session(session_store, auth, require_active_turn=True)
     if current is None or not current.attached or not current.active_turn_id:
         return
     if current.pending_output_text or current.streaming_output_text:
@@ -808,6 +836,7 @@ def flush_buffer(
     session = next((item for item in session_store.load().sessions if item.session_id == session_id), None)
     if session is None:
         return
+    target_chat_id = session.transport_chat_id or auth.telegram_chat_id
     pending_text = session.pending_output_text
     if not pending_text.strip():
         return
@@ -818,7 +847,7 @@ def flush_buffer(
             text = text
         else:
             text = f"{session.streaming_output_text}{pending_text}".strip()
-    if not session.attached or not auth.telegram_chat_id:
+    if not session.attached or not target_chat_id:
         append_recovery_log(
             session_store.paths.recovery_log,
             f"hidden_session_output_consumed {session_log_label(session)} delivered_to_telegram=false",
@@ -852,7 +881,7 @@ def flush_buffer(
         if session.streaming_message_id is not None:
             edit_telegram_message(
                 telegram,
-                auth.telegram_chat_id,
+                target_chat_id,
                 session.streaming_message_id,
                 chunks[0],
                 **context,
@@ -860,7 +889,7 @@ def flush_buffer(
         else:
             message_id = send_telegram_message(
                 telegram,
-                auth.telegram_chat_id,
+                target_chat_id,
                 chunks[0],
                 topic_id=session.transport_topic_id,
                 **context,
@@ -871,7 +900,7 @@ def flush_buffer(
         for chunk in chunks[1:]:
             send_telegram_message(
                 telegram,
-                auth.telegram_chat_id,
+                target_chat_id,
                 chunk,
                 topic_id=session.transport_topic_id,
                 **context,
@@ -881,7 +910,7 @@ def flush_buffer(
             try:
                 edit_telegram_message(
                     telegram,
-                    auth.telegram_chat_id,
+                    target_chat_id,
                     session.streaming_message_id,
                     "Reply continues below.",
                     **context,
@@ -891,7 +920,7 @@ def flush_buffer(
         for chunk in chunks:
             send_telegram_message(
                 telegram,
-                auth.telegram_chat_id,
+                target_chat_id,
                 chunk,
                 topic_id=session.transport_topic_id,
                 **context,
@@ -968,21 +997,24 @@ def maybe_send_typing_indicator(
     last_sent_at: datetime | None,
     now: datetime | None = None,
 ) -> datetime | None:
-    if interval_seconds <= 0 or not auth.telegram_chat_id:
+    if interval_seconds <= 0:
         return last_sent_at
     if ApprovalStore(paths).pending():
         return last_sent_at
-    current = session_store.get_current_telegram_session(auth)
+    current = get_latest_user_session(session_store, auth, require_active_turn=True)
     if current is None or not current.attached or not current.active_turn_id:
+        return last_sent_at
+    target_chat_id = current.transport_chat_id or auth.telegram_chat_id
+    if not target_chat_id:
         return last_sent_at
     now = now or datetime.now(timezone.utc)
     if last_sent_at is not None and (now - last_sent_at).total_seconds() < interval_seconds:
         return last_sent_at
     if hasattr(telegram, "send_typing"):
         try:
-            telegram.send_typing(auth.telegram_chat_id, topic_id=current.transport_topic_id)
+            telegram.send_typing(target_chat_id, topic_id=current.transport_topic_id)
         except TypeError:
-            telegram.send_typing(auth.telegram_chat_id)
+            telegram.send_typing(target_chat_id)
         return now
     return last_sent_at
 
