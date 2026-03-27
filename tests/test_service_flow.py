@@ -533,7 +533,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(self.runtime_state.codex_state, "RUNNING")
         self.assertEqual(telegram.messages, [])
 
-    def test_bootstrap_paired_codex_reports_auth_required_without_failing(self) -> None:
+    def test_bootstrap_paired_codex_reports_auth_required_without_telegram_notice(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -564,13 +564,7 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertIsNotNone(codex)
         self.assertEqual(self.runtime_state.codex_state, "AUTH_REQUIRED")
-        self.assertEqual(
-            telegram.messages,
-            [
-                (22, "Codex login is required. Telegram remains available."),
-                (22, "Complete Codex login: https://example.test/login"),
-            ],
-        )
+        self.assertEqual(telegram.messages, [])
 
     def test_extract_login_callback_url_requires_code_and_state(self) -> None:
         url = extract_login_callback_url(
@@ -1324,7 +1318,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIsNone(updated.login_url)
         self.assertIsNone(updated.login_type)
         self.assertEqual(self.runtime_state.codex_state, "RUNNING")
-        self.assertEqual(telegram.messages, [(22, "Codex login completed. Telegram and Codex are ready.")])
+        self.assertEqual(telegram.messages, [])
 
     def test_drain_codex_notifications_flushes_partial_buffer_on_partial_event(self) -> None:
         auth = AuthState(

@@ -172,12 +172,8 @@ class ServiceLoopTests(unittest.TestCase):
             self._run_service_once(paths, telegram, start_fn, app_lock)
 
             self.assertEqual(
-                telegram.messages[:2],
+                telegram.messages,
                 [
-                    (
-                        22,
-                        "A previous turn is still recovering after restart. This chat stays blocked until recovery finishes, /stop is used, or /new starts fresh.",
-                    ),
                     (
                         22,
                         "Current session is recovering an in-flight turn. Wait for recovery, use /stop, or start fresh with /new.",
@@ -320,14 +316,12 @@ class ServiceLoopTests(unittest.TestCase):
                 runtime.set_codex_state("RUNNING")
                 if len(start_calls) == 1:
                     return first
-                telegram_client.send_message(auth_state.telegram_chat_id, "Tele Cli service connected to Codex App Server.")
                 return second
 
             self._run_service_once(paths, telegram, start_fn, app_lock)
 
             self.assertEqual(start_calls, ["start", "start"])
-            self.assertIn((22, "Codex App Server stopped. Restarting in 0.0s. Telegram remains available."), telegram.messages)
-            self.assertIn((22, "Tele Cli service connected to Codex App Server."), telegram.messages)
+            self.assertEqual(telegram.messages, [])
             self.assertTrue(first.stopped)
 
     def test_maintain_codex_runtime_enters_backoff_when_restart_fails(self) -> None:
@@ -394,10 +388,7 @@ class ServiceLoopTests(unittest.TestCase):
             stale = ApprovalStore(paths).stale()
             self.assertEqual(len(stale), 1)
             self.assertEqual(stale[0].request_id, 17)
-            self.assertIn(
-                (22, "1 pending approval request(s) were marked stale after restart."),
-                telegram.messages,
-            )
+            self.assertEqual(telegram.messages, [])
 
     def test_run_service_enters_telegram_backoff_on_poll_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

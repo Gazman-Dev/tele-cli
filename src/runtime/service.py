@@ -1080,14 +1080,6 @@ def maintain_codex_runtime(
         runtime.set_codex_state("BACKOFF")
         save_json(paths.runtime, runtime_state.to_dict())
         append_recovery_log(paths.recovery_log, f"codex child exited -> restart backoff={delay:.1f}s")
-        if auth.telegram_chat_id:
-            send_telegram_message(
-                telegram,
-                auth.telegram_chat_id,
-                f"Codex App Server stopped. Restarting in {delay:.1f}s. Telegram remains available.",
-                performance=performance,
-                category="startup_notification",
-            )
     if codex is None and is_auth_paired(auth) and now >= next_restart_at:
         restarted = invoke_start_codex_session_fn(
             start_codex_session_fn,
@@ -1781,14 +1773,6 @@ def drain_codex_notifications(
                 runtime=runtime,
                 runtime_state=runtime_state,
             )
-            if auth.telegram_chat_id and next_state == "RUNNING":
-                send_telegram_message(
-                    telegram,
-                    auth.telegram_chat_id,
-                    "Codex login completed. Telegram and Codex are ready.",
-                    performance=performance,
-                    category="startup_notification",
-                )
             continue
         if method == "assistant/message.partial":
             text = extract_assistant_text(params)
@@ -1944,14 +1928,6 @@ def run_service(
         debug.emit(source, line)
         runtime_state.last_output_at = utc_now()
         save_json(paths.runtime, runtime_state.to_dict())
-        if auth.telegram_chat_id:
-            send_telegram_message(
-                telegram,
-                auth.telegram_chat_id,
-                f"[{source}] {line[:3500]}",
-                performance=performance,
-                category="debug_output",
-            )
 
     codex = None
     last_typing_sent_at: datetime | None = None
@@ -1981,14 +1957,6 @@ def run_service(
         next_codex_restart_at = time.monotonic() + codex_restart_delay(config, codex_restart_failures)
     save_json(paths.runtime, runtime_state.to_dict())
     append_recovery_log(paths.recovery_log, f"service started session_id={runtime_state.session_id}")
-    if stale_approvals and auth.telegram_chat_id:
-        send_telegram_message(
-            telegram,
-            auth.telegram_chat_id,
-            f"{stale_approvals} pending approval request(s) were marked stale after restart.",
-            performance=performance,
-            category="approval",
-        )
     telegram_thread = start_telegram_polling_thread(
         paths=paths,
         config=config,

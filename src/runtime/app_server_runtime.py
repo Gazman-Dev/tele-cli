@@ -12,32 +12,10 @@ from .approval_store import ApprovalRecord
 from .instructions import render_session_instructions
 from .app_server_process import SubprocessJsonRpcTransport
 from .jsonrpc import JsonRpcClient, JsonRpcNotification, JsonRpcTransport
-from .performance import PerformanceTracker, send_telegram_message
+from .performance import PerformanceTracker
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
 from .sleep import build_refresh_instructions, current_generation
-
-
-def notify_telegram_best_effort(
-    telegram,
-    chat_id: int | None,
-    text: str,
-    handle_output: Callable[[str, str], None] | None = None,
-    performance: PerformanceTracker | None = None,
-) -> None:
-    if not chat_id:
-        return
-    try:
-        send_telegram_message(
-            telegram,
-            chat_id,
-            text,
-            performance=performance,
-            category="startup_notification",
-        )
-    except Exception as exc:
-        if handle_output is not None:
-            handle_output("telegram", f"startup notification failed: {exc}")
 
 
 def normalize_initialize_result(initialize_result: dict[str, Any]) -> dict[str, Any]:
@@ -328,20 +306,6 @@ def build_failed_codex_server_state(
     )
 
 
-def should_notify_failed_start(
-    paths: AppPaths,
-    *,
-    transport: str,
-    last_error: str,
-) -> bool:
-    persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
-    if persisted is None:
-        return True
-    if persisted.initialized:
-        return True
-    return persisted.transport != transport
-
-
 def bootstrap_app_server_session(
     *,
     paths: AppPaths,
@@ -409,32 +373,6 @@ def make_app_server_start_fn(
                 transport_name=transport_name,
                 performance=performance,
             )
-            if auth.telegram_chat_id:
-                if runtime_state.codex_state == "AUTH_REQUIRED":
-                    notify_telegram_best_effort(
-                        telegram,
-                        auth.telegram_chat_id,
-                        "Codex login is required. Telegram remains available.",
-                        handle_output,
-                        performance,
-                    )
-                    persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
-                    if persisted is not None and persisted.login_url:
-                        notify_telegram_best_effort(
-                            telegram,
-                            auth.telegram_chat_id,
-                            f"Complete Codex login: {persisted.login_url}",
-                            handle_output,
-                            performance,
-                        )
-                if session.session_store.has_recovering_session(auth):
-                    notify_telegram_best_effort(
-                        telegram,
-                        auth.telegram_chat_id,
-                        "A previous turn is still recovering after restart. This chat stays blocked until recovery finishes, /stop is used, or /new starts fresh.",
-                        handle_output,
-                        performance,
-                    )
             return session
         except Exception as exc:
             if transport is not None:
@@ -443,25 +381,12 @@ def make_app_server_start_fn(
                 except Exception:
                     pass
             last_error = str(exc)
-            should_notify = should_notify_failed_start(
-                paths,
-                transport=transport_name,
-                last_error=last_error,
-            ) and runtime_state.codex_state != "DEGRADED"
             runtime.set_codex_state("DEGRADED")
             save_json(paths.runtime, runtime_state.to_dict())
             save_versioned_state(
                 paths.codex_server,
                 build_failed_codex_server_state(transport=transport_name, last_error=last_error).to_dict(),
             )
-            if auth.telegram_chat_id and should_notify:
-                notify_telegram_best_effort(
-                    telegram,
-                    auth.telegram_chat_id,
-                    "Codex App Server failed to start. Telegram remains available.",
-                    handle_output,
-                    performance,
-                )
             return None
 
     return start_app_server_session

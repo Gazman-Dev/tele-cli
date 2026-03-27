@@ -468,7 +468,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             assert recovered is not None
             self.assertEqual(recovered.status, "RECOVERING_TURN")
 
-    def test_start_fn_notifies_when_recovering_turn_remains_after_boot(self) -> None:
+    def test_start_fn_keeps_telegram_quiet_when_recovering_turn_remains_after_boot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
@@ -512,15 +512,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             )
 
             self.assertIsNotNone(session)
-            self.assertEqual(
-                telegram.messages,
-                [
-                    (
-                        22,
-                        "A previous turn is still recovering after restart. This chat stays blocked until recovery finishes, /stop is used, or /new starts fresh.",
-                    ),
-                ],
-            )
+            self.assertEqual(telegram.messages, [])
 
     def test_start_fn_does_not_send_recovery_notice_on_clean_boot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -556,7 +548,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertIsNotNone(session)
             self.assertEqual(telegram.messages, [])
 
-    def test_start_fn_sends_login_link_when_auth_is_required(self) -> None:
+    def test_start_fn_keeps_telegram_quiet_when_auth_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             runtime_state = RuntimeState(
@@ -589,13 +581,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             )
 
             self.assertIsNotNone(session)
-            self.assertEqual(
-                telegram.messages,
-                [
-                    (22, "Codex login is required. Telegram remains available."),
-                    (22, "Complete Codex login: https://example.test/login"),
-                ],
-            )
+            self.assertEqual(telegram.messages, [])
 
     def test_start_fn_keeps_running_when_success_notification_fails(self) -> None:
         class BrokenTelegramClient(FakeTelegramClient):
@@ -680,9 +666,9 @@ class AppServerRuntimeTests(unittest.TestCase):
             assert persisted is not None
             self.assertFalse(persisted.initialized)
             self.assertEqual(persisted.last_error, "boom")
-            self.assertIn(("telegram", "startup notification failed: telegram timed out"), output)
+            self.assertEqual(output, [])
 
-    def test_start_fn_suppresses_duplicate_failure_notifications_for_same_error(self) -> None:
+    def test_start_fn_keeps_telegram_quiet_for_repeated_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             runtime_state = RuntimeState(
@@ -721,7 +707,7 @@ class AppServerRuntimeTests(unittest.TestCase):
 
             self.assertIsNone(first)
             self.assertIsNone(second)
-            self.assertEqual(telegram.messages, [(22, "Codex App Server failed to start. Telegram remains available.")])
+            self.assertEqual(telegram.messages, [])
 
     def test_start_fn_degrades_runtime_when_transport_factory_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -757,7 +743,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             assert persisted is not None
             self.assertFalse(persisted.initialized)
             self.assertEqual(persisted.last_error, "boom")
-            self.assertEqual(telegram.messages, [(22, "Codex App Server failed to start. Telegram remains available.")])
+            self.assertEqual(telegram.messages, [])
 
     def test_start_fn_degrades_runtime_when_initialize_is_incompatible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -795,7 +781,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertIn("thread lifecycle", persisted.last_error)
-            self.assertEqual(telegram.messages, [(22, "Codex App Server failed to start. Telegram remains available.")])
+            self.assertEqual(telegram.messages, [])
 
     def test_poll_approval_request_and_reply(self) -> None:
         transport = InMemoryJsonRpcTransport()
