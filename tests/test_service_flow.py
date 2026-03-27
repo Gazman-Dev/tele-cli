@@ -1537,6 +1537,82 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [(22, "Final answer from Codex")])
         self.assertEqual(self.recorder.records, [("assistant", "Final answer from Codex")])
 
+    def test_completed_turn_does_not_duplicate_matching_pending_full_answer(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        final_text = "I do not have human-style ongoing memory by default."
+        codex.pending_notifications.extend(
+            [
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": final_text}),
+                Notification("turn/completed", {"turnId": "turn-1", "outputText": final_text}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_completed_turn_id, "turn-1")
+        self.assertEqual(updated.last_delivered_output_text, final_text)
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(telegram.messages, [(22, final_text)])
+        self.assertEqual(self.recorder.records, [("assistant", final_text)])
+
+    def test_completed_turn_does_not_duplicate_matching_streamed_full_answer(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.streaming_output_text = "Final answer from Codex"
+        session.last_delivered_output_text = "Final answer from Codex"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification("turn/completed", {"turnId": "turn-1", "outputText": "Final answer from Codex"})
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_completed_turn_id, "turn-1")
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(telegram.edits, [])
+        self.assertEqual(self.recorder.records, [])
+
     def test_duplicate_partial_flush_with_same_text_is_ignored(self) -> None:
         auth = AuthState(
             bot_token="token",

@@ -945,6 +945,19 @@ def flush_buffer(
         append_recovery_log(session_store.paths.recovery_log, f"detached_sessions_pruned count={pruned}")
 
 
+def should_append_completion_text(session, assistant_text: str | None) -> bool:
+    if not assistant_text or not assistant_text.strip():
+        return False
+    candidate = assistant_text.strip()
+    if session.pending_output_text.strip() == candidate:
+        return False
+    if session.streaming_output_text.strip() == candidate:
+        return False
+    if not session.pending_output_text.strip() and session.last_delivered_output_text.strip() == candidate:
+        return False
+    return True
+
+
 def parse_utc_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -1810,7 +1823,7 @@ def drain_codex_notifications(
                     assistant_text = extract_latest_agent_message(codex.read_thread(session.thread_id, include_turns=True))
                 except Exception:
                     assistant_text = None
-            if assistant_text:
+            if should_append_completion_text(session, assistant_text):
                 if performance is not None:
                     performance.mark_reply_started(session, trigger=method)
                 session_store.append_pending_output(session, assistant_text)
@@ -1823,6 +1836,12 @@ def drain_codex_notifications(
                     session,
                     outcome="completed" if method == "turn/completed" else "failed",
                 )
+            if not session.pending_output_text.strip():
+                session.streaming_message_id = None
+                session.streaming_output_text = ""
+                session.thinking_message_text = ""
+                session_store.save_session(session)
+                continue
             flush_buffer(
                 session.session_id,
                 auth,
