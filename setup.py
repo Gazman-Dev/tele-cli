@@ -7,7 +7,7 @@ setup(
     description="Single-operator Codex and Telegram terminal bridge",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
-    py_modules=["cli", "app_shell", "app_meta"],
+    py_modules=["cli", "app_shell", "app_meta", "local_chat"],
     python_requires=">=3.9",
     entry_points={
         "console_scripts": [
