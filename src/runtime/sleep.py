@@ -119,6 +119,7 @@ def _build_sleep_prompt(
         if not lines:
             continue
         short_memory_sections.append(f"## Session {session_id}\n" + "\n".join(lines))
+    session_short_memory_text = "\n\n".join(short_memory_sections) if short_memory_sections else "No session short memory entries."
     return (
         "You are maintaining Tele Cli memory during the daily sleep cycle.\n\n"
         "Update the durable long memory and create today's lesson.\n"
@@ -133,7 +134,7 @@ def _build_sleep_prompt(
         "Current long memory:\n"
         f"{current_long_memory}\n\n"
         "Session short memory entries:\n"
-        f"{'\n\n'.join(short_memory_sections) if short_memory_sections else 'No session short memory entries.'}\n"
+        f"{session_short_memory_text}\n"
     )
 
 
