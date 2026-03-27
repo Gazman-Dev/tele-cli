@@ -120,16 +120,7 @@ class AppServerSession:
             scoped.telegram_user_id = user_id
         return scoped
 
-    def send(
-        self,
-        text: str,
-        topic_id: int | None = None,
-        *,
-        chat_id: int | None = None,
-        user_id: int | None = None,
-    ) -> None:
-        scoped_auth = self._scoped_auth(chat_id=chat_id, user_id=user_id)
-        session = self.session_store.get_or_create_telegram_session(scoped_auth, topic_id)
+    def _start_or_steer_turn(self, session, text: str) -> None:
         if session.status == "RECOVERING_TURN":
             raise RuntimeError("Session is recovering an in-flight turn.")
         self.session_store.mark_user_message(session)
@@ -151,7 +142,6 @@ class AppServerSession:
                 try:
                     resumed = self.client.thread_resume(thread_id)
                 except Exception:
-                    # The app server can reject stale thread ids after a restart.
                     session.thread_id = None
                     self.session_store.save_session(session)
                     thread_id = None
@@ -213,9 +203,36 @@ class AppServerSession:
         if self.performance is not None:
             self.performance.mark_turn_registered(session)
 
+    def send(
+        self,
+        text: str,
+        topic_id: int | None = None,
+        *,
+        chat_id: int | None = None,
+        user_id: int | None = None,
+    ) -> None:
+        scoped_auth = self._scoped_auth(chat_id=chat_id, user_id=user_id)
+        session = self.session_store.get_or_create_telegram_session(scoped_auth, topic_id)
+        self._start_or_steer_turn(session, text)
+
+    def send_local(self, channel: str, text: str) -> None:
+        session = self.session_store.get_or_create_local_session(channel)
+        self._start_or_steer_turn(session, text)
+
     def interrupt(self, topic_id: int | None = None, *, chat_id: int | None = None, user_id: int | None = None) -> bool:
         scoped_auth = self._scoped_auth(chat_id=chat_id, user_id=user_id)
         session = self.session_store.get_current_telegram_session(scoped_auth, topic_id)
+        if session is None or not session.active_turn_id:
+            return False
+        self.client.turn_interrupt(session.active_turn_id)
+        session.active_turn_id = None
+        session.pending_output_text = ""
+        session.status = "INTERRUPTED"
+        self.session_store.save_session(session)
+        return True
+
+    def interrupt_local(self, channel: str) -> bool:
+        session = self.session_store.get_current_local_session(channel)
         if session is None or not session.active_turn_id:
             return False
         self.client.turn_interrupt(session.active_turn_id)

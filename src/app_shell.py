@@ -26,6 +26,7 @@ from integrations.telegram import (
     is_auth_paired,
     register_pairing_request,
 )
+from local_chat import run_local_chat
 from runtime.service import reset_auth
 from setup.admin import run_uninstall, run_update
 from setup.host_service import build_service_registration, current_service_manager
@@ -208,6 +209,7 @@ class DefaultAppShellBackend:
             items.append(MenuItem("Log In Codex", "login-codex"))
         items.extend(
             [
+                MenuItem("Open local chat", "local-chat"),
                 MenuItem("Reset Telegram auth", "reset-auth"),
                 MenuItem("Update install", "update"),
                 MenuItem("Uninstall", "uninstall"),
@@ -578,10 +580,37 @@ class AppShell:
             if pause:
                 self.ui.pause("Press Enter to return to Tele Cli...")
             return result
+        if action == "local-chat":
+            return self._run_local_chat_flow()
         result = self.backend.perform_action(self.paths, action)
         if result != "exit" and pause:
             self.ui.pause("Press Enter to return to Tele Cli...")
         return result
+
+    def _run_local_chat_flow(self) -> str | None:
+        self.ui.render(
+            self.ui.print_header()
+            + self.ui.panel(
+                "Open Local Chat",
+                [
+                    "Open a local AI Service (Codex) chat channel.",
+                    "",
+                    "Use main for the default one-to-one channel.",
+                    "Use names like my_group/topic1 to simulate a group topic.",
+                    "",
+                    f"{Colors.muted}Press Enter on an empty field to use main.{Colors.reset}",
+                ],
+                width=78,
+            )
+            + self.ui.input_section("Channel name", 78, title="Channel")
+        )
+        channel = self.ui.input_line("Channel name", panel_width=78, use_existing_field=True).strip() or "main"
+        self.ui.end()
+        try:
+            run_local_chat(self.paths, channel=channel)
+        finally:
+            self.ui.begin()
+        return None
 
     def _resolve_setup_recovery(self) -> SetupRecoveryChoices | str | None:
         choices = SetupRecoveryChoices()

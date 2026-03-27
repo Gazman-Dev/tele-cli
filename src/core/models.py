@@ -142,6 +142,7 @@ class SessionRecord:
     transport_user_id: Optional[int]
     transport_chat_id: Optional[int]
     transport_topic_id: Optional[int] = None
+    transport_channel: Optional[str] = None
     attached: bool = True
     thread_id: Optional[str] = None
     active_turn_id: Optional[str] = None

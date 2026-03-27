@@ -151,6 +151,45 @@ class SessionStoreTests(unittest.TestCase):
             self.assertTrue(any(session.session_id == second.session_id for session in sessions))
             self.assertTrue(any(session.session_id == third.session_id for session in sessions))
 
+    def test_get_or_create_local_session_reuses_same_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = SessionStore(paths)
+
+            first = store.get_or_create_local_session("main")
+            second = store.get_or_create_local_session("main")
+
+            self.assertEqual(first.session_id, second.session_id)
+            self.assertEqual(first.transport_channel, "main")
+
+    def test_get_or_create_local_session_separates_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = SessionStore(paths)
+
+            first = store.get_or_create_local_session("main")
+            second = store.get_or_create_local_session("my_group/topic1")
+
+            self.assertNotEqual(first.session_id, second.session_id)
+            self.assertEqual(second.transport_channel, "my_group/topic1")
+
+    def test_create_new_local_session_detaches_previous_channel_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = SessionStore(paths)
+
+            original = store.get_or_create_local_session("main")
+            original.active_turn_id = "turn-1"
+            original.status = "RUNNING_TURN"
+            store.save_session(original)
+
+            replacement = store.create_new_local_session("main")
+            sessions = store.list_local_sessions("main")
+
+            archived = next(session for session in sessions if session.session_id == original.session_id)
+            self.assertFalse(archived.attached)
+            self.assertEqual(replacement.transport_channel, "main")
+
 
 if __name__ == "__main__":
     unittest.main()

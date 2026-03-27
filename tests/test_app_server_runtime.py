@@ -267,6 +267,48 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertIsNone(stored_sessions[0].active_turn_id)
             self.assertEqual(stored_sessions[0].status, "INTERRUPTED")
 
+    def test_app_server_session_send_local_uses_channel_session(self) -> None:
+        transport = InMemoryJsonRpcTransport()
+        server = FakeAppServer(transport)
+        server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+        server.on("getAccount", lambda payload: {"status": "ready"})
+        server.on("thread/start", lambda payload: {"threadId": "thread-local-1"})
+        server.on("turn/start", lambda payload: {"turnId": "turn-local-1"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            session = bootstrap_app_server_session(
+                paths=paths,
+                auth=AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now"),
+                runtime=runtime,
+                runtime_state=runtime_state,
+                transport=transport,
+                config=Config(state_dir=str(paths.root)),
+            )
+            session.send_local("my_group/topic1", "hello local")
+
+            from runtime.session_store import SessionStore
+
+            stored = SessionStore(paths).get_current_local_session("my_group/topic1")
+            self.assertIsNotNone(stored)
+            assert stored is not None
+            self.assertEqual(stored.transport_channel, "my_group/topic1")
+            self.assertEqual(stored.thread_id, "thread-local-1")
+            self.assertEqual(stored.active_turn_id, "turn-local-1")
+
+        turn_start = next(payload for payload in server.received if payload["method"] == "turn/start")
+        first_input = turn_start["params"]["input"][0]["text"]
+        self.assertIn("User request:\nhello local", first_input)
+
     def test_bootstrap_reuses_persisted_thread_id_via_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))

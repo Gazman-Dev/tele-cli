@@ -36,6 +36,17 @@ class CliTests(unittest.TestCase):
         args = parser.parse_args(["complete-pairing"])
         self.assertEqual(args.command, "complete-pairing")
 
+        args = parser.parse_args(["chat"])
+        self.assertEqual(args.command, "chat")
+        self.assertEqual(args.channel, "main")
+
+    def test_parser_accepts_chat_flags(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["-chat", "-channel", "my_group/topic1"])
+
+        self.assertTrue(args.chat_mode)
+        self.assertEqual(args.channel, "my_group/topic1")
+
     def test_main_returns_to_menu_after_setup_in_interactive_terminal(self) -> None:
         with (
             patch("platform.system", return_value="Linux"),
@@ -73,6 +84,32 @@ class CliTests(unittest.TestCase):
         run_app_shell_mock.assert_called_once()
         _, kwargs = run_app_shell_mock.call_args
         self.assertIsNone(kwargs.get("startup_action"))
+
+    def test_main_runs_local_chat_from_quick_flags(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli", "-chat", "-channel", "my_group/topic1"]),
+            patch("cli.run_local_chat") as run_local_chat_mock,
+            patch("cli.run_app_shell") as run_app_shell_mock,
+        ):
+            main()
+
+        run_local_chat_mock.assert_called_once()
+        _, kwargs = run_local_chat_mock.call_args
+        self.assertEqual(kwargs["channel"], "my_group/topic1")
+        run_app_shell_mock.assert_not_called()
+
+    def test_main_runs_local_chat_subcommand_with_default_channel(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli", "chat"]),
+            patch("cli.run_local_chat") as run_local_chat_mock,
+        ):
+            main()
+
+        run_local_chat_mock.assert_called_once()
+        _, kwargs = run_local_chat_mock.call_args
+        self.assertEqual(kwargs["channel"], "main")
 
     def test_main_runs_setup_directly_without_tty(self) -> None:
         with (

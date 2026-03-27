@@ -57,6 +57,15 @@ class SessionStore:
             and session.transport_topic_id == topic_id
         )
 
+    @staticmethod
+    def _matches_local_channel(session: SessionRecord, channel: str) -> bool:
+        return session.transport == "local" and session.transport_channel == channel
+
+    def _touch_short_memory(self, session_id: str) -> None:
+        path = self.short_memory_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+
     def get_or_create_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord:
         state = self.load()
         matching = [
@@ -78,8 +87,7 @@ class SessionStore:
         )
         state.sessions.append(session)
         self.save(state)
-        self.short_memory_path(session.session_id).parent.mkdir(parents=True, exist_ok=True)
-        self.short_memory_path(session.session_id).touch(exist_ok=True)
+        self._touch_short_memory(session.session_id)
         return session
 
     def save_session(self, updated_session: SessionRecord) -> None:
@@ -117,9 +125,81 @@ class SessionStore:
         )
         state.sessions.append(session)
         self.save(state)
-        self.short_memory_path(session.session_id).parent.mkdir(parents=True, exist_ok=True)
-        self.short_memory_path(session.session_id).touch(exist_ok=True)
+        self._touch_short_memory(session.session_id)
         return session
+
+    def get_or_create_local_session(self, channel: str) -> SessionRecord:
+        normalized = channel.strip()
+        if not normalized:
+            raise ValueError("Local channel name is required.")
+        state = self.load()
+        matching = [
+            session
+            for session in state.sessions
+            if self._matches_local_channel(session, normalized) and session.attached
+        ]
+        active = next((session for session in matching if self.is_writable(session)), None)
+        if active is not None:
+            return active
+        if matching:
+            return matching[-1]
+        session = SessionRecord(
+            session_id=str(uuid.uuid4()),
+            transport="local",
+            transport_user_id=None,
+            transport_chat_id=None,
+            transport_channel=normalized,
+        )
+        state.sessions.append(session)
+        self.save(state)
+        self._touch_short_memory(session.session_id)
+        return session
+
+    def create_new_local_session(self, channel: str) -> SessionRecord:
+        normalized = channel.strip()
+        if not normalized:
+            raise ValueError("Local channel name is required.")
+        state = self.load()
+        for session in state.sessions:
+            if self._matches_local_channel(session, normalized):
+                session.attached = False
+        state.sessions = [session for session in state.sessions if not self.is_prunable_detached(session)]
+        session = SessionRecord(
+            session_id=str(uuid.uuid4()),
+            transport="local",
+            transport_user_id=None,
+            transport_chat_id=None,
+            transport_channel=normalized,
+        )
+        state.sessions.append(session)
+        self.save(state)
+        self._touch_short_memory(session.session_id)
+        return session
+
+    def list_local_sessions(self, channel: str) -> list[SessionRecord]:
+        normalized = channel.strip()
+        if not normalized:
+            return []
+        state = self.load()
+        return [
+            session
+            for session in state.sessions
+            if self._matches_local_channel(session, normalized)
+        ]
+
+    def get_current_local_session(self, channel: str) -> SessionRecord | None:
+        sessions = list(reversed(self.list_local_sessions(channel)))
+        for session in sessions:
+            if session.attached and self.is_recoverable(session):
+                return session
+        return None
+
+    def get_active_local_session(self, channel: str) -> SessionRecord | None:
+        sessions = list(reversed(self.list_local_sessions(channel)))
+        for session in sessions:
+            if self.is_writable(session):
+                return session
+        return None
 
     def short_memory_path(self, session_id: str) -> Path:
         return session_short_memory_path(self.paths, session_id)

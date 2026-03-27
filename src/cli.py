@@ -8,6 +8,7 @@ from core.json_store import load_json
 from core.models import AuthState
 from core.paths import build_paths
 from integrations.telegram import TelegramClient
+from local_chat import run_local_chat
 from runtime.service import reset_auth, run_service
 from setup.admin import run_uninstall, run_update
 from setup.setup_flow import complete_pending_pairing, run_setup
@@ -25,6 +26,8 @@ def _is_interactive_terminal() -> bool:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tele-cli")
     parser.add_argument("--state-dir", default=None)
+    parser.add_argument("-chat", "--chat", dest="chat_mode", action="store_true")
+    parser.add_argument("-channel", "--channel", dest="channel", default="main")
     subparsers = parser.add_subparsers(dest="command", required=False)
     subparsers.add_parser("menu")
     subparsers.add_parser("setup")
@@ -33,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("update")
     subparsers.add_parser("uninstall")
     subparsers.add_parser("complete-pairing")
+    chat_parser = subparsers.add_parser("chat")
+    chat_parser.add_argument("--channel", default="main")
     return parser
 
 
@@ -42,8 +47,14 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     paths = build_paths(args.state_dir)
+    channel = getattr(args, "channel", "main") or "main"
+    if args.command == "chat":
+        channel = args.channel or "main"
     if args.command in {None, "menu"}:
-        run_app_shell(paths)
+        if args.chat_mode:
+            run_local_chat(paths, channel=channel)
+        else:
+            run_app_shell(paths)
     elif args.command == "setup":
         if _is_interactive_terminal():
             run_app_shell(paths, startup_action="setup")
@@ -68,6 +79,8 @@ def main() -> None:
         if not auth or not auth.bot_token:
             raise SystemExit("Telegram bot token is not configured.")
         complete_pending_pairing(paths, auth, TelegramClient(auth.bot_token))
+    elif args.command == "chat":
+        run_local_chat(paths, channel=channel)
 
 
 if __name__ == "__main__":
