@@ -682,6 +682,47 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertEqual(persisted.last_error, "boom")
             self.assertIn(("telegram", "startup notification failed: telegram timed out"), output)
 
+    def test_start_fn_suppresses_duplicate_failure_notifications_for_same_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            telegram = FakeTelegramClient()
+            start_fn = make_app_server_start_fn(paths, lambda config, auth: (_ for _ in ()).throw(RuntimeError("boom")))
+
+            first = start_fn(
+                Config(state_dir=str(paths.root)),
+                auth,
+                runtime,
+                runtime_state,
+                object(),
+                object(),
+                telegram,
+                lambda source, line: None,
+            )
+            second = start_fn(
+                Config(state_dir=str(paths.root)),
+                auth,
+                runtime,
+                runtime_state,
+                object(),
+                object(),
+                telegram,
+                lambda source, line: None,
+            )
+
+            self.assertIsNone(first)
+            self.assertIsNone(second)
+            self.assertEqual(telegram.messages, [(22, "Codex App Server failed to start. Telegram remains available.")])
+
     def test_start_fn_degrades_runtime_when_transport_factory_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))

@@ -328,6 +328,20 @@ def build_failed_codex_server_state(
     )
 
 
+def should_notify_failed_start(
+    paths: AppPaths,
+    *,
+    transport: str,
+    last_error: str,
+) -> bool:
+    persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+    if persisted is None:
+        return True
+    if persisted.initialized:
+        return True
+    return persisted.transport != transport
+
+
 def bootstrap_app_server_session(
     *,
     paths: AppPaths,
@@ -428,13 +442,19 @@ def make_app_server_start_fn(
                     transport.close()
                 except Exception:
                     pass
+            last_error = str(exc)
+            should_notify = should_notify_failed_start(
+                paths,
+                transport=transport_name,
+                last_error=last_error,
+            ) and runtime_state.codex_state != "DEGRADED"
             runtime.set_codex_state("DEGRADED")
             save_json(paths.runtime, runtime_state.to_dict())
             save_versioned_state(
                 paths.codex_server,
-                build_failed_codex_server_state(transport=transport_name, last_error=str(exc)).to_dict(),
+                build_failed_codex_server_state(transport=transport_name, last_error=last_error).to_dict(),
             )
-            if auth.telegram_chat_id:
+            if auth.telegram_chat_id and should_notify:
                 notify_telegram_best_effort(
                     telegram,
                     auth.telegram_chat_id,
