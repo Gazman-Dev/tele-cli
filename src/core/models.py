@@ -73,6 +73,7 @@ class Config:
     codex_command: list[str] = field(default_factory=lambda: ["codex"])
     sandbox_mode: str = "danger-full-access"
     approval_policy: str = "never"
+    codex_personality: str = "pragmatic"
     codex_restart_backoff_seconds: float = 5.0
     codex_restart_backoff_max_seconds: float = 60.0
     telegram_backoff_seconds: float = 5.0
@@ -81,6 +82,7 @@ class Config:
     typing_indicator_interval_seconds: float = 4.0
     poll_interval_seconds: float = 2.0
     install_homebrew_if_missing: bool = False
+    sleep_hour_local: int = 2
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -151,6 +153,8 @@ class SessionRecord:
     last_completed_turn_id: Optional[str] = None
     last_delivered_output_text: str = ""
     status: str = "ACTIVE"
+    instructions_dirty: bool = True
+    last_seen_generation: int = 0
     created_at: str = field(default_factory=utc_now)
     last_user_message_at: Optional[str] = None
     last_agent_message_at: Optional[str] = None

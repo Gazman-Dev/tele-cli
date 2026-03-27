@@ -119,6 +119,18 @@ class SessionStoreTests(unittest.TestCase):
             assert loaded is not None
             self.assertEqual(loaded.session_id, session.session_id)
 
+    def test_short_memory_path_is_shared_state_file_per_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = SessionStore(paths)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            session = store.get_or_create_telegram_session(auth)
+
+            path = store.short_memory_path(session.session_id)
+
+            self.assertEqual(path, paths.root / "memory" / "sessions" / f"{session.session_id}.short_memory.md")
+            self.assertTrue(path.exists())
+
     def test_create_new_prunes_already_idle_detached_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))

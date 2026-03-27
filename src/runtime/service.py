@@ -31,10 +31,12 @@ from .app_server_runtime import default_transport_factory, derive_codex_state, m
 from .approval_store import ApprovalStore
 from .codex_cli_config import read_codex_cli_preferences, write_codex_cli_preferences
 from .control import ServiceConflictChoices, isatty, prepare_service_lock, reset_auth, start_codex_session
+from .instructions import ensure_instruction_files
 from .performance import PerformanceTracker, edit_telegram_message, send_telegram_message
 from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
+from .sleep import has_pending_sleep_work, run_sleep, should_run_sleep
 from .telegram_update_store import TelegramUpdateStore
 
 
@@ -1192,6 +1194,18 @@ def handle_authorized_message(
             return
         prior = session_store.get_current_telegram_session(auth, topic_id)
         session = session_store.create_new_telegram_session(auth, topic_id)
+        session.attached = True
+        session.thread_id = None
+        session.active_turn_id = None
+        session.pending_output_text = ""
+        session.pending_output_updated_at = None
+        session.last_completed_turn_id = None
+        session.last_delivered_output_text = ""
+        session.streaming_message_id = None
+        session.streaming_output_text = ""
+        session.thinking_message_text = ""
+        session.status = "ACTIVE"
+        session_store.save_session(session)
         if prior is not None:
             append_recovery_log(
                 session_store.paths.recovery_log,
@@ -1889,6 +1903,10 @@ def run_service(
     auth = load_json(paths.auth, AuthState.from_dict)
     if not config or not auth:
         raise RuntimeError("Run setup first.")
+    ensure_instruction_files(paths)
+    startup_now = datetime.now().astimezone()
+    if has_pending_sleep_work(paths) and should_run_sleep(paths, startup_now, config.sleep_hour_local):
+        run_sleep(paths, config, startup_now, config.sleep_hour_local)
     write_codex_cli_preferences(
         approval_policy=config.approval_policy,
         sandbox_mode=config.sandbox_mode,
@@ -1943,6 +1961,7 @@ def run_service(
     stop_event = threading.Event()
     poll_gate = threading.Event()
     poll_gate.set()
+    last_sleep_check = 0.0
     codex = bootstrap_paired_codex(
         paths=paths,
         config=config,
@@ -2069,6 +2088,11 @@ def run_service(
                 poll_gate.set()
                 threading.Event().wait(0.02)
                 continue
+            if time.monotonic() - last_sleep_check >= 30.0:
+                last_sleep_check = time.monotonic()
+                current_local = datetime.now().astimezone()
+                if has_pending_sleep_work(paths) and should_run_sleep(paths, current_local, config.sleep_hour_local):
+                    run_sleep(paths, config, current_local, config.sleep_hour_local)
             drain_codex_approvals(paths, auth, telegram, codex, performance)
             drain_codex_notifications(paths, auth, telegram, recorder, codex, runtime, runtime_state, performance)
             flush_idle_partial_outputs(

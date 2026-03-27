@@ -18,6 +18,7 @@ class AppPaths:
     telegram_updates: Path
     approvals: Path
     codex_server: Path
+    sleep_state: Path
     recovery_log: Path
     terminal_log: Path
     performance_log: Path
@@ -44,6 +45,7 @@ def build_paths(state_dir: Optional[Path | str] = None) -> AppPaths:
         telegram_updates=root / "telegram_updates.json",
         approvals=root / "approvals.json",
         codex_server=root / "codex_server.json",
+        sleep_state=root / "sleep_state.json",
         recovery_log=root / "recovery.log",
         terminal_log=root / "terminal.log",
         performance_log=root / "performance.log",

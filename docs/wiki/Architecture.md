@@ -2,16 +2,13 @@
 
 ## Modules
 
-- `cli.py`: command entrypoint
-- `setup_flow.py`: first-run setup and recovery
-- `service.py`: service orchestration
-- `installer.py`: package-manager-specific installation strategy
-- `telegram.py`: Telegram API and pairing model
-- `codex_runtime.py`: Codex subprocess wrapper
-- `process.py`: PID and ownership inspection
-- `locks.py`: lock metadata persistence
-- `recorder.py`: replayable terminal log
-- `debug_mirror.py`: local runtime output mirror
+- `cli.py`: top-level command routing
+- `app_shell.py`: interactive app shell, setup flows, and maintenance actions
+- `core/`: shared models, paths, locks, logging, process inspection, and persistence helpers
+- `integrations/telegram.py`: Telegram API client and single-user pairing model
+- `setup/`: dependency installation, setup recovery, service registration, update, and uninstall flows
+- `runtime/`: long-running service, Codex app-server integration, session tracking, approvals, recorder, and performance logging
+- `demo_ui/`: mock UX implementation for the TUI spec
 
 ## Runtime Model
 
@@ -20,3 +17,4 @@
 - one Telegram poller
 - one recorder
 - one runtime output mirror
+- one or more persisted Telegram-backed conversation sessions, with one active session per chat or topic

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from core.models import AuthState, SessionRecord, utc_now
 from core.paths import AppPaths
 from core.state_versions import load_versioned_state, save_versioned_state
+
+from .instructions import session_short_memory_path
 
 
 @dataclass
@@ -75,6 +78,8 @@ class SessionStore:
         )
         state.sessions.append(session)
         self.save(state)
+        self.short_memory_path(session.session_id).parent.mkdir(parents=True, exist_ok=True)
+        self.short_memory_path(session.session_id).touch(exist_ok=True)
         return session
 
     def save_session(self, updated_session: SessionRecord) -> None:
@@ -112,7 +117,12 @@ class SessionStore:
         )
         state.sessions.append(session)
         self.save(state)
+        self.short_memory_path(session.session_id).parent.mkdir(parents=True, exist_ok=True)
+        self.short_memory_path(session.session_id).touch(exist_ok=True)
         return session
+
+    def short_memory_path(self, session_id: str) -> Path:
+        return session_short_memory_path(self.paths, session_id)
 
     def list_telegram_sessions(self, auth: AuthState, topic_id: int | None = None) -> list[SessionRecord]:
         state = self.load()

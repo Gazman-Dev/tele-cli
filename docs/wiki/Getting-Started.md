@@ -18,16 +18,36 @@ That install wrapper fetches the latest `setup.sh` with a cache-busting URL, the
 
 ```bash
 tele-cli
+tele-cli menu
 tele-cli setup
 tele-cli service
 tele-cli update
 tele-cli uninstall
+tele-cli complete-pairing
 ```
+
+`tele-cli` opens the interactive app shell. In a TTY, `setup`, `update`, and `uninstall` return to that shell and run the requested flow there. Direct non-interactive execution is still supported when no TTY is available.
 
 ## Reset Telegram Pairing
 
 ```bash
 tele-cli reset-auth
+```
+
+## Telegram Chat Commands
+
+After pairing, the authorized Telegram chat can use:
+
+```text
+/status
+/sessions
+/new
+/stop
+/abort
+/model <name>
+/reasoning <minimal|low|medium|high|xhigh>
+/approve <request_id>
+/deny <request_id>
 ```
 
 ## Linux Validation In Docker

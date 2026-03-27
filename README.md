@@ -18,22 +18,21 @@ It is designed for Linux and macOS and focuses on one local operator, one Telegr
 ```text
 src/
   cli.py
-  setup_flow.py
-  service.py
-  installer.py
-  telegram.py
-  codex_runtime.py
-  process.py
-  locks.py
-  models.py
+  app_shell.py
+  core/
+  integrations/
+  runtime/
+  setup/
+  demo_ui/
 tests/
+docs/
 scripts/
 Dockerfile.linux-test
 ```
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.9+
 - Linux or macOS for actual runtime use
 - Docker Desktop or Docker Engine for Linux container validation
 
@@ -46,7 +45,7 @@ python -m pip install -e .
 One-line setup:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bas
 ```
 
 The setup script now:
@@ -65,11 +64,31 @@ If `Tele Cli` is already installed, running `setup.sh` again now relaunches the 
 
 ```bash
 tele-cli
+tele-cli menu
 tele-cli setup
 tele-cli service
 tele-cli update
 tele-cli uninstall
 tele-cli reset-auth
+tele-cli complete-pairing
+```
+
+`tele-cli` and `tele-cli menu` open the interactive app shell. In an interactive terminal, `setup`, `update`, and `uninstall` also route through the app shell; the direct subcommands remain available for non-interactive use.
+
+## Telegram Commands
+
+Once the bot is paired, the authorized Telegram chat can use:
+
+```text
+/status
+/sessions
+/new
+/stop
+/abort
+/model <name>
+/reasoning <minimal|low|medium|high|xhigh>
+/approve <request_id>
+/deny <request_id>
 ```
 
 ## UX Demo
@@ -86,7 +105,7 @@ If installed as a package:
 tele-cli-ux-demo
 ```
 
-The demo is a mock TUI for the UX spec in [`spec/ux_spec.md`](/C:/git/MiniC/spec/ux_spec.md). It includes the setup screens, status dashboard, update flow, and uninstall confirmation, but it does not touch the real service or Telegram integration.
+The demo is a mock TUI for the UX spec in `spec/ux_spec.md`. It includes the setup screens, status dashboard, update flow, and uninstall confirmation, but it does not touch the real service or Telegram integration.
 
 Use `--state-dir` if you want state files somewhere other than `~/.tele-cli`.
 
@@ -111,8 +130,14 @@ powershell -File scripts/run_docker_tests.ps1
 - `runtime.json`
 - `auth.json`
 - `config.json`
+- `sessions.json`
+- `telegram_updates.json`
+- `approvals.json`
+- `codex_server.json`
 - `recovery.log`
 - `terminal.log`
+- `performance.log`
+- `app_server_notifications.log`
 
 ## Codex Mode
 

@@ -1,0 +1,4 @@
+- Do not hardcode developer-specific filesystem paths.
+- Prefer portable changes that work across supported environments.
+- Be explicit about verification status.
+- Use the session short memory file for temporary notes, not long memory.

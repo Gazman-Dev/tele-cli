@@ -9,11 +9,13 @@ from core.state_versions import load_versioned_state, save_versioned_state
 
 from .app_server_client import AppServerClient
 from .approval_store import ApprovalRecord
+from .instructions import render_session_instructions
 from .app_server_process import SubprocessJsonRpcTransport
 from .jsonrpc import JsonRpcClient, JsonRpcNotification, JsonRpcTransport
 from .performance import PerformanceTracker, send_telegram_message
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
+from .sleep import build_refresh_instructions, current_generation
 
 
 def notify_telegram_best_effort(
@@ -96,6 +98,20 @@ class AppServerSession:
         self.performance = performance
         self._resumed_threads: set[str] = set()
 
+    def _build_turn_input(self, session, text: str) -> str:
+        if not session.instructions_dirty:
+            return text
+        if not session.thread_id:
+            instructions = render_session_instructions(self.session_store.paths, session.session_id, refresh_reason="session_start")
+            if not instructions:
+                return text
+            return f"{instructions}\n\nUser request:\n{text}"
+        refresh, generation = build_refresh_instructions(self.session_store.paths, session)
+        if refresh:
+            session.last_seen_generation = generation
+            return f"{refresh}\n\nUser request:\n{text}"
+        return text
+
     def _scoped_auth(self, *, chat_id: int | None = None, user_id: int | None = None) -> AuthState:
         scoped = AuthState.from_dict(self.auth.to_dict())
         if chat_id is not None:
@@ -122,6 +138,7 @@ class AppServerSession:
         if session.status != "ARCHIVED":
             session.status = "ACTIVE"
         thread_id = session.thread_id
+        turn_input = self._build_turn_input(session, text)
         if session.active_turn_id:
             self.client.turn_steer(session.active_turn_id, text)
             session.status = "RUNNING_TURN"
@@ -149,6 +166,7 @@ class AppServerSession:
                 cwd=self.config.state_dir,
                 sandbox=self.config.sandbox_mode,
                 approvalPolicy=self.config.approval_policy,
+                personality=self.config.codex_personality,
             )
             thread_id = started.get("threadId")
             session.thread_id = thread_id
@@ -162,6 +180,7 @@ class AppServerSession:
                 cwd=self.config.state_dir,
                 sandbox=self.config.sandbox_mode,
                 approvalPolicy=self.config.approval_policy,
+                personality=self.config.codex_personality,
             )
             thread_id = started.get("threadId")
             session.thread_id = thread_id
@@ -179,14 +198,17 @@ class AppServerSession:
         self.session_store.save_session(session)
         turn = self.client.turn_start(
             thread_id,
-            text,
+            turn_input,
             cwd=self.config.state_dir,
             approvalPolicy=self.config.approval_policy,
             sandboxPolicy=self.config.sandbox_mode,
+            personality=self.config.codex_personality,
         )
         session.active_turn_id = turn.get("turnId")
         session.pending_output_text = ""
         session.status = "RUNNING_TURN"
+        session.instructions_dirty = False
+        session.last_seen_generation = current_generation(self.session_store.paths)
         self.session_store.save_session(session)
         if self.performance is not None:
             self.performance.mark_turn_registered(session)
