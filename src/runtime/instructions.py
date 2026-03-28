@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.resources import files
 import os
 from pathlib import Path
 
@@ -29,6 +30,19 @@ DEFAULT_FILE_MAP = {
     "rules.md": "rules.md",
     "long_memory.md": "long_memory.md",
 }
+
+RESOURCE_PACKAGE = "runtime.resources"
+RESOURCE_TEMPLATE_MAP = {
+    "session_instructions.md": "session_instructions.md",
+    "refresh_instructions.md": "refresh_instructions.md",
+    "sleep_prompt.md": "sleep_prompt.md",
+}
+RESOURCE_DEFAULT_MAP = {
+    "personality.md": "defaults/personality.md",
+    "rules.md": "defaults/rules.md",
+    "long_memory.md": "defaults/long_memory.md",
+}
+SEEDED_MARKER = ".seeded-defaults-v1"
 
 
 def detect_repo_root(fallback: Path) -> Path:
@@ -98,19 +112,36 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+def _read_resource_text(resource_path: str) -> str:
+    resource = files(RESOURCE_PACKAGE)
+    for part in resource_path.split("/"):
+        resource = resource.joinpath(part)
+    return resource.read_text(encoding="utf-8")
+
+
 def ensure_instruction_files(paths: AppPaths) -> InstructionPaths:
     instruction_paths = build_instruction_paths(paths)
+    instruction_paths.system_dir.mkdir(parents=True, exist_ok=True)
+    instruction_paths.defaults_dir.mkdir(parents=True, exist_ok=True)
     instruction_paths.session_memory_dir.mkdir(parents=True, exist_ok=True)
     instruction_paths.lessons_dir.mkdir(parents=True, exist_ok=True)
-    for target_name, default_name in DEFAULT_FILE_MAP.items():
-        target = instruction_paths.repo_root / target_name
+    seeded_marker = instruction_paths.system_dir / SEEDED_MARKER
+    should_seed_state_defaults = instruction_paths.repo_root == paths.root and not seeded_marker.exists()
+    for target_name, resource_name in RESOURCE_TEMPLATE_MAP.items():
+        target = instruction_paths.system_dir / target_name
         if target.exists():
             continue
-        default_path = instruction_paths.defaults_dir / default_name
-        if default_path.exists():
-            target.write_text(default_path.read_text(encoding="utf-8"), encoding="utf-8")
-        else:
-            target.write_text("", encoding="utf-8")
+        target.write_text(_read_resource_text(resource_name), encoding="utf-8")
+    for target_name, resource_name in RESOURCE_DEFAULT_MAP.items():
+        default_target = instruction_paths.defaults_dir / target_name
+        if not default_target.exists():
+            default_target.write_text(_read_resource_text(resource_name), encoding="utf-8")
+        target = instruction_paths.repo_root / target_name
+        if target.exists() and (not should_seed_state_defaults or target.read_text(encoding="utf-8").strip()):
+            continue
+        target.write_text(_read_resource_text(resource_name), encoding="utf-8")
+    if should_seed_state_defaults:
+        seeded_marker.write_text("seeded\n", encoding="utf-8")
     return instruction_paths
 
 

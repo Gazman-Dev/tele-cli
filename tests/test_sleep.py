@@ -20,6 +20,20 @@ from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 
 
 class SleepTests(unittest.TestCase):
+    def test_ensure_instruction_files_seeds_packaged_defaults_in_state_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+
+            with patch("runtime.instructions.detect_repo_root", return_value=paths.root):
+                instruction_paths = ensure_instruction_files(paths)
+
+            self.assertEqual(instruction_paths.repo_root, paths.root)
+            self.assertTrue(instruction_paths.template.exists())
+            self.assertIn("Telegram-first personal assistant", instruction_paths.template.read_text(encoding="utf-8"))
+            self.assertIn("best friend", instruction_paths.personality.read_text(encoding="utf-8"))
+            self.assertIn("session short memory file", instruction_paths.rules.read_text(encoding="utf-8"))
+            self.assertIn("Durable preferences", instruction_paths.long_memory.read_text(encoding="utf-8"))
+
     def test_sleep_uses_ai_output_clears_short_memory_and_marks_sessions_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
