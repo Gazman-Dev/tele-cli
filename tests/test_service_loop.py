@@ -157,7 +157,7 @@ class ServiceLoopTests(unittest.TestCase):
             self.assertIn("detached_sessions_pruned count=1", recovery_log)
             self.assertTrue(app_lock.cleared)
 
-    def test_run_service_reports_and_blocks_unresolved_recovering_turn(self) -> None:
+    def test_run_service_normalizes_recovering_turn_on_startup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
@@ -174,7 +174,6 @@ class ServiceLoopTests(unittest.TestCase):
             server = FakeAppServer(transport)
             server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
             server.on("getAccount", lambda payload: {"status": "ready", "accountType": "chatgpt"})
-            server.on("thread/resume", lambda payload: (_ for _ in ()).throw(RuntimeError("resume failed")))
             start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
 
             telegram = SequentialTelegramClient(
@@ -186,19 +185,11 @@ class ServiceLoopTests(unittest.TestCase):
 
             self._run_service_once(paths, telegram, start_fn, app_lock)
 
-            self.assertEqual(
-                telegram.messages,
-                [
-                    (
-                        22,
-                        "Current session is recovering an in-flight turn. Wait for recovery, use /stop, or start fresh with /new.",
-                    ),
-                ],
-            )
+            self.assertEqual(telegram.messages, [])
             current = SessionStore(paths).get_current_telegram_session(auth)
             self.assertIsNotNone(current)
             assert current is not None
-            self.assertEqual(current.status, "RECOVERING_TURN")
+            self.assertEqual(current.status, "RUNNING_TURN")
             self.assertTrue(app_lock.cleared)
 
     def test_run_service_drains_codex_events_even_when_no_telegram_updates_arrive(self) -> None:
@@ -519,6 +510,49 @@ class ServiceLoopTests(unittest.TestCase):
             poll_log = paths.root.joinpath("telegram_poll.log").read_text(encoding="utf-8")
             self.assertIn("poll_crash", poll_log)
             self.assertIn("update_enqueued", poll_log)
+
+    def test_run_service_does_not_block_startup_on_stale_inflight_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
+            save_json(paths.auth, auth.to_dict())
+
+            store = SessionStore(paths)
+            local = store.get_or_create_local_session("smoke-probe")
+            local.thread_id = "thread-stale"
+            local.active_turn_id = "turn-stale"
+            local.status = "RUNNING_TURN"
+            local.last_user_message_at = "2026-03-27T00:00:00+00:00"
+            store.save_session(local)
+
+            transport = InMemoryJsonRpcTransport()
+            server = FakeAppServer(transport)
+            server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+            server.on("getAccount", lambda payload: {"status": "ready", "accountType": "chatgpt"})
+            server.on("thread/start", lambda payload: {"threadId": "thread-1"})
+            server.on("turn/start", lambda payload: {"turnId": "turn-1"})
+            start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
+            telegram = SequentialTelegramClient(
+                batches=[
+                    [{"update_id": 1, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "hello"}}],
+                ]
+            )
+            app_lock = FakeAppLock()
+
+            self._run_service_once(paths, telegram, start_fn, app_lock)
+
+            runtime = load_json(paths.runtime, RuntimeState.from_dict)
+            self.assertIsNotNone(runtime)
+            assert runtime is not None
+            self.assertEqual(runtime.service_state, "RUNNING")
+            processed = paths.telegram_updates.read_text(encoding="utf-8")
+            self.assertIn("1", processed)
+            session = SessionStore(paths).get_current_telegram_session(auth)
+            self.assertIsNotNone(session)
+            assert session is not None
+            self.assertEqual(session.status, "RUNNING_TURN")
+            self.assertEqual(session.thread_id, "thread-1")
 
 
 if __name__ == "__main__":

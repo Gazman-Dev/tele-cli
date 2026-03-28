@@ -39,6 +39,7 @@ def is_stale_active_turn(session, *, now: datetime | None = None, threshold_seco
         return False
     now = now or datetime.now(timezone.utc)
     candidates = [
+        parse_session_timestamp(session.last_user_message_at),
         parse_session_timestamp(session.pending_output_updated_at),
         parse_session_timestamp(session.last_agent_message_at),
     ]
@@ -139,6 +140,7 @@ class AppServerSession:
         workspace_cwd = str(build_instruction_paths(self.session_store.paths).repo_root)
         if session.status == "RECOVERING_TURN":
             raise RuntimeError("Session is recovering an in-flight turn.")
+        stale_active_turn = bool(session.active_turn_id and is_stale_active_turn(session))
         self.session_store.mark_user_message(session)
         if self.performance is not None:
             self.performance.mark_ai_dispatch_started(session)
@@ -147,7 +149,7 @@ class AppServerSession:
         thread_id = session.thread_id
         recovered_from_error = False
         if session.active_turn_id:
-            if is_stale_active_turn(session):
+            if stale_active_turn:
                 self.client.turn_interrupt(session.active_turn_id)
                 session.active_turn_id = None
                 session.pending_output_text = ""
@@ -305,17 +307,18 @@ class AppServerSession:
 
 
 def recover_inflight_sessions(client: AppServerClient, session_store: SessionStore) -> None:
-    for session in session_store.mark_recovering_turns():
-        if not session.thread_id:
-            continue
-        try:
-            resumed = client.thread_resume(session.thread_id)
-        except Exception:
-            continue
-        resumed_thread_id = resumed.get("threadId") or session.thread_id
-        session.thread_id = resumed_thread_id
-        session.status = "RUNNING_TURN"
-        session_store.save_session(session)
+    del client
+    state = session_store.load()
+    changed = False
+    for session in state.sessions:
+        if session.status == "RECOVERING_TURN" and session.active_turn_id:
+            session.status = "RUNNING_TURN"
+            changed = True
+        elif session.status == "RECOVERING_TURN":
+            session.status = "ACTIVE"
+            changed = True
+    if changed:
+        session_store.save(state)
 
 
 def build_codex_server_state(

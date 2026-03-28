@@ -220,6 +220,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             store = SessionStore(paths)
             current = store.get_current_telegram_session(auth)
             assert current is not None
+            current.last_user_message_at = (datetime.now(timezone.utc) - timedelta(seconds=45)).isoformat()
             current.last_agent_message_at = (datetime.now(timezone.utc) - timedelta(seconds=45)).isoformat()
             current.pending_output_updated_at = current.last_agent_message_at
             current.streaming_message_id = 99
@@ -455,7 +456,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertNotIn("thread/start", methods)
             self.assertIn("turn/start", methods)
 
-    def test_bootstrap_recovers_inflight_turn_via_thread_resume(self) -> None:
+    def test_bootstrap_leaves_inflight_turn_lazy_for_next_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
@@ -473,7 +474,49 @@ class AppServerRuntimeTests(unittest.TestCase):
             server = FakeAppServer(transport)
             server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
             server.on("getAccount", lambda payload: {"status": "ready"})
-            server.on("thread/resume", lambda payload: {"threadId": payload["params"]["threadId"]})
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            bootstrap_app_server_session(
+                paths=paths,
+                auth=auth,
+                runtime=runtime,
+                runtime_state=runtime_state,
+                transport=transport,
+                config=Config(state_dir=str(paths.root)),
+            )
+
+            recovered = store.get_current_telegram_session(auth)
+            self.assertIsNotNone(recovered)
+            assert recovered is not None
+            self.assertEqual(recovered.status, "RUNNING_TURN")
+            methods = [payload["method"] for payload in server.received]
+            self.assertNotIn("thread/resume", methods)
+
+    def test_bootstrap_normalizes_recovering_turn_without_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+
+            from runtime.session_store import SessionStore
+
+            store = SessionStore(paths)
+            session = store.get_or_create_telegram_session(auth)
+            session.thread_id = "thread-1"
+            session.active_turn_id = "turn-1"
+            session.status = "RECOVERING_TURN"
+            store.save_session(session)
+
+            transport = InMemoryJsonRpcTransport()
+            server = FakeAppServer(transport)
+            server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+            server.on("getAccount", lambda payload: {"status": "ready"})
 
             runtime_state = RuntimeState(
                 session_id="1",
@@ -498,50 +541,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             assert recovered is not None
             self.assertEqual(recovered.status, "RUNNING_TURN")
             methods = [payload["method"] for payload in server.received]
-            self.assertIn("thread/resume", methods)
-
-    def test_bootstrap_leaves_inflight_turn_recovering_when_resume_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = build_paths(Path(tmp))
-            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
-
-            from runtime.session_store import SessionStore
-
-            store = SessionStore(paths)
-            session = store.get_or_create_telegram_session(auth)
-            session.thread_id = "thread-1"
-            session.active_turn_id = "turn-1"
-            session.status = "RUNNING_TURN"
-            store.save_session(session)
-
-            transport = InMemoryJsonRpcTransport()
-            server = FakeAppServer(transport)
-            server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
-            server.on("getAccount", lambda payload: {"status": "ready"})
-            server.on("thread/resume", lambda payload: (_ for _ in ()).throw(RuntimeError("resume failed")))
-
-            runtime_state = RuntimeState(
-                session_id="1",
-                service_state="RUNNING",
-                codex_state="STOPPED",
-                telegram_state="RUNNING",
-                recorder_state="RUNNING",
-                debug_state="RUNNING",
-            )
-            runtime = ServiceRuntime(runtime_state)
-            bootstrap_app_server_session(
-                paths=paths,
-                auth=auth,
-                runtime=runtime,
-                runtime_state=runtime_state,
-                transport=transport,
-                config=Config(state_dir=str(paths.root)),
-            )
-
-            recovered = store.get_current_telegram_session(auth)
-            self.assertIsNotNone(recovered)
-            assert recovered is not None
-            self.assertEqual(recovered.status, "RECOVERING_TURN")
+            self.assertNotIn("thread/resume", methods)
 
     def test_start_fn_keeps_telegram_quiet_when_recovering_turn_remains_after_boot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
