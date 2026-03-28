@@ -2576,7 +2576,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Thinking\n\nRunning command: git status \\-\\-short")])
+        self.assertEqual(telegram.messages, [(22, "Thinking\n\nCommand: git status \\-\\-short")])
         self.assertEqual(updated.thinking_message_text, "")
 
     def test_extract_activity_text_from_search_tool(self) -> None:
@@ -2593,6 +2593,19 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(text, "Searching: latest codex releases")
 
+    def test_extract_activity_text_unwraps_shell_command_wrapper(self) -> None:
+        text = extract_activity_text(
+            "item/started",
+            {
+                "item": {
+                    "type": "commandExecution",
+                    "command": '/bin/zsh -lc "sed -n \'1,40p\' \\"$HOME/project/file.ts\\""',
+                }
+            },
+        )
+
+        self.assertEqual(text, 'Command: sed -n \'1,40p\' \\"$HOME/project/file.ts\\"')
+
     def test_extract_activity_text_from_command_output_delta(self) -> None:
         text = extract_activity_text(
             "item/commandExecution/outputDelta",
@@ -2601,7 +2614,7 @@ class ServiceFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(text, "Command output: cloning into repository...")
+        self.assertEqual(text, "Command: cloning into repository...")
 
     def test_extract_activity_text_from_file_change_output_delta(self) -> None:
         text = extract_activity_text(
@@ -2629,7 +2642,11 @@ class ServiceFlowTests(unittest.TestCase):
 
     def test_extract_event_driven_status_from_thread_status_changed(self) -> None:
         text = extract_event_driven_status("thread/status/changed", {"status": {"type": "active"}})
-        self.assertEqual(text, "Active")
+        self.assertIsNone(text)
+
+    def test_extract_event_driven_status_from_thread_status_changed_idle(self) -> None:
+        text = extract_event_driven_status("thread/status/changed", {"status": {"type": "idle"}})
+        self.assertIsNone(text)
 
     def test_extract_event_driven_status_from_thread_status_waiting_flag(self) -> None:
         text = extract_event_driven_status(
@@ -2640,7 +2657,7 @@ class ServiceFlowTests(unittest.TestCase):
 
     def test_extract_event_driven_status_from_server_request_resolved(self) -> None:
         text = extract_event_driven_status("serverRequest/resolved", {"threadId": "thread-1", "requestId": 8})
-        self.assertEqual(text, "Approval resolved.")
+        self.assertIsNone(text)
 
     def test_non_default_thinking_text_is_not_overwritten_by_idle_refresh(self) -> None:
         auth = AuthState(

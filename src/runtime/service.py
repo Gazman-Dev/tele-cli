@@ -624,11 +624,22 @@ def _extract_delta_text(params: dict, *, limit: int = 80) -> str | None:
     return None
 
 
+def _extract_command_label(command: str, *, limit: int = 96) -> str:
+    compact = " ".join(command.split())
+    shell_wrapper = re.match(r'^(?:/[\w./-]+/)?(?:zsh|bash|sh)\s+-lc\s+["\'](?P<body>.+)["\']$', compact)
+    if shell_wrapper:
+        compact = shell_wrapper.group("body")
+    python_wrapper = re.match(r'^(?:/[\w./-]+/)?python(?:3(?:\.\d+)?)?\s+-c\s+["\'](?P<body>.+)["\']$', compact)
+    if python_wrapper:
+        compact = python_wrapper.group("body")
+    return _shorten_activity_text(compact, limit=limit)
+
+
 def extract_activity_text(method: str, params: dict) -> str | None:
     if method == "item/commandExecution/outputDelta":
         delta = _extract_delta_text(params)
         if delta:
-            return f"Command output: {delta}"
+            return f"Command: {delta}"
         return "Running command..."
     if method == "item/fileChange/outputDelta":
         delta = _extract_delta_text(params)
@@ -649,15 +660,21 @@ def extract_activity_text(method: str, params: dict) -> str | None:
     if item_type == "commandExecution":
         command = item.get("command")
         if isinstance(command, str) and command.strip():
-            return f"Running command: {_shorten_activity_text(command.strip())}"
+            return f"Command: {_extract_command_label(command.strip())}"
         return "Running command..."
     if item_type == "mcpToolCall":
-        server = item.get("server")
-        tool = item.get("tool")
+        server = str(item.get("server") or "").strip()
+        tool = str(item.get("tool") or "").strip()
+        arguments = item.get("arguments")
+        hint = _extract_search_hint(arguments)
         if isinstance(server, str) and server and isinstance(tool, str) and tool:
-            return f"Using {server}/{tool}..."
+            if hint:
+                return f"Tool: {server}/{tool} ({hint})"
+            return f"Tool: {server}/{tool}"
         if isinstance(tool, str) and tool:
-            return f"Using tool: {tool}..."
+            if hint:
+                return f"Tool: {tool} ({hint})"
+            return f"Tool: {tool}"
         return "Using external tool..."
     if item_type == "dynamicToolCall":
         tool = item.get("tool")
@@ -667,18 +684,20 @@ def extract_activity_text(method: str, params: dict) -> str | None:
             hint = _extract_search_hint(arguments)
             if "search" in lowered and hint:
                 return f"Searching: {hint}"
-            return f"Using tool: {tool}..."
+            if hint:
+                return f"Tool: {tool} ({hint})"
+            return f"Tool: {tool}"
         return "Using tool..."
     if item_type == "collabAgentToolCall":
         tool = str(item.get("tool") or "")
         status = str(item.get("status") or "")
         if tool == "spawnAgent":
-            return "Spawning helper agent..."
+            return "Tool: spawning helper agent"
         if tool in {"wait", "closeAgent", "resumeAgent", "sendInput"}:
-            return "Coordinating helper agent..."
+            return "Tool: coordinating helper agent"
         if status:
-            return "Coordinating helper agents..."
-        return "Using helper agent..."
+            return "Tool: coordinating helper agents"
+        return "Tool: helper agent"
     if item_type == "fileChange":
         return "Applying file changes..."
     if item_type == "plan":
@@ -693,7 +712,7 @@ def extract_activity_text(method: str, params: dict) -> str | None:
 
 def extract_event_driven_status(method: str, params: dict) -> str | None:
     if method == "serverRequest/resolved":
-        return "Approval resolved."
+        return None
     if method == "thread/status/changed":
         status_value = params.get("status")
         if isinstance(status_value, dict):
@@ -707,11 +726,15 @@ def extract_event_driven_status(method: str, params: dict) -> str | None:
                             label = _humanize_status_label(first_flag)
                             if label:
                                 return label
-                    return "Active"
+                    return None
+                if status_type == "idle":
+                    return None
                 label = _humanize_status_label(status_type)
                 if label:
                     return label
         status = str(status_value or "").lower()
+        if status == "idle":
+            return None
         if status in {"running", "in_progress", "working"}:
             return "Working..."
     if method == "thread/tokenUsage/updated":
