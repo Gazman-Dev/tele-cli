@@ -2218,9 +2218,6 @@ def run_service(
     if not config or not auth:
         raise RuntimeError("Run setup first.")
     ensure_instruction_files(paths)
-    startup_now = datetime.now().astimezone()
-    if has_pending_sleep_work(paths) and should_run_sleep(paths, startup_now, config.sleep_hour_local):
-        run_sleep(paths, config, startup_now, config.sleep_hour_local)
     write_codex_cli_preferences(
         approval_policy=config.approval_policy,
         sandbox_mode=config.sandbox_mode,
@@ -2297,6 +2294,10 @@ def run_service(
         poll_gate=poll_gate,
     )
     threading.Event().wait(0.02)
+    startup_now = datetime.now().astimezone()
+    if has_pending_sleep_work(paths) and should_run_sleep(paths, startup_now, config.sleep_hour_local):
+        poll_gate.set()
+        run_sleep(paths, config, startup_now, config.sleep_hour_local)
 
     try:
         if has_pending_pairing(auth) and isatty():
@@ -2412,6 +2413,7 @@ def run_service(
                 last_sleep_check = time.monotonic()
                 current_local = datetime.now().astimezone()
                 if has_pending_sleep_work(paths) and should_run_sleep(paths, current_local, config.sleep_hour_local):
+                    poll_gate.set()
                     run_sleep(paths, config, current_local, config.sleep_hour_local)
             drain_codex_approvals(paths, auth, telegram, codex, performance)
             drain_codex_notifications(

@@ -554,6 +554,39 @@ class ServiceLoopTests(unittest.TestCase):
             self.assertEqual(session.status, "RUNNING_TURN")
             self.assertEqual(session.thread_id, "thread-1")
 
+    def test_run_service_writes_runtime_before_startup_sleep(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            save_json(paths.config, Config(state_dir=str(paths.root), sleep_hour_local=2).to_dict())
+            save_json(paths.auth, auth.to_dict())
+            memory_dir = paths.root / "memory" / "sessions"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            memory_dir.joinpath("session-1.short_memory.md").write_text("- pending\n", encoding="utf-8")
+
+            transport = InMemoryJsonRpcTransport()
+            server = FakeAppServer(transport)
+            server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+            server.on("getAccount", lambda payload: {"status": "ready", "accountType": "chatgpt"})
+            start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
+            telegram = SequentialTelegramClient(batches=[[]])
+            app_lock = FakeAppLock()
+
+            def crash_sleep(*args, **kwargs):
+                runtime = load_json(paths.runtime, RuntimeState.from_dict)
+                self.assertIsNotNone(runtime)
+                assert runtime is not None
+                self.assertEqual(runtime.service_state, "RUNNING")
+                raise KeyboardInterrupt()
+
+            with (
+                patch("runtime.service.TelegramClient", return_value=telegram),
+                patch("runtime.service.prepare_service_lock", return_value=(app_lock, object())),
+                patch("runtime.service.run_sleep", side_effect=crash_sleep),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_service(paths, start_codex_session_fn=start_fn)
+
 
 if __name__ == "__main__":
     unittest.main()
