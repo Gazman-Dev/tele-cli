@@ -34,6 +34,7 @@ from runtime.service import (
     replay_login_callback,
 )
 from runtime.session_store import SessionStore
+from runtime.telegram_markdown import to_telegram_markdown_v2
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 from tests.fakes.fake_telegram import FakeTelegramClient
 
@@ -1819,7 +1820,49 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         self.assertEqual(telegram.parse_modes, ["MarkdownV2", None])
-        self.assertEqual(telegram.messages, [(22, "*Title*\n*bold*")])
+        self.assertEqual(telegram.messages, [(22, "# Title\n**bold**")])
+
+    def test_final_reply_falls_back_to_plain_text_when_markdown_edit_fails(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 7
+        store.save_session(session)
+
+        class FallbackEditTelegram(FakeTelegramClient):
+            def __init__(self):
+                super().__init__()
+                self.parse_modes: list[str | None] = []
+
+            def edit_message_text(self, chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> dict:
+                self.parse_modes.append(parse_mode)
+                if parse_mode == "MarkdownV2":
+                    raise TelegramError("can't parse entities")
+                return super().edit_message_text(chat_id, message_id, text, parse_mode=parse_mode)
+
+        telegram = FallbackEditTelegram()
+        session.pending_output_text = "# Title\n**bold**"
+        store.save_session(session)
+
+        flush_buffer(
+            session.session_id,
+            auth,
+            telegram,
+            self.recorder,
+            store,
+            mark_agent=True,
+        )
+
+        self.assertEqual(telegram.parse_modes, ["MarkdownV2", None])
+        self.assertEqual(telegram.edits, [(22, 7, "# Title\n**bold**")])
 
     def test_turn_completed_does_not_duplicate_item_completed_agent_message(self) -> None:
         auth = AuthState(
@@ -1928,7 +1971,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.last_delivered_output_text, final_text)
         self.assertEqual(updated.pending_output_text, "")
         self.assertEqual(updated.streaming_output_text, "")
-        self.assertEqual(telegram.edits[-1], (22, 1, final_text.replace("-", "\\-").replace(".", "\\.")))
+        self.assertEqual(telegram.edits[-1], (22, 1, to_telegram_markdown_v2(final_text)))
 
     def test_cumulative_assistant_message_deltas_do_not_duplicate_output(self) -> None:
         auth = AuthState(
@@ -2011,7 +2054,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.last_delivered_output_text, revised_text)
         self.assertEqual(updated.pending_output_text, "")
         self.assertEqual(updated.streaming_output_text, "")
-        self.assertEqual(telegram.messages, [(22, revised_text.replace("-", "\\-").replace(".", "\\."))])
+        self.assertEqual(telegram.messages, [(22, to_telegram_markdown_v2(revised_text))])
 
     def test_cumulative_item_agent_message_deltas_edit_in_place_without_duplication(self) -> None:
         auth = AuthState(
@@ -2155,8 +2198,8 @@ class ServiceFlowTests(unittest.TestCase):
         store.save_session(session)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Thinking")])
-        self.assertEqual(updated.streaming_message_id, 1)
+        self.assertEqual(telegram.messages, [])
+        self.assertIsNone(updated.streaming_message_id)
         self.assertEqual(updated.thinking_message_text, "Thinking")
         self.assertEqual(updated.streaming_output_text, "")
 
@@ -2182,8 +2225,8 @@ class ServiceFlowTests(unittest.TestCase):
         updated = store.find_by_thread_id("thread-1")
         self.assertIsNotNone(updated)
         assert updated is not None
-        self.assertEqual(telegram.messages, [(44, "Thinking", 77)])
-        self.assertEqual(updated.streaming_message_id, 1)
+        self.assertEqual(telegram.messages, [])
+        self.assertIsNone(updated.streaming_message_id)
         self.assertEqual(updated.thinking_message_text, "Thinking")
         self.assertEqual(updated.streaming_output_text, "")
 
@@ -2207,8 +2250,8 @@ class ServiceFlowTests(unittest.TestCase):
         maybe_refresh_thinking_message(self.paths, auth, telegram, store)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.edits, [(22, 1, "Thinking...")])
-        self.assertEqual(updated.thinking_message_text, "Thinking...")
+        self.assertEqual(telegram.edits, [])
+        self.assertEqual(updated.thinking_message_text, "Thinking")
 
     def test_drain_codex_notifications_surfaces_reasoning_text_before_answer(self) -> None:
         auth = AuthState(
@@ -2241,7 +2284,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Checking recent release notes...")])
+        self.assertEqual(telegram.messages, [])
         self.assertEqual(updated.thinking_message_text, "Checking recent release notes...")
         self.assertEqual(updated.streaming_output_text, "")
 
@@ -2280,7 +2323,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Running command: git status --short")])
+        self.assertEqual(telegram.messages, [])
         self.assertEqual(updated.thinking_message_text, "Running command: git status --short")
 
     def test_extract_activity_text_from_search_tool(self) -> None:
@@ -2366,8 +2409,8 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Checking")])
-        self.assertEqual(telegram.edits, [(22, 1, "Checking release notes")])
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(telegram.edits, [])
         self.assertEqual(updated.thinking_message_text, "Checking release notes")
 
     def test_drain_codex_notifications_reads_reasoning_arrays_from_completed_items(self) -> None:
@@ -2405,7 +2448,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Checking docs\nComparing schemas")])
+        self.assertEqual(telegram.messages, [])
         self.assertEqual(updated.thinking_message_text, "Checking docs\nComparing schemas")
 
     def test_drain_codex_notifications_streams_short_item_agent_message_delta(self) -> None:
@@ -2594,8 +2637,8 @@ class ServiceFlowTests(unittest.TestCase):
             now=datetime.now(timezone.utc),
         )
 
-        self.assertIsNotNone(sent_at)
-        self.assertEqual(telegram.typing_actions, [22])
+        self.assertIsNone(sent_at)
+        self.assertEqual(telegram.typing_actions, [])
 
     def test_maybe_send_typing_indicator_routes_to_session_chat(self) -> None:
         auth = AuthState(
@@ -2623,8 +2666,8 @@ class ServiceFlowTests(unittest.TestCase):
             now=datetime.now(timezone.utc),
         )
 
-        self.assertIsNotNone(sent_at)
-        self.assertEqual(telegram.typing_actions, [(44, 77)])
+        self.assertIsNone(sent_at)
+        self.assertEqual(telegram.typing_actions, [])
 
     def test_maybe_send_typing_indicator_is_suppressed_while_approval_is_pending(self) -> None:
         auth = AuthState(

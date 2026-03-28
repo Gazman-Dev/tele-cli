@@ -289,8 +289,7 @@ class ServiceLoopTests(unittest.TestCase):
                     with self.assertRaises(KeyboardInterrupt):
                         run_service(paths, start_codex_session_fn=start_fn)
 
-            self.assertTrue(telegram.typing_actions)
-            self.assertTrue(all(chat_id == 22 for chat_id in telegram.typing_actions))
+            self.assertEqual(telegram.typing_actions, [])
 
     def test_run_service_restarts_codex_after_child_exit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

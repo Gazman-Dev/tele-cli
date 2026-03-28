@@ -678,40 +678,7 @@ def ensure_thinking_message(
     text: str | None = None,
     performance: PerformanceTracker | None = None,
 ) -> None:
-    target_chat_id = session.transport_chat_id or auth.telegram_chat_id
-    if not target_chat_id:
-        return
-    if session.streaming_output_text:
-        return
     display_text = text or default_thinking_text(session)
-    if session.streaming_message_id is not None:
-        if session.thinking_message_text == display_text:
-            return
-        edit_telegram_message(
-            telegram,
-            target_chat_id,
-            session.streaming_message_id,
-            display_text,
-            performance=performance,
-            category="assistant_placeholder",
-            session_id=session.session_id,
-            thread_id=session.thread_id,
-            turn_id=session.active_turn_id,
-        )
-        session.thinking_message_text = display_text
-        return
-    message_id = send_telegram_message(
-        telegram,
-        target_chat_id,
-        display_text,
-        topic_id=session.transport_topic_id,
-        performance=performance,
-        category="assistant_placeholder",
-        session_id=session.session_id,
-        thread_id=session.thread_id,
-        turn_id=session.active_turn_id,
-    )
-    session.streaming_message_id = message_id
     session.thinking_message_text = display_text
 
 
@@ -723,22 +690,7 @@ def maybe_refresh_thinking_message(
     *,
     performance: PerformanceTracker | None = None,
 ) -> None:
-    if ApprovalStore(paths).pending():
-        return
-    current = get_latest_user_session(session_store, auth, require_active_turn=True)
-    if current is None or not current.attached or not current.active_turn_id:
-        return
-    if current.pending_output_text or current.streaming_output_text:
-        return
-    if current.streaming_message_id is None and not current.thinking_message_text:
-        return
-    if current.thinking_message_text and not is_default_thinking_text(current.thinking_message_text):
-        return
-    next_text = default_thinking_text(current)
-    if current.thinking_message_text == next_text:
-        return
-    ensure_thinking_message(auth, telegram, current, text=next_text, performance=performance)
-    session_store.save_session(current)
+    return
 
 
 def append_thinking_delta(
@@ -935,11 +887,10 @@ def flush_buffer(
             session_store.save_session(session)
         session_store.consume_pending_output(session)
         return
-    chunks = split_telegram_text(text)
-    if not chunks:
+    plain_chunks = split_telegram_text(text)
+    if not plain_chunks:
         return
-    if mark_agent:
-        chunks = [to_telegram_markdown_v2(chunk) for chunk in chunks]
+    chunks = [to_telegram_markdown_v2(chunk) for chunk in plain_chunks] if mark_agent else plain_chunks
     context = {
         "performance": performance,
         "category": "assistant_output",
@@ -957,6 +908,7 @@ def flush_buffer(
                 chunks[0],
                 parse_mode=parse_mode,
                 allow_plain_fallback=mark_agent,
+                plain_fallback_text=plain_chunks[0],
                 **context,
             )
         else:
@@ -967,12 +919,13 @@ def flush_buffer(
                 topic_id=session.transport_topic_id,
                 parse_mode=parse_mode,
                 allow_plain_fallback=mark_agent,
+                plain_fallback_text=plain_chunks[0],
                 **context,
             )
             if not mark_agent:
                 session.streaming_message_id = message_id
                 session_store.save_session(session)
-        for chunk in chunks[1:]:
+        for index, chunk in enumerate(chunks[1:], start=1):
             send_telegram_message(
                 telegram,
                 target_chat_id,
@@ -980,6 +933,7 @@ def flush_buffer(
                 topic_id=session.transport_topic_id,
                 parse_mode=parse_mode,
                 allow_plain_fallback=mark_agent,
+                plain_fallback_text=plain_chunks[index],
                 **context,
             )
     except TelegramError:
@@ -994,7 +948,7 @@ def flush_buffer(
                 )
             except TelegramError:
                 pass
-        for chunk in chunks:
+        for chunk in plain_chunks:
             send_telegram_message(
                 telegram,
                 target_chat_id,
@@ -1169,25 +1123,6 @@ def maybe_send_typing_indicator(
     last_sent_at: datetime | None,
     now: datetime | None = None,
 ) -> datetime | None:
-    if interval_seconds <= 0:
-        return last_sent_at
-    if ApprovalStore(paths).pending():
-        return last_sent_at
-    current = get_latest_user_session(session_store, auth, require_active_turn=True)
-    if current is None or not current.attached or not current.active_turn_id:
-        return last_sent_at
-    target_chat_id = current.transport_chat_id or auth.telegram_chat_id
-    if not target_chat_id:
-        return last_sent_at
-    now = now or datetime.now(timezone.utc)
-    if last_sent_at is not None and (now - last_sent_at).total_seconds() < interval_seconds:
-        return last_sent_at
-    if hasattr(telegram, "send_typing"):
-        try:
-            telegram.send_typing(target_chat_id, topic_id=current.transport_topic_id)
-        except TypeError:
-            telegram.send_typing(target_chat_id)
-        return now
     return last_sent_at
 
 

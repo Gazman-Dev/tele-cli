@@ -171,6 +171,7 @@ def send_telegram_message(
     topic_id: int | None = None,
     parse_mode: str | None = None,
     allow_plain_fallback: bool = False,
+    plain_fallback_text: str | None = None,
     performance: PerformanceTracker | None = None,
     **context: Any,
 ) -> int | None:
@@ -191,12 +192,13 @@ def send_telegram_message(
             result = telegram.send_message(chat_id, text)
     except Exception as exc:
         if allow_plain_fallback and parse_mode:
+            fallback_text = plain_fallback_text if plain_fallback_text is not None else text
             if performance is not None:
                 performance.log(
                     "telegram_send_retry_plain",
                     chat_id=chat_id,
                     topic_id=topic_id,
-                    text_chars=len(text),
+                    text_chars=len(fallback_text),
                     parse_mode=parse_mode,
                     error=str(exc),
                     **context,
@@ -204,7 +206,7 @@ def send_telegram_message(
             return send_telegram_message(
                 telegram,
                 chat_id,
-                text,
+                fallback_text,
                 topic_id=topic_id,
                 parse_mode=None,
                 allow_plain_fallback=False,
@@ -248,6 +250,7 @@ def edit_telegram_message(
     *,
     parse_mode: str | None = None,
     allow_plain_fallback: bool = False,
+    plain_fallback_text: str | None = None,
     performance: PerformanceTracker | None = None,
     **context: Any,
 ) -> None:
@@ -268,12 +271,13 @@ def edit_telegram_message(
             telegram.edit_message_text(chat_id, message_id, text)
     except Exception as exc:
         if allow_plain_fallback and parse_mode:
+            fallback_text = plain_fallback_text if plain_fallback_text is not None else text
             if performance is not None:
                 performance.log(
                     "telegram_edit_retry_plain",
                     chat_id=chat_id,
                     message_id=message_id,
-                    text_chars=len(text),
+                    text_chars=len(fallback_text),
                     parse_mode=parse_mode,
                     error=str(exc),
                     **context,
@@ -282,7 +286,7 @@ def edit_telegram_message(
                 telegram,
                 chat_id,
                 message_id,
-                text,
+                fallback_text,
                 parse_mode=None,
                 allow_plain_fallback=False,
                 performance=performance,
