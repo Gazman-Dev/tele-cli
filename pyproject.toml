@@ -15,7 +15,7 @@ tele-cli-ux-demo = "demo_ui:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["cli", "app_shell", "app_meta", "local_chat"]
+py-modules = ["cli", "app_shell", "app_meta", "local_chat", "telegram_command"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
