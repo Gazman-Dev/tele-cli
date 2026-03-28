@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 
+from core.json_store import load_json
+from core.models import AuthState
 from core.paths import AppPaths
 
 
@@ -66,6 +68,30 @@ def session_short_memory_path(paths: AppPaths, session_id: str) -> Path:
     return paths.root / session_short_memory_relpath(session_id)
 
 
+def telegram_session_name(paths: AppPaths, session) -> str:
+    auth = load_json(paths.auth, AuthState.from_dict)
+    if (
+        auth is not None
+        and auth.telegram_chat_id is not None
+        and session.transport_chat_id == auth.telegram_chat_id
+        and session.transport_topic_id is None
+    ):
+        return "main"
+    if session.transport_chat_id is None:
+        return "telegram"
+    if session.transport_topic_id is not None:
+        return f"{session.transport_chat_id}/{session.transport_topic_id}"
+    return str(session.transport_chat_id)
+
+
+def session_name(paths: AppPaths, session) -> str:
+    if session.transport == "local":
+        return (session.transport_channel or "main").strip() or "main"
+    if session.transport == "telegram":
+        return telegram_session_name(paths, session)
+    return session.session_id
+
+
 def _read_text(path: Path) -> str:
     if not path.exists():
         return ""
@@ -106,18 +132,19 @@ def load_lesson_texts(instruction_paths: InstructionPaths, generation_start_excl
     return items
 
 
-def render_session_instructions(paths: AppPaths, session_id: str, refresh_reason: str = "session_start") -> str:
+def render_session_instructions(paths: AppPaths, session, refresh_reason: str = "session_start") -> str:
     instruction_paths = ensure_instruction_files(paths)
     template = _read_text(instruction_paths.template)
     latest_lessons = load_lesson_texts(instruction_paths, -1, 10**9)
     latest_lesson_text = latest_lessons[-1][2] if latest_lessons else ""
     replacements = {
         "{{refresh_reason}}": refresh_reason,
+        "{{session_name}}": session_name(paths, session),
         "{{rules}}": _read_text(instruction_paths.rules),
         "{{personality}}": _read_text(instruction_paths.personality),
         "{{long_memory}}": _read_text(instruction_paths.long_memory),
         "{{lessons}}": latest_lesson_text,
-        "{{session_short_memory_path}}": session_short_memory_relpath(session_id),
+        "{{session_short_memory_path}}": session_short_memory_relpath(session.session_id),
     }
     rendered = template
     for placeholder, value in replacements.items():

@@ -9,20 +9,20 @@ from unittest.mock import patch
 from core.json_store import save_json
 from core.models import AuthState
 from core.paths import build_paths
-from telegram_command import resolve_telegram_channel, run_telegram_command
+from telegram_command import resolve_telegram_session, run_telegram_command
 
 
 class TelegramCommandTests(unittest.TestCase):
-    def test_resolve_telegram_channel_supports_main_and_topic_syntax(self) -> None:
+    def test_resolve_telegram_session_supports_main_and_topic_syntax(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
 
-            self.assertEqual(resolve_telegram_channel(paths, auth, "main"), (22, None))
-            self.assertEqual(resolve_telegram_channel(paths, auth, "-100123/77"), (-100123, 77))
-            self.assertEqual(resolve_telegram_channel(paths, auth, "chat:-100123/topic:77"), (-100123, 77))
+            self.assertEqual(resolve_telegram_session(paths, auth, "main"), (22, None))
+            self.assertEqual(resolve_telegram_session(paths, auth, "-100123/77"), (-100123, 77))
+            self.assertEqual(resolve_telegram_session(paths, auth, "chat:-100123/topic:77"), (-100123, 77))
 
-    def test_resolve_telegram_channel_supports_current_session(self) -> None:
+    def test_resolve_telegram_session_supports_current_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
@@ -32,7 +32,7 @@ class TelegramCommandTests(unittest.TestCase):
             session.last_user_message_at = "2026-03-27T12:00:00+00:00"
             SessionStore(paths).save_session(session)
 
-            self.assertEqual(resolve_telegram_channel(paths, auth, "current"), (22, 77))
+            self.assertEqual(resolve_telegram_session(paths, auth, "current"), (22, 77))
 
     def test_run_telegram_command_sends_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -49,7 +49,7 @@ class TelegramCommandTests(unittest.TestCase):
 
             fake = FakeTelegram("token")
             with patch("telegram_command.TelegramClient", return_value=fake):
-                run_telegram_command(paths, Namespace(channel="main", telegram_target="message", text="hello"))
+                run_telegram_command(paths, Namespace(session_name="main", telegram_target="message", text="hello"))
 
             self.assertEqual(fake.messages, [(22, "hello", None)])
 
@@ -77,8 +77,14 @@ class TelegramCommandTests(unittest.TestCase):
 
             fake = FakeTelegram("token")
             with patch("telegram_command.TelegramClient", return_value=fake):
-                run_telegram_command(paths, Namespace(channel="main", telegram_target="image", path=str(image_path), caption="look"))
-                run_telegram_command(paths, Namespace(channel="-100123/77", telegram_target="file", path=str(file_path), caption="report"))
+                run_telegram_command(
+                    paths,
+                    Namespace(session_name="main", telegram_target="image", path=str(image_path), caption="look"),
+                )
+                run_telegram_command(
+                    paths,
+                    Namespace(session_name="-100123/77", telegram_target="file", path=str(file_path), caption="report"),
+                )
 
             self.assertEqual(fake.photos, [(22, str(image_path.resolve()), "look")])
             self.assertEqual(fake.documents, [(-100123, str(file_path.resolve()), "report")])

@@ -593,21 +593,21 @@ class AppShell:
             + self.ui.panel(
                 "Open Local Chat",
                 [
-                    "Open a local AI Service (Codex) chat channel.",
+                    "Open a local AI Service (Codex) chat session.",
                     "",
-                    "Use main for the default one-to-one channel.",
+                    "Use main for the default one-to-one session.",
                     "Use names like my_group/topic1 to simulate a group topic.",
                     "",
                     f"{Colors.muted}Press Enter on an empty field to use main.{Colors.reset}",
                 ],
                 width=78,
             )
-            + self.ui.input_section("Channel name", 78, title="Channel")
+            + self.ui.input_section("Session name", 78, title="Session")
         )
-        channel = self.ui.input_line("Channel name", panel_width=78, use_existing_field=True).strip() or "main"
+        session_name = self.ui.input_line("Session name", panel_width=78, use_existing_field=True).strip() or "main"
         self.ui.end()
         try:
-            run_local_chat(self.paths, channel=channel)
+            run_local_chat(self.paths, session_name=session_name)
         finally:
             self.ui.begin()
         return None

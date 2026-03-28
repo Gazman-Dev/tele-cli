@@ -1879,6 +1879,97 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [(22, "Final answer")])
         self.assertEqual(updated.last_delivered_output_text, "Final answer")
 
+    def test_cumulative_assistant_message_deltas_do_not_duplicate_output(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": "Hello"}),
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": "Hello there"}),
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": "Hello there friend"}),
+                Notification("turn/completed", {"turnId": "turn-1", "outputText": "Hello there friend"}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_delivered_output_text, "Hello there friend")
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(telegram.messages, [(22, "Hello there friend")])
+
+    def test_cumulative_item_agent_message_deltas_edit_in_place_without_duplication(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.thinking_message_text = "Thinking..."
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("item/agentMessage/delta", {"threadId": "thread-1", "turnId": "turn-1", "delta": "Hello"}),
+                Notification(
+                    "item/agentMessage/delta",
+                    {"threadId": "thread-1", "turnId": "turn-1", "delta": "Hello there"},
+                ),
+                Notification(
+                    "item/agentMessage/delta",
+                    {"threadId": "thread-1", "turnId": "turn-1", "delta": "Hello there friend"},
+                ),
+                Notification("turn/completed", {"turnId": "turn-1", "outputText": "Hello there friend"}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_delivered_output_text, "Hello there friend")
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(
+            telegram.edits,
+            [
+                (22, 1, "Hello"),
+                (22, 1, "Hello there"),
+                (22, 1, "Hello there friend"),
+            ],
+        )
+
     def test_final_reply_is_chunked_when_placeholder_edit_is_too_large(self) -> None:
         auth = AuthState(
             bot_token="token",

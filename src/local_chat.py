@@ -28,8 +28,8 @@ from runtime.service import (
 from runtime.session_store import SessionStore
 
 
-def _normalize_channel(channel: str | None) -> str:
-    candidate = (channel or "").strip()
+def _normalize_session_name(session_name: str | None) -> str:
+    candidate = (session_name or "").strip()
     return candidate or "main"
 
 
@@ -111,7 +111,7 @@ class ChatMessage:
 
 @dataclass
 class LocalChatState:
-    channel: str
+    session_name: str
     input_buffer: str = ""
     assistant_stream: str = ""
     thinking_text: str = ""
@@ -128,12 +128,12 @@ class LocalChatState:
 
 
 class LocalChatApp:
-    def __init__(self, paths: AppPaths, channel: str = "main") -> None:
+    def __init__(self, paths: AppPaths, session_name: str = "main") -> None:
         self.paths = paths
-        self.channel = _normalize_channel(channel)
+        self.session_name = _normalize_session_name(session_name)
         self.ui = TerminalUI()
         self.session_store = SessionStore(paths)
-        self.state = LocalChatState(channel=self.channel)
+        self.state = LocalChatState(session_name=self.session_name)
 
     def run(self) -> None:
         if not self.ui.is_tty:
@@ -174,7 +174,7 @@ class LocalChatApp:
                     continue
                 if key == "esc":
                     return
-                current = self.session_store.get_current_local_session(self.channel)
+                current = self.session_store.get_current_local_session(self.session_name)
                 ready = current is None or not current.active_turn_id
                 if not ready:
                     continue
@@ -189,18 +189,18 @@ class LocalChatApp:
                     if text == "/quit":
                         return
                     if text == "/new":
-                        self.session_store.create_new_local_session(self.channel)
+                        self.session_store.create_new_local_session(self.session_name)
                         self.state.assistant_stream = ""
                         self.state.thinking_text = ""
-                        self.state.notice = "Started a fresh local session for this channel."
+                        self.state.notice = "Started a fresh local session."
                         continue
                     if text == "/stop":
-                        stopped = codex.interrupt_local(self.channel)
+                        stopped = codex.interrupt_local(self.session_name)
                         self.state.notice = "Stopped the active turn." if stopped else "No active turn to stop."
                         continue
                     self.state.notice = ""
                     self.state.push_message("user", text)
-                    codex.send_local(self.channel, text)
+                    codex.send_local(self.session_name, text)
                     self._refresh_status()
                     continue
                 if len(key) == 1 and key.isprintable():
@@ -216,7 +216,7 @@ class LocalChatApp:
             self.ui.end()
 
     def _refresh_status(self) -> None:
-        session = self.session_store.get_current_local_session(self.channel)
+        session = self.session_store.get_current_local_session(self.session_name)
         ready = session is None or not session.active_turn_id
         self.state.status_text = "READY" if ready else "THINKING"
         if not ready and not self.state.thinking_text:
@@ -242,7 +242,7 @@ class LocalChatApp:
             history_lines.extend(_wrap_lines(message.text, 72, prefix=f"{label}: "))
             history_lines.append("")
         if not history_lines:
-            history_lines = [f"{Colors.muted}No messages yet in this channel.{Colors.reset}"]
+            history_lines = [f"{Colors.muted}No messages yet in this session.{Colors.reset}"]
         if history_lines and history_lines[-1] == "":
             history_lines.pop()
 
@@ -258,9 +258,9 @@ class LocalChatApp:
         lines = (
             self.ui.print_header()
             + self.ui.panel(
-                "Local Channel",
+                "Local Session",
                 [
-                    f"channel={self.channel}",
+                    f"session={self.session_name}",
                     f"status={status_badge}",
                     self.state.notice or "",
                 ],
@@ -380,8 +380,8 @@ class LocalChatApp:
             session = self.session_store.find_by_thread_id(thread_id)
             if session is not None:
                 return session
-        return self.session_store.get_current_local_session(self.channel)
+        return self.session_store.get_current_local_session(self.session_name)
 
 
-def run_local_chat(paths: AppPaths, channel: str = "main") -> None:
-    LocalChatApp(paths, channel=channel).run()
+def run_local_chat(paths: AppPaths, session_name: str = "main", channel: str | None = None) -> None:
+    LocalChatApp(paths, session_name=channel or session_name).run()

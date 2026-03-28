@@ -1028,6 +1028,26 @@ def should_append_completion_text(session, assistant_text: str | None) -> bool:
     return True
 
 
+def normalize_incremental_assistant_text(session, text: str | None) -> str:
+    if not text:
+        return ""
+    existing_pending = session.pending_output_text
+    existing_stream = session.streaming_output_text
+    combined = f"{existing_stream}{existing_pending}"
+    if combined and text.startswith(combined):
+        return text[len(combined) :]
+    if existing_pending and text.startswith(existing_pending):
+        return text[len(existing_pending) :]
+    if existing_stream and text.startswith(existing_stream):
+        return text[len(existing_stream) :]
+    delivered = session.last_delivered_output_text
+    if delivered and text.startswith(delivered):
+        return text[len(delivered) :]
+    if text == delivered or text == combined or text == existing_pending or text == existing_stream:
+        return ""
+    return text
+
+
 def parse_utc_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -1821,6 +1841,8 @@ def drain_codex_notifications(
             text = extract_assistant_text(params)
             thinking_text = extract_thinking_text(params)
             activity_text = extract_activity_text(method, params)
+            if session is not None and text:
+                text = normalize_incremental_assistant_text(session, text)
             if session is not None and text:
                 if performance is not None:
                     performance.mark_reply_started(session, trigger=method)

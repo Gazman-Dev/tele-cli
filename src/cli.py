@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tele-cli")
     parser.add_argument("--state-dir", default=None)
     parser.add_argument("-chat", "--chat", dest="chat_mode", action="store_true")
-    parser.add_argument("-channel", "--channel", dest="channel", default="main")
+    parser.add_argument("-session", "--session", "-channel", "--channel", dest="session_name", default="main")
     subparsers = parser.add_subparsers(dest="command", required=False)
     subparsers.add_parser("menu")
     subparsers.add_parser("setup")
@@ -39,21 +39,21 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("complete-pairing")
     telegram_parser = subparsers.add_parser("telegram")
     telegram_subparsers = telegram_parser.add_subparsers(dest="telegram_group", required=True)
-    channel_parser = telegram_subparsers.add_parser("channel")
-    channel_subparsers = channel_parser.add_subparsers(dest="telegram_target", required=True)
-    channel_message_parser = channel_subparsers.add_parser("message")
-    channel_message_parser.add_argument("--channel", default="main")
-    channel_message_parser.add_argument("text")
-    channel_image_parser = channel_subparsers.add_parser("image")
-    channel_image_parser.add_argument("--channel", default="main")
-    channel_image_parser.add_argument("path")
-    channel_image_parser.add_argument("--caption", default=None)
-    channel_file_parser = channel_subparsers.add_parser("file")
-    channel_file_parser.add_argument("--channel", default="main")
-    channel_file_parser.add_argument("path")
-    channel_file_parser.add_argument("--caption", default=None)
+    session_parser = telegram_subparsers.add_parser("session", aliases=["channel"])
+    session_subparsers = session_parser.add_subparsers(dest="telegram_target", required=True)
+    session_message_parser = session_subparsers.add_parser("message")
+    session_message_parser.add_argument("--session", "--channel", dest="session_name", default="main")
+    session_message_parser.add_argument("text")
+    session_image_parser = session_subparsers.add_parser("image")
+    session_image_parser.add_argument("--session", "--channel", dest="session_name", default="main")
+    session_image_parser.add_argument("path")
+    session_image_parser.add_argument("--caption", default=None)
+    session_file_parser = session_subparsers.add_parser("file")
+    session_file_parser.add_argument("--session", "--channel", dest="session_name", default="main")
+    session_file_parser.add_argument("path")
+    session_file_parser.add_argument("--caption", default=None)
     chat_parser = subparsers.add_parser("chat")
-    chat_parser.add_argument("--channel", default="main")
+    chat_parser.add_argument("--session", "--channel", dest="session_name", default="main")
     return parser
 
 
@@ -63,12 +63,12 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     paths = build_paths(args.state_dir)
-    channel = getattr(args, "channel", "main") or "main"
+    session_name = getattr(args, "session_name", "main") or "main"
     if args.command == "chat":
-        channel = args.channel or "main"
+        session_name = args.session_name or "main"
     if args.command in {None, "menu"}:
         if args.chat_mode:
-            run_local_chat(paths, channel=channel)
+            run_local_chat(paths, session_name=session_name)
         else:
             run_app_shell(paths)
     elif args.command == "setup":
@@ -98,7 +98,7 @@ def main() -> None:
     elif args.command == "telegram":
         run_telegram_command(paths, args)
     elif args.command == "chat":
-        run_local_chat(paths, channel=channel)
+        run_local_chat(paths, session_name=session_name)
 
 
 if __name__ == "__main__":

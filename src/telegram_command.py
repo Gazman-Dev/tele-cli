@@ -16,8 +16,8 @@ def _parse_int_token(value: str, *, prefix: str | None = None) -> int:
     return int(token)
 
 
-def resolve_telegram_channel(paths: AppPaths, auth: AuthState, channel: str) -> tuple[int, int | None]:
-    normalized = (channel or "main").strip()
+def resolve_telegram_session(paths: AppPaths, auth: AuthState, session_name: str) -> tuple[int, int | None]:
+    normalized = (session_name or "main").strip()
     if normalized in {"current", "active"}:
         store = SessionStore(paths)
         sessions = [
@@ -35,7 +35,7 @@ def resolve_telegram_channel(paths: AppPaths, auth: AuthState, channel: str) -> 
         return current.transport_chat_id, current.transport_topic_id
     if normalized == "main":
         if auth.telegram_chat_id is None:
-            raise SystemExit("Telegram main channel is not configured.")
+            raise SystemExit("Telegram main session is not configured.")
         return auth.telegram_chat_id, None
     if "/" in normalized:
         chat_token, topic_token = normalized.split("/", 1)
@@ -55,7 +55,7 @@ def require_paired_auth(paths: AppPaths) -> AuthState:
 def run_telegram_command(paths: AppPaths, args) -> None:
     auth = require_paired_auth(paths)
     telegram = TelegramClient(auth.bot_token)
-    chat_id, topic_id = resolve_telegram_channel(paths, auth, args.channel)
+    chat_id, topic_id = resolve_telegram_session(paths, auth, args.session_name)
     if args.telegram_target == "message":
         telegram.send_message(chat_id, args.text, topic_id=topic_id)
         return

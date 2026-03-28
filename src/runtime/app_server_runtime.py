@@ -80,7 +80,7 @@ class AppServerSession:
         if not session.instructions_dirty:
             return text
         if not session.thread_id:
-            instructions = render_session_instructions(self.session_store.paths, session.session_id, refresh_reason="session_start")
+            instructions = render_session_instructions(self.session_store.paths, session, refresh_reason="session_start")
             if not instructions:
                 return text
             return f"{instructions}\n\nUser request:\n{text}"

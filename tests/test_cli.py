@@ -38,21 +38,21 @@ class CliTests(unittest.TestCase):
 
         args = parser.parse_args(["chat"])
         self.assertEqual(args.command, "chat")
-        self.assertEqual(args.channel, "main")
+        self.assertEqual(args.session_name, "main")
 
-        args = parser.parse_args(["telegram", "channel", "message", "--channel", "main", "hello"])
+        args = parser.parse_args(["telegram", "session", "message", "--session", "main", "hello"])
         self.assertEqual(args.command, "telegram")
-        self.assertEqual(args.telegram_group, "channel")
+        self.assertEqual(args.telegram_group, "session")
         self.assertEqual(args.telegram_target, "message")
-        self.assertEqual(args.channel, "main")
+        self.assertEqual(args.session_name, "main")
         self.assertEqual(args.text, "hello")
 
     def test_parser_accepts_chat_flags(self) -> None:
         parser = build_parser()
-        args = parser.parse_args(["-chat", "-channel", "my_group/topic1"])
+        args = parser.parse_args(["-chat", "-session", "my_group/topic1"])
 
         self.assertTrue(args.chat_mode)
-        self.assertEqual(args.channel, "my_group/topic1")
+        self.assertEqual(args.session_name, "my_group/topic1")
 
     def test_main_returns_to_menu_after_setup_in_interactive_terminal(self) -> None:
         with (
@@ -95,7 +95,7 @@ class CliTests(unittest.TestCase):
     def test_main_runs_local_chat_from_quick_flags(self) -> None:
         with (
             patch("platform.system", return_value="Linux"),
-            patch.object(sys, "argv", ["tele-cli", "-chat", "-channel", "my_group/topic1"]),
+            patch.object(sys, "argv", ["tele-cli", "-chat", "-session", "my_group/topic1"]),
             patch("cli.run_local_chat") as run_local_chat_mock,
             patch("cli.run_app_shell") as run_app_shell_mock,
         ):
@@ -103,10 +103,10 @@ class CliTests(unittest.TestCase):
 
         run_local_chat_mock.assert_called_once()
         _, kwargs = run_local_chat_mock.call_args
-        self.assertEqual(kwargs["channel"], "my_group/topic1")
+        self.assertEqual(kwargs["session_name"], "my_group/topic1")
         run_app_shell_mock.assert_not_called()
 
-    def test_main_runs_local_chat_subcommand_with_default_channel(self) -> None:
+    def test_main_runs_local_chat_subcommand_with_default_session(self) -> None:
         with (
             patch("platform.system", return_value="Linux"),
             patch.object(sys, "argv", ["tele-cli", "chat"]),
@@ -116,7 +116,7 @@ class CliTests(unittest.TestCase):
 
         run_local_chat_mock.assert_called_once()
         _, kwargs = run_local_chat_mock.call_args
-        self.assertEqual(kwargs["channel"], "main")
+        self.assertEqual(kwargs["session_name"], "main")
 
     def test_main_runs_setup_directly_without_tty(self) -> None:
         with (
@@ -131,10 +131,10 @@ class CliTests(unittest.TestCase):
         run_setup_mock.assert_called_once()
         run_app_shell_mock.assert_not_called()
 
-    def test_main_routes_telegram_channel_command(self) -> None:
+    def test_main_routes_telegram_session_command(self) -> None:
         with (
             patch("platform.system", return_value="Linux"),
-            patch.object(sys, "argv", ["tele-cli", "telegram", "channel", "message", "--channel", "main", "hello"]),
+            patch.object(sys, "argv", ["tele-cli", "telegram", "session", "message", "--session", "main", "hello"]),
             patch("cli.run_telegram_command") as run_telegram_command_mock,
         ):
             main()

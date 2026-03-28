@@ -167,7 +167,7 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(turn_start["params"]["cwd"], str(paths.root))
         self.assertEqual(turn_start["params"]["personality"], "pragmatic")
         first_input = turn_start["params"]["input"][0]["text"]
-        self.assertIn("You are Tele Cli, a Telegram-first coding assistant", first_input)
+        self.assertIn("You are Tele Cli, a Telegram-first personal assistant", first_input)
         self.assertIn("memory/sessions/", first_input)
         self.assertIn("User request:\nhello", first_input)
         turn_steer = next(payload for payload in server.received if payload["method"] == "turn/steer")
@@ -267,7 +267,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertIsNone(stored_sessions[0].active_turn_id)
             self.assertEqual(stored_sessions[0].status, "INTERRUPTED")
 
-    def test_app_server_session_send_local_uses_channel_session(self) -> None:
+    def test_app_server_session_send_local_uses_named_session(self) -> None:
         transport = InMemoryJsonRpcTransport()
         server = FakeAppServer(transport)
         server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
@@ -307,6 +307,7 @@ class AppServerRuntimeTests(unittest.TestCase):
 
         turn_start = next(payload for payload in server.received if payload["method"] == "turn/start")
         first_input = turn_start["params"]["input"][0]["text"]
+        self.assertIn("Current session name: my_group/topic1", first_input)
         self.assertIn("User request:\nhello local", first_input)
 
     def test_bootstrap_reuses_persisted_thread_id_via_resume(self) -> None:
