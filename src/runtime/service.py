@@ -38,7 +38,13 @@ from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
 from .sleep import has_pending_sleep_work, run_sleep, should_run_sleep
-from .telegram_markdown import code_block_telegram_markdown_v2, escape_telegram_markdown_v2, to_telegram_markdown_v2
+from .telegram_markdown import (
+    code_block_telegram_markdown_v2,
+    escape_telegram_markdown_v2,
+    normalize_existing_telegram_markdown_v2,
+    normalize_telegram_markdown_source,
+    to_telegram_markdown_v2,
+)
 from .telegram_update_store import TelegramUpdateStore
 
 
@@ -961,11 +967,13 @@ def flush_buffer(
             )
 
     if mark_agent:
-        formatted_chunks = [to_telegram_markdown_v2(chunk) for chunk in plain_chunks]
-        escaped_chunks = [escape_telegram_markdown_v2(chunk) for chunk in plain_chunks]
-        emergency_chunks = [code_block_telegram_markdown_v2(chunk) for chunk in plain_chunks]
+        raw_chunks = [normalize_existing_telegram_markdown_v2(chunk) for chunk in plain_chunks]
+        normalized_source_chunks = [normalize_telegram_markdown_source(chunk) for chunk in plain_chunks]
+        formatted_chunks = [to_telegram_markdown_v2(chunk) for chunk in normalized_source_chunks]
+        escaped_chunks = [escape_telegram_markdown_v2(chunk) for chunk in normalized_source_chunks]
+        emergency_chunks = [code_block_telegram_markdown_v2(chunk) for chunk in normalized_source_chunks]
         attempts = [
-            ("raw_markdown", plain_chunks),
+            ("raw_markdown", raw_chunks),
             ("formatted_markdown", formatted_chunks),
             ("escaped_markdown", escaped_chunks),
             ("code_block_markdown", emergency_chunks),

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from runtime.telegram_markdown import code_block_telegram_markdown_v2, escape_telegram_markdown_v2, to_telegram_markdown_v2
+from runtime.telegram_markdown import (
+    code_block_telegram_markdown_v2,
+    escape_telegram_markdown_v2,
+    normalize_existing_telegram_markdown_v2,
+    normalize_telegram_markdown_source,
+    to_telegram_markdown_v2,
+)
 
 
 class TelegramMarkdownTests(unittest.TestCase):
@@ -25,6 +31,11 @@ class TelegramMarkdownTests(unittest.TestCase):
         text = "# Title\n**bold** and _italic_"
         rendered = to_telegram_markdown_v2(text)
         self.assertEqual(rendered, "*Title*\n*bold* and _italic_")
+
+    def test_preserves_single_asterisk_bold(self) -> None:
+        text = "*bold* and _italic_"
+        rendered = to_telegram_markdown_v2(text)
+        self.assertEqual(rendered, "*bold* and _italic_")
 
     def test_preserves_links(self) -> None:
         text = "See [OpenAI](https://openai.com/docs)."
@@ -50,6 +61,16 @@ class TelegramMarkdownTests(unittest.TestCase):
         text = "hello\n`code`"
         rendered = code_block_telegram_markdown_v2(text)
         self.assertEqual(rendered, "```\nhello\n\\`code\\`\n```")
+
+    def test_normalize_existing_telegram_markdown_v2_fixes_dashes_and_bullets(self) -> None:
+        text = "I’m *Tele Cli* — your Telegram\\-first assistant.\n- one\n- two"
+        rendered = normalize_existing_telegram_markdown_v2(text)
+        self.assertEqual(rendered, "I’m *Tele Cli* \\- your Telegram\\-first assistant.\n\\- one\n\\- two")
+
+    def test_normalize_telegram_markdown_source_unescapes_existing_telegram_escapes(self) -> None:
+        text = "Telegram\\-first\n\\- bullet\n\\*not bold\\*"
+        rendered = normalize_telegram_markdown_source(text)
+        self.assertEqual(rendered, "Telegram-first\n- bullet\n*not bold*")
 
 
 if __name__ == "__main__":

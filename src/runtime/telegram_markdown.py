@@ -4,6 +4,12 @@ import re
 
 
 _SPECIAL_CHARS = set("\\_*[]()~`>#+-=|{}.!")
+_DASH_TRANSLATION = str.maketrans({
+    "—": "-",
+    "–": "-",
+    "‑": "-",
+    "−": "-",
+})
 
 
 def _escape_plain(text: str) -> str:
@@ -18,6 +24,24 @@ def _escape_plain(text: str) -> str:
 
 def escape_telegram_markdown_v2(text: str) -> str:
     return _escape_plain(text)
+
+
+def normalize_existing_telegram_markdown_v2(text: str) -> str:
+    normalized = text.translate(_DASH_TRANSLATION)
+    lines: list[str] = []
+    for line in normalized.splitlines():
+        updated = line
+        updated = re.sub(r"^(\s*)-\s", r"\1\\- ", updated)
+        updated = updated.replace(" - ", " \\- ")
+        lines.append(updated)
+    return "\n".join(lines)
+
+
+def normalize_telegram_markdown_source(text: str) -> str:
+    normalized = text.translate(_DASH_TRANSLATION)
+    normalized = re.sub(r"\\([_*\[\]()~`>#+\-=|{}.!])", r"\1", normalized)
+    normalized = normalized.replace("\\\\", "\\")
+    return normalized
 
 
 def _escape_code(text: str) -> str:
@@ -82,6 +106,7 @@ def to_telegram_markdown_v2(text: str) -> str:
         return stash(f"*{_escape_plain(match.group(1))}*")
 
     normalized = re.sub(r"(?<!\*)\*\*([^\n*][^*]*?)\*\*(?!\*)", replace_bold, normalized)
+    normalized = re.sub(r"(?<!\*)\*([^\n*][^*]*?)\*(?!\*)", replace_bold, normalized)
 
     def replace_strike(match: re.Match[str]) -> str:
         return stash(f"~{_escape_plain(match.group(1))}~")

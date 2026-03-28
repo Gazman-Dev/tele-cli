@@ -1895,6 +1895,55 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [(22, text)])
         self.assertFalse((self.paths.root / "telegram_format_failures.log").exists())
 
+    def test_final_reply_normalizes_mixed_existing_telegram_markdownv2(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        class MixedTelegram(FakeTelegramClient):
+            def __init__(self):
+                super().__init__()
+                self.parse_modes: list[str | None] = []
+
+            def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode: str | None = None) -> dict:
+                self.parse_modes.append(parse_mode)
+                if parse_mode == "MarkdownV2" and text.startswith("I’m *Tele Cli* —"):
+                    raise TelegramError("can't parse entities")
+                return super().send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
+
+        telegram = MixedTelegram()
+        codex = FakeCodex()
+        text = (
+            "I’m *Tele Cli* — your Telegram\\-first personal assistant running on your own device.\n\n"
+            "- one\n"
+            "- two"
+        )
+        codex.pending_notifications.append(
+            Notification("turn/completed", {"turnId": "turn-1", "outputText": text})
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        self.assertEqual(telegram.parse_modes, ["MarkdownV2"])
+        self.assertEqual(
+            telegram.messages,
+            [(22, "I’m *Tele Cli* \\- your Telegram\\-first personal assistant running on your own device.\n\n\\- one\n\\- two")],
+        )
+
     def test_final_reply_uses_markdown_code_block_emergency_fallback_and_logs_failure(self) -> None:
         auth = AuthState(
             bot_token="token",
