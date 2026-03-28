@@ -111,6 +111,14 @@ def append_telegram_format_failure_log(
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+def append_telegram_poll_log(paths: AppPaths, event: str, **fields: object) -> None:
+    paths.root.mkdir(parents=True, exist_ok=True)
+    record = {"timestamp": utc_now(), "event": event}
+    record.update(fields)
+    with paths.root.joinpath("telegram_poll.log").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
 def remember_agent_message_phase(method: str, params: dict) -> str | None:
     item = params.get("item")
     if isinstance(item, dict) and item.get("type") == "agentMessage":
@@ -167,16 +175,23 @@ def start_telegram_polling_thread(
         offset: int | None = None
         telegram_failures = 0
         next_poll_at = 0.0
+        append_telegram_poll_log(paths, "thread_started")
         while not stop_event.is_set():
-            if not poll_gate.is_set() or not update_queue.empty():
-                stop_event.wait(0.01)
-                continue
-            now = time.monotonic()
-            if now < next_poll_at:
-                stop_event.wait(min(next_poll_at - now, 0.1))
-                continue
             try:
+                if not poll_gate.is_set() or not update_queue.empty():
+                    stop_event.wait(0.01)
+                    continue
+                now = time.monotonic()
+                if now < next_poll_at:
+                    stop_event.wait(min(next_poll_at - now, 0.1))
+                    continue
                 updates = telegram.get_updates(offset=offset, timeout=20)
+                append_telegram_poll_log(
+                    paths,
+                    "poll_result",
+                    offset=offset,
+                    update_count=len(updates),
+                )
                 if runtime_state.telegram_state != "RUNNING":
                     runtime_state.telegram_state = "RUNNING"
                     save_json(paths.runtime, runtime_state.to_dict())
@@ -189,11 +204,28 @@ def start_telegram_polling_thread(
                 runtime_state.telegram_state = "BACKOFF"
                 save_json(paths.runtime, runtime_state.to_dict())
                 append_recovery_log(paths.recovery_log, f"telegram poll failed -> backoff={delay:.1f}s error={exc}")
+                append_telegram_poll_log(paths, "poll_error", error=str(exc), backoff_seconds=delay)
+                continue
+            except Exception as exc:
+                telegram_failures += 1
+                delay = telegram_retry_delay(config, telegram_failures)
+                next_poll_at = time.monotonic() + delay
+                runtime_state.telegram_state = "BACKOFF"
+                save_json(paths.runtime, runtime_state.to_dict())
+                append_recovery_log(paths.recovery_log, f"telegram poll crashed -> backoff={delay:.1f}s error={exc}")
+                append_telegram_poll_log(
+                    paths,
+                    "poll_crash",
+                    error=repr(exc),
+                    error_type=type(exc).__name__,
+                    backoff_seconds=delay,
+                )
                 continue
             for update in updates:
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):
                     offset = update_id + 1
+                append_telegram_poll_log(paths, "update_enqueued", update_id=update_id, next_offset=offset)
                 update_queue.put(update)
 
     thread = threading.Thread(target=worker, name="telegram-poll", daemon=True)
@@ -2284,6 +2316,18 @@ def run_service(
                 performance=performance,
             )
         while True:
+            if not telegram_thread.is_alive():
+                append_recovery_log(paths.recovery_log, "telegram poll thread stopped -> restarting")
+                append_telegram_poll_log(paths, "thread_restarting")
+                telegram_thread = start_telegram_polling_thread(
+                    paths=paths,
+                    config=config,
+                    telegram=telegram,
+                    runtime_state=runtime_state,
+                    update_queue=updates_queue,
+                    stop_event=stop_event,
+                    poll_gate=poll_gate,
+                )
             poll_gate.clear()
             processed_updates = False
             while True:

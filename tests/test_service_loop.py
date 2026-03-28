@@ -83,6 +83,21 @@ class FlakyTelegramClient(SequentialTelegramClient):
         return []
 
 
+class CrashingTelegramClient(SequentialTelegramClient):
+    def __init__(self, outcomes: list[object]) -> None:
+        super().__init__(batches=[])
+        self._outcomes = list(outcomes)
+
+    def get_updates(self, offset=None, timeout: int = 20) -> list[dict]:
+        self._calls += 1
+        if self._outcomes:
+            outcome = self._outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return list(outcome)
+        return []
+
+
 class ServiceLoopTests(unittest.TestCase):
     def _run_service_once(self, paths, telegram, start_fn, app_lock, sleep_side_effect=KeyboardInterrupt()) -> None:
         with (
@@ -458,6 +473,52 @@ class ServiceLoopTests(unittest.TestCase):
             self.assertIsNotNone(runtime)
             assert runtime is not None
             self.assertEqual(runtime.telegram_state, "RUNNING")
+
+    def test_run_service_recovers_after_unexpected_telegram_poll_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            save_json(
+                paths.config,
+                Config(
+                    state_dir=str(paths.root),
+                    telegram_backoff_seconds=0.0,
+                    telegram_backoff_max_seconds=0.0,
+                ).to_dict(),
+            )
+            save_json(paths.auth, auth.to_dict())
+            transport = InMemoryJsonRpcTransport()
+            server = FakeAppServer(transport)
+            server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+            server.on("getAccount", lambda payload: {"status": "ready", "accountType": "chatgpt"})
+            server.on("thread/start", lambda payload: {"threadId": "thread-1"})
+            server.on("turn/start", lambda payload: {"turnId": "turn-1"})
+            start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
+            telegram = CrashingTelegramClient(
+                [
+                    ValueError("bad json"),
+                    [{"update_id": 1, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "hello"}}],
+                ]
+            )
+            app_lock = FakeAppLock()
+
+            with patch("runtime.service.time.sleep", side_effect=[None, KeyboardInterrupt()]):
+                with (
+                    patch("runtime.service.TelegramClient", return_value=telegram),
+                    patch("runtime.service.prepare_service_lock", return_value=(app_lock, object())),
+                ):
+                    with self.assertRaises(KeyboardInterrupt):
+                        run_service(paths, start_codex_session_fn=start_fn)
+
+            runtime = load_json(paths.runtime, RuntimeState.from_dict)
+            self.assertIsNotNone(runtime)
+            assert runtime is not None
+            self.assertEqual(runtime.telegram_state, "RUNNING")
+            processed = paths.telegram_updates.read_text(encoding="utf-8")
+            self.assertIn("1", processed)
+            poll_log = paths.root.joinpath("telegram_poll.log").read_text(encoding="utf-8")
+            self.assertIn("poll_crash", poll_log)
+            self.assertIn("update_enqueued", poll_log)
 
 
 if __name__ == "__main__":
