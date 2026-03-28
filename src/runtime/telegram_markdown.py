@@ -16,6 +16,10 @@ def _escape_plain(text: str) -> str:
     return "".join(escaped)
 
 
+def escape_telegram_markdown_v2(text: str) -> str:
+    return _escape_plain(text)
+
+
 def _escape_code(text: str) -> str:
     return text.replace("\\", "\\\\").replace("`", "\\`")
 
@@ -83,7 +87,7 @@ def to_telegram_markdown_v2(text: str) -> str:
 
     normalized = re.sub(r"(?<![A-Za-z0-9_])_([^_\n]+?)_(?![A-Za-z0-9_])", replace_italic, normalized)
 
-    escaped = _escape_plain(normalized)
+    escaped = escape_telegram_markdown_v2(normalized)
 
     def restore(match: re.Match[str]) -> str:
         return placeholders[int(match.group(1))]

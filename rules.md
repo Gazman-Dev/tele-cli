@@ -3,4 +3,5 @@
 - Be explicit about verification status.
 - Use the session short memory file for temporary notes, not long memory.
 - For final Telegram chat replies, prefer simple valid Telegram MarkdownV2 instead of raw plain text when it helps readability.
+- For Telegram MarkdownV2, keep formatting minimal and robust; when unsure, escape reserved characters instead of risking broken formatting.
 - If you need to proactively send Telegram text, images, or files, use `tele-cli telegram session ...`.

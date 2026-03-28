@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from runtime.telegram_markdown import to_telegram_markdown_v2
+from runtime.telegram_markdown import escape_telegram_markdown_v2, to_telegram_markdown_v2
 
 
 class TelegramMarkdownTests(unittest.TestCase):
@@ -35,6 +35,11 @@ class TelegramMarkdownTests(unittest.TestCase):
         text = "**bold\n[broken](not-a-url)"
         rendered = to_telegram_markdown_v2(text)
         self.assertEqual(rendered, "\\*\\*bold\n\\[broken\\]\\(not\\-a\\-url\\)")
+
+    def test_escape_telegram_markdown_v2_escapes_plain_text_without_formatting(self) -> None:
+        text = "# Title\n**bold**"
+        rendered = escape_telegram_markdown_v2(text)
+        self.assertEqual(rendered, "\\# Title\n\\*\\*bold\\*\\*")
 
 
 if __name__ == "__main__":

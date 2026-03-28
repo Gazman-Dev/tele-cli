@@ -34,7 +34,7 @@ from runtime.service import (
     replay_login_callback,
 )
 from runtime.session_store import SessionStore
-from runtime.telegram_markdown import to_telegram_markdown_v2
+from runtime.telegram_markdown import escape_telegram_markdown_v2, to_telegram_markdown_v2
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 from tests.fakes.fake_telegram import FakeTelegramClient
 
@@ -1807,7 +1807,7 @@ class ServiceFlowTests(unittest.TestCase):
 
             def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode: str | None = None) -> dict:
                 self.parse_modes.append(parse_mode)
-                if parse_mode == "MarkdownV2":
+                if parse_mode == "MarkdownV2" and text == "*Title*\n*bold*":
                     raise TelegramError("can't parse entities")
                 return super().send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
 
@@ -1819,8 +1819,8 @@ class ServiceFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        self.assertEqual(telegram.parse_modes, ["MarkdownV2", None])
-        self.assertEqual(telegram.messages, [(22, "# Title\n**bold**")])
+        self.assertEqual(telegram.parse_modes, ["MarkdownV2", "MarkdownV2"])
+        self.assertEqual(telegram.messages, [(22, escape_telegram_markdown_v2("# Title\n**bold**"))])
 
     def test_final_reply_falls_back_to_plain_text_when_markdown_edit_fails(self) -> None:
         auth = AuthState(
@@ -1844,7 +1844,7 @@ class ServiceFlowTests(unittest.TestCase):
 
             def edit_message_text(self, chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> dict:
                 self.parse_modes.append(parse_mode)
-                if parse_mode == "MarkdownV2":
+                if parse_mode == "MarkdownV2" and text == "*Title*\n*bold*":
                     raise TelegramError("can't parse entities")
                 return super().edit_message_text(chat_id, message_id, text, parse_mode=parse_mode)
 
@@ -1861,8 +1861,8 @@ class ServiceFlowTests(unittest.TestCase):
             mark_agent=True,
         )
 
-        self.assertEqual(telegram.parse_modes, ["MarkdownV2", None])
-        self.assertEqual(telegram.edits, [(22, 7, "# Title\n**bold**")])
+        self.assertEqual(telegram.parse_modes, ["MarkdownV2", "MarkdownV2"])
+        self.assertEqual(telegram.edits, [(22, 7, escape_telegram_markdown_v2("# Title\n**bold**"))])
 
     def test_turn_completed_does_not_duplicate_item_completed_agent_message(self) -> None:
         auth = AuthState(
@@ -2637,8 +2637,8 @@ class ServiceFlowTests(unittest.TestCase):
             now=datetime.now(timezone.utc),
         )
 
-        self.assertIsNone(sent_at)
-        self.assertEqual(telegram.typing_actions, [])
+        self.assertIsNotNone(sent_at)
+        self.assertEqual(telegram.typing_actions, [22])
 
     def test_maybe_send_typing_indicator_routes_to_session_chat(self) -> None:
         auth = AuthState(
@@ -2666,8 +2666,8 @@ class ServiceFlowTests(unittest.TestCase):
             now=datetime.now(timezone.utc),
         )
 
-        self.assertIsNone(sent_at)
-        self.assertEqual(telegram.typing_actions, [])
+        self.assertIsNotNone(sent_at)
+        self.assertEqual(telegram.typing_actions, [(44, 77)])
 
     def test_maybe_send_typing_indicator_is_suppressed_while_approval_is_pending(self) -> None:
         auth = AuthState(

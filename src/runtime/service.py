@@ -38,7 +38,7 @@ from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
 from .sleep import has_pending_sleep_work, run_sleep, should_run_sleep
-from .telegram_markdown import to_telegram_markdown_v2
+from .telegram_markdown import escape_telegram_markdown_v2, to_telegram_markdown_v2
 from .telegram_update_store import TelegramUpdateStore
 
 
@@ -891,6 +891,7 @@ def flush_buffer(
     if not plain_chunks:
         return
     chunks = [to_telegram_markdown_v2(chunk) for chunk in plain_chunks] if mark_agent else plain_chunks
+    fallback_chunks = [escape_telegram_markdown_v2(chunk) for chunk in plain_chunks] if mark_agent else plain_chunks
     context = {
         "performance": performance,
         "category": "assistant_output",
@@ -908,7 +909,8 @@ def flush_buffer(
                 chunks[0],
                 parse_mode=parse_mode,
                 allow_plain_fallback=mark_agent,
-                plain_fallback_text=plain_chunks[0],
+                plain_fallback_text=fallback_chunks[0],
+                fallback_parse_mode=TELEGRAM_MARKDOWN_MODE if mark_agent else None,
                 **context,
             )
         else:
@@ -919,7 +921,8 @@ def flush_buffer(
                 topic_id=session.transport_topic_id,
                 parse_mode=parse_mode,
                 allow_plain_fallback=mark_agent,
-                plain_fallback_text=plain_chunks[0],
+                plain_fallback_text=fallback_chunks[0],
+                fallback_parse_mode=TELEGRAM_MARKDOWN_MODE if mark_agent else None,
                 **context,
             )
             if not mark_agent:
@@ -933,7 +936,8 @@ def flush_buffer(
                 topic_id=session.transport_topic_id,
                 parse_mode=parse_mode,
                 allow_plain_fallback=mark_agent,
-                plain_fallback_text=plain_chunks[index],
+                plain_fallback_text=fallback_chunks[index],
+                fallback_parse_mode=TELEGRAM_MARKDOWN_MODE if mark_agent else None,
                 **context,
             )
     except TelegramError:
@@ -1123,6 +1127,25 @@ def maybe_send_typing_indicator(
     last_sent_at: datetime | None,
     now: datetime | None = None,
 ) -> datetime | None:
+    if interval_seconds <= 0:
+        return last_sent_at
+    if ApprovalStore(paths).pending():
+        return last_sent_at
+    current = get_latest_user_session(session_store, auth, require_active_turn=True)
+    if current is None or not current.attached or not current.active_turn_id:
+        return last_sent_at
+    target_chat_id = current.transport_chat_id or auth.telegram_chat_id
+    if not target_chat_id:
+        return last_sent_at
+    now = now or datetime.now(timezone.utc)
+    if last_sent_at is not None and (now - last_sent_at).total_seconds() < interval_seconds:
+        return last_sent_at
+    if hasattr(telegram, "send_typing"):
+        try:
+            telegram.send_typing(target_chat_id, topic_id=current.transport_topic_id)
+        except TypeError:
+            telegram.send_typing(target_chat_id)
+        return now
     return last_sent_at
 
 
