@@ -920,8 +920,6 @@ def flush_buffer(
     plain_chunks = split_telegram_text(text)
     if not plain_chunks:
         return
-    chunks = [to_telegram_markdown_v2(chunk) for chunk in plain_chunks] if mark_agent else plain_chunks
-    fallback_chunks = [escape_telegram_markdown_v2(chunk) for chunk in plain_chunks] if mark_agent else plain_chunks
     context = {
         "performance": performance,
         "category": "assistant_output",
@@ -930,17 +928,14 @@ def flush_buffer(
         "turn_id": session.active_turn_id or session.last_completed_turn_id,
     }
     parse_mode = TELEGRAM_MARKDOWN_MODE if mark_agent else None
-    try:
+    def _deliver(chunks: list[str], *, parse_mode_value: str | None) -> None:
         if session.streaming_message_id is not None:
             edit_telegram_message(
                 telegram,
                 target_chat_id,
                 session.streaming_message_id,
                 chunks[0],
-                parse_mode=parse_mode,
-                allow_plain_fallback=mark_agent,
-                plain_fallback_text=fallback_chunks[0],
-                fallback_parse_mode=TELEGRAM_MARKDOWN_MODE if mark_agent else None,
+                parse_mode=parse_mode_value,
                 **context,
             )
         else:
@@ -949,87 +944,62 @@ def flush_buffer(
                 target_chat_id,
                 chunks[0],
                 topic_id=session.transport_topic_id,
-                parse_mode=parse_mode,
-                allow_plain_fallback=mark_agent,
-                plain_fallback_text=fallback_chunks[0],
-                fallback_parse_mode=TELEGRAM_MARKDOWN_MODE if mark_agent else None,
+                parse_mode=parse_mode_value,
                 **context,
             )
             if not mark_agent:
                 session.streaming_message_id = message_id
                 session_store.save_session(session)
-        for index, chunk in enumerate(chunks[1:], start=1):
+        for chunk in chunks[1:]:
             send_telegram_message(
                 telegram,
                 target_chat_id,
                 chunk,
                 topic_id=session.transport_topic_id,
-                parse_mode=parse_mode,
-                allow_plain_fallback=mark_agent,
-                plain_fallback_text=fallback_chunks[index],
-                fallback_parse_mode=TELEGRAM_MARKDOWN_MODE if mark_agent else None,
+                parse_mode=parse_mode_value,
                 **context,
             )
-    except TelegramError as exc:
-        if mark_agent:
-            emergency_chunks = [code_block_telegram_markdown_v2(chunk) for chunk in plain_chunks]
-            append_telegram_format_failure_log(
-                session_store.paths,
-                session_id=session.session_id,
-                thread_id=session.thread_id,
-                turn_id=session.active_turn_id or session.last_completed_turn_id,
-                stage="agent_output_delivery_failed",
-                error=str(exc),
-                raw_text=text,
-                rich_text="\n\n---chunk---\n\n".join(chunks),
-                escaped_text="\n\n---chunk---\n\n".join(fallback_chunks),
-                emergency_text="\n\n---chunk---\n\n".join(emergency_chunks),
-            )
+
+    if mark_agent:
+        formatted_chunks = [to_telegram_markdown_v2(chunk) for chunk in plain_chunks]
+        escaped_chunks = [escape_telegram_markdown_v2(chunk) for chunk in plain_chunks]
+        emergency_chunks = [code_block_telegram_markdown_v2(chunk) for chunk in plain_chunks]
+        attempts = [
+            ("raw_markdown", plain_chunks),
+            ("formatted_markdown", formatted_chunks),
+            ("escaped_markdown", escaped_chunks),
+            ("code_block_markdown", emergency_chunks),
+        ]
+        rich_text = "\n\n---chunk---\n\n".join(formatted_chunks)
+        escaped_text = "\n\n---chunk---\n\n".join(escaped_chunks)
+        emergency_text = "\n\n---chunk---\n\n".join(emergency_chunks)
+        delivered = False
+        for stage, attempt_chunks in attempts:
             try:
-                if session.streaming_message_id is not None:
-                    edit_telegram_message(
-                        telegram,
-                        target_chat_id,
-                        session.streaming_message_id,
-                        emergency_chunks[0],
-                        parse_mode=TELEGRAM_MARKDOWN_MODE,
-                        **context,
-                    )
-                else:
-                    send_telegram_message(
-                        telegram,
-                        target_chat_id,
-                        emergency_chunks[0],
-                        topic_id=session.transport_topic_id,
-                        parse_mode=TELEGRAM_MARKDOWN_MODE,
-                        **context,
-                    )
-                for chunk in emergency_chunks[1:]:
-                    send_telegram_message(
-                        telegram,
-                        target_chat_id,
-                        chunk,
-                        topic_id=session.transport_topic_id,
-                        parse_mode=TELEGRAM_MARKDOWN_MODE,
-                        **context,
-                    )
-            except TelegramError as emergency_exc:
+                _deliver(attempt_chunks, parse_mode_value=TELEGRAM_MARKDOWN_MODE)
+                delivered = True
+                break
+            except TelegramError as exc:
                 append_telegram_format_failure_log(
                     session_store.paths,
                     session_id=session.session_id,
                     thread_id=session.thread_id,
                     turn_id=session.active_turn_id or session.last_completed_turn_id,
-                    stage="agent_output_emergency_delivery_failed",
-                    error=str(emergency_exc),
+                    stage=stage,
+                    error=str(exc),
                     raw_text=text,
-                    rich_text="\n\n---chunk---\n\n".join(chunks),
-                    escaped_text="\n\n---chunk---\n\n".join(fallback_chunks),
-                    emergency_text="\n\n---chunk---\n\n".join(emergency_chunks),
+                    rich_text=rich_text,
+                    escaped_text=escaped_text,
+                    emergency_text=emergency_text,
                 )
-                raise
-            session.streaming_message_id = None
-            session_store.save_session(session)
-        else:
+        if not delivered:
+            raise TelegramError("All Telegram MarkdownV2 delivery attempts failed.")
+        session.streaming_message_id = None
+        session_store.save_session(session)
+    else:
+        try:
+            _deliver(plain_chunks, parse_mode_value=parse_mode)
+        except TelegramError:
             if session.streaming_message_id is not None:
                 try:
                     edit_telegram_message(
