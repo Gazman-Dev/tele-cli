@@ -55,6 +55,7 @@ TELEGRAM_MARKDOWN_MODE = "MarkdownV2"
 _AGENT_MESSAGE_PHASES: dict[str, str] = {}
 _AGENT_MESSAGE_TEXTS: dict[str, str] = {}
 COMMENTARY_STREAM_MIN_INTERVAL_SECONDS = 1.0
+DEFAULT_THINKING_STREAM_MIN_INTERVAL_SECONDS = 1.0
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -839,15 +840,79 @@ def ensure_thinking_message(
     session.thinking_message_text = display_text
 
 
+def render_thinking_message(text: str | None) -> str:
+    body = (text or "").strip()
+    if not body:
+        return "Thinking"
+    if body == "Thinking":
+        return body
+    return f"Thinking\n\n{body}"
+
+
+def extract_thinking_body(text: str | None) -> str:
+    value = (text or "").strip()
+    if value.startswith("Thinking\n\n"):
+        return value[len("Thinking\n\n") :].strip()
+    if value == "Thinking":
+        return ""
+    return value
+
+
+def set_visible_thinking_message(
+    auth: AuthState,
+    telegram: TelegramClient,
+    recorder: Recorder,
+    session_store: SessionStore,
+    session,
+    *,
+    text: str | None = None,
+    performance: PerformanceTracker | None = None,
+    min_interval_seconds: float = DEFAULT_THINKING_STREAM_MIN_INTERVAL_SECONDS,
+) -> None:
+    ensure_thinking_message(auth, telegram, session, text=text, performance=performance)
+    session.streaming_phase = "commentary"
+    replace_pending_output(session_store, session, render_thinking_message(session.thinking_message_text))
+    maybe_stream_partial_output(
+        auth,
+        telegram,
+        recorder,
+        session_store,
+        session,
+        performance=performance,
+        min_interval_seconds=min_interval_seconds,
+    )
+
+
 def maybe_refresh_thinking_message(
     paths: AppPaths,
     auth: AuthState,
     telegram: TelegramClient,
     session_store: SessionStore,
     *,
+    recorder: Recorder | None = None,
     performance: PerformanceTracker | None = None,
 ) -> None:
-    return
+    if ApprovalStore(paths).pending() or recorder is None:
+        return
+    for session in session_store.list_telegram_sessions(auth):
+        if (
+            not session.attached
+            or not session.active_turn_id
+            or session.status != "RUNNING_TURN"
+            or not session.last_user_message_at
+        ):
+            continue
+        if session.pending_output_text.strip() or session.streaming_output_text.strip():
+            continue
+        set_visible_thinking_message(
+            auth,
+            telegram,
+            recorder,
+            session_store,
+            session,
+            text=session.thinking_message_text or default_thinking_text(session),
+            performance=performance,
+        )
 
 
 def append_thinking_delta(
@@ -860,14 +925,15 @@ def append_thinking_delta(
 ) -> None:
     if not delta:
         return
-    if session.thinking_message_text:
+    existing_text = session.thinking_message_text or extract_thinking_body(session.streaming_output_text)
+    if existing_text:
         separator = ""
         if (
-            not session.thinking_message_text.endswith((" ", "\n"))
+            not existing_text.endswith((" ", "\n"))
             and not delta.startswith((" ", "\n", ".", ",", ";", ":", "!", "?", ")"))
         ):
             separator = " "
-        next_text = f"{session.thinking_message_text}{separator}{delta}"
+        next_text = f"{existing_text}{separator}{delta}"
     else:
         next_text = delta
     ensure_thinking_message(auth, telegram, session, text=next_text.strip() or next_text, performance=performance)
@@ -2096,6 +2162,15 @@ def drain_codex_notifications(
         if session is not None and thinking_delta is not None:
             append_thinking_delta(auth, telegram, session, thinking_delta, performance=performance)
             session_store.save_session(session)
+            set_visible_thinking_message(
+                auth,
+                telegram,
+                recorder,
+                session_store,
+                session,
+                text=session.thinking_message_text,
+                performance=performance,
+            )
             continue
         if method in {
             "assistant/message.delta",
@@ -2112,18 +2187,16 @@ def drain_codex_notifications(
             if session is not None and commentary_text:
                 if performance is not None:
                     performance.mark_reply_started(session, trigger=method)
-                session.streaming_phase = "commentary"
-                replace_pending_output(session_store, session, commentary_text)
-                if method == "item/agentMessage/delta":
-                    maybe_stream_partial_output(
-                        auth,
-                        telegram,
-                        recorder,
-                        session_store,
-                        session,
-                        performance=performance,
-                        min_interval_seconds=COMMENTARY_STREAM_MIN_INTERVAL_SECONDS,
-                    )
+                set_visible_thinking_message(
+                    auth,
+                    telegram,
+                    recorder,
+                    session_store,
+                    session,
+                    text=commentary_text,
+                    performance=performance,
+                    min_interval_seconds=COMMENTARY_STREAM_MIN_INTERVAL_SECONDS,
+                )
             elif session is not None and text:
                 if session.streaming_phase == "commentary":
                     session.streaming_phase = "answer"
@@ -2165,17 +2238,38 @@ def drain_codex_notifications(
                             performance=performance,
                         )
             elif session is not None and thinking_text:
-                ensure_thinking_message(auth, telegram, session, text=thinking_text, performance=performance)
-                session_store.save_session(session)
+                set_visible_thinking_message(
+                    auth,
+                    telegram,
+                    recorder,
+                    session_store,
+                    session,
+                    text=thinking_text,
+                    performance=performance,
+                )
             elif session is not None and activity_text:
-                ensure_thinking_message(auth, telegram, session, text=activity_text, performance=performance)
-                session_store.save_session(session)
+                set_visible_thinking_message(
+                    auth,
+                    telegram,
+                    recorder,
+                    session_store,
+                    session,
+                    text=activity_text,
+                    performance=performance,
+                )
             continue
         if session is not None:
             status_text = extract_event_driven_status(method, params)
             if status_text:
-                ensure_thinking_message(auth, telegram, session, text=status_text, performance=performance)
-                session_store.save_session(session)
+                set_visible_thinking_message(
+                    auth,
+                    telegram,
+                    recorder,
+                    session_store,
+                    session,
+                    text=status_text,
+                    performance=performance,
+                )
         if method in {"account/updated", "account/ready", "login/completed"}:
             account_payload = extract_account_payload(params)
             if account_payload is None:
@@ -2486,13 +2580,15 @@ def run_service(
                     interval_seconds=config.typing_indicator_interval_seconds,
                     last_sent_at=last_typing_sent_at,
                 )
-                maybe_refresh_thinking_message(
-                    paths,
-                    auth,
-                    telegram,
-                    session_store,
-                    performance=performance,
-                )
+                if codex is not None:
+                    maybe_refresh_thinking_message(
+                        paths,
+                        auth,
+                        telegram,
+                        session_store,
+                        recorder=recorder,
+                        performance=performance,
+                    )
                 codex, codex_restart_failures, next_codex_restart_at = maintain_codex_runtime(
                     paths=paths,
                     config=config,
@@ -2551,13 +2647,15 @@ def run_service(
                 interval_seconds=config.typing_indicator_interval_seconds,
                 last_sent_at=last_typing_sent_at,
             )
-            maybe_refresh_thinking_message(
-                paths,
-                auth,
-                telegram,
-                session_store,
-                performance=performance,
-            )
+            if codex is not None:
+                maybe_refresh_thinking_message(
+                    paths,
+                    auth,
+                    telegram,
+                    session_store,
+                    recorder=recorder,
+                    performance=performance,
+                )
             codex, codex_restart_failures, next_codex_restart_at = maintain_codex_runtime(
                 paths=paths,
                 config=config,

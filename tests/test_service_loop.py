@@ -185,7 +185,7 @@ class ServiceLoopTests(unittest.TestCase):
 
             self._run_service_once(paths, telegram, start_fn, app_lock)
 
-            self.assertEqual(telegram.messages, [])
+            self.assertEqual(telegram.messages, [(22, "Thinking")])
             current = SessionStore(paths).get_current_telegram_session(auth)
             self.assertIsNotNone(current)
             assert current is not None

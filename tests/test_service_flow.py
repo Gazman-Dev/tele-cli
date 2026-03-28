@@ -2537,9 +2537,9 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [])
-        self.assertEqual(updated.thinking_message_text, "Checking recent release notes...")
-        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(telegram.messages, [(22, "Thinking\n\nChecking recent release notes\\.\\.\\.")])
+        self.assertEqual(updated.thinking_message_text, "")
+        self.assertEqual(updated.streaming_output_text, "Thinking\n\nChecking recent release notes...")
 
     def test_drain_codex_notifications_surfaces_command_activity(self) -> None:
         auth = AuthState(
@@ -2576,8 +2576,8 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [])
-        self.assertEqual(updated.thinking_message_text, "Running command: git status --short")
+        self.assertEqual(telegram.messages, [(22, "Thinking\n\nRunning command: git status \\-\\-short")])
+        self.assertEqual(updated.thinking_message_text, "")
 
     def test_extract_activity_text_from_search_tool(self) -> None:
         text = extract_activity_text(
@@ -2696,7 +2696,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [])
+        self.assertEqual(telegram.messages, [(22, "Thinking\n\nChecking")])
         self.assertEqual(telegram.edits, [])
         self.assertEqual(updated.thinking_message_text, "Checking release notes")
 
@@ -2735,8 +2735,8 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [])
-        self.assertEqual(updated.thinking_message_text, "Checking docs\nComparing schemas")
+        self.assertEqual(telegram.messages, [(22, "Thinking\n\nChecking docs\nComparing schemas")])
+        self.assertEqual(updated.thinking_message_text, "")
 
     def test_drain_codex_notifications_streams_short_item_agent_message_delta(self) -> None:
         auth = AuthState(
@@ -2824,11 +2824,11 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(updated.streaming_output_text, "I am using a skill.")
+        self.assertEqual(updated.streaming_output_text, "Thinking\n\nI am using a skill.")
         self.assertEqual(updated.pending_output_text, "")
         self.assertEqual(updated.streaming_phase, "commentary")
         self.assertEqual(updated.thinking_message_text, "")
-        self.assertEqual(telegram.edits, [(22, 1, "I am using a skill\\.")])
+        self.assertEqual(telegram.edits, [(22, 1, "Thinking\n\nI am using a skill\\.")])
 
     def test_drain_codex_notifications_replaces_commentary_with_final_answer(self) -> None:
         auth = AuthState(
@@ -2915,7 +2915,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(updated.pending_output_text, "Checking repo")
+        self.assertEqual(updated.pending_output_text, "Thinking\n\nChecking repo")
         self.assertEqual(updated.streaming_output_text, "Thinking")
         self.assertEqual(telegram.edits, [])
 
@@ -2930,7 +2930,7 @@ class ServiceFlowTests(unittest.TestCase):
         )
 
         refreshed = store.get_or_create_telegram_session(auth)
-        self.assertEqual(refreshed.streaming_output_text, "Checking repo")
+        self.assertEqual(refreshed.streaming_output_text, "Thinking\n\nChecking repo")
 
     def test_drain_codex_notifications_respects_max_notifications_budget(self) -> None:
         auth = AuthState(
