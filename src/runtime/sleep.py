@@ -17,6 +17,8 @@ from .instructions import ensure_instruction_files, build_instruction_paths, les
 from .jsonrpc import JsonRpcClient, JsonRpcRequest, JsonRpcTransport
 from .session_store import SessionStore
 
+SLEEP_AI_TIMEOUT_SECONDS = 30.0
+
 
 @dataclass
 class SleepState:
@@ -155,6 +157,7 @@ def _run_sleep_ai(
     config: Config,
     prompt: str,
     transport_factory,
+    max_wait_seconds: float = SLEEP_AI_TIMEOUT_SECONDS,
 ) -> tuple[str, str]:
     transport: JsonRpcTransport = transport_factory(config, AuthState(bot_token="sleep"))
     rpc = JsonRpcClient(transport)
@@ -183,7 +186,10 @@ def _run_sleep_ai(
         turn_id = str(turn.get("turnId") or "")
         if not turn_id:
             raise RuntimeError("Sleep turn did not receive a turn id.")
+        started_at = datetime.now(timezone.utc)
         while True:
+            if (datetime.now(timezone.utc) - started_at).total_seconds() > max_wait_seconds:
+                raise RuntimeError(f"Sleep AI timed out after {max_wait_seconds:.1f}s.")
             request: JsonRpcRequest | None = rpc.get_request_nowait()
             if request is not None:
                 rpc.respond(request.id, {"approved": True})
@@ -250,6 +256,7 @@ def run_sleep(
     now: datetime | None = None,
     hour_local: int = 2,
     transport_factory=None,
+    max_wait_seconds: float = SLEEP_AI_TIMEOUT_SECONDS,
 ) -> None:
     current = now or datetime.now().astimezone()
     instruction_paths = ensure_instruction_files(paths)
@@ -274,6 +281,7 @@ def run_sleep(
         ),
         transport_factory=transport_factory
         or (lambda cfg, auth: SubprocessJsonRpcTransport.start([*cfg.codex_command, "app-server", "--listen", "stdio://"])),
+        max_wait_seconds=max_wait_seconds,
     )
     instruction_paths.long_memory.write_text(long_memory_text.strip() + "\n", encoding="utf-8")
     state_before = load_sleep_state(paths)

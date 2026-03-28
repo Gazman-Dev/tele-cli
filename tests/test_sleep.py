@@ -121,6 +121,28 @@ class SleepTests(unittest.TestCase):
                 self.assertIn("Small delta", refresh)
                 self.assertIn("missed daily lessons", refresh)
 
+    def test_run_sleep_times_out_when_ai_never_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            with patch.dict("os.environ", {"TELE_CLI_REPO_ROOT": str(paths.root)}):
+                ensure_instruction_files(paths)
+                transport = InMemoryJsonRpcTransport()
+                server = FakeAppServer(transport)
+                server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+                server.on("getAccount", lambda payload: {"status": "ready"})
+                server.on("thread/start", lambda payload: {"threadId": "sleep-thread"})
+                server.on("turn/start", lambda payload: {"turnId": "sleep-turn"})
+
+                with self.assertRaisesRegex(RuntimeError, "Sleep AI timed out"):
+                    run_sleep(
+                        paths,
+                        Config(state_dir=str(paths.root)),
+                        now=datetime(2026, 3, 27, 3, 0, 0).astimezone(),
+                        hour_local=2,
+                        transport_factory=lambda cfg, auth: transport,
+                        max_wait_seconds=0.01,
+                    )
+
     def test_should_run_sleep_detects_missed_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))

@@ -2297,7 +2297,10 @@ def run_service(
     startup_now = datetime.now().astimezone()
     if has_pending_sleep_work(paths) and should_run_sleep(paths, startup_now, config.sleep_hour_local):
         poll_gate.set()
-        run_sleep(paths, config, startup_now, config.sleep_hour_local)
+        try:
+            run_sleep(paths, config, startup_now, config.sleep_hour_local)
+        except Exception as exc:
+            append_recovery_log(paths.recovery_log, f"sleep failed on startup -> {exc}")
 
     try:
         if has_pending_pairing(auth) and isatty():
@@ -2414,7 +2417,10 @@ def run_service(
                 current_local = datetime.now().astimezone()
                 if has_pending_sleep_work(paths) and should_run_sleep(paths, current_local, config.sleep_hour_local):
                     poll_gate.set()
-                    run_sleep(paths, config, current_local, config.sleep_hour_local)
+                    try:
+                        run_sleep(paths, config, current_local, config.sleep_hour_local)
+                    except Exception as exc:
+                        append_recovery_log(paths.recovery_log, f"sleep failed during service loop -> {exc}")
             drain_codex_approvals(paths, auth, telegram, codex, performance)
             drain_codex_notifications(
                 paths,
