@@ -7,6 +7,7 @@ from pathlib import Path
 from core.models import AuthState, CodexServerState, Config, RuntimeState
 from core.paths import build_paths
 from core.state_versions import load_versioned_state
+from runtime.instructions import build_instruction_paths
 from runtime.app_server_runtime import (
     AppServerSession,
     bootstrap_app_server_session,
@@ -160,11 +161,11 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(thread_start["params"]["sandbox"], "danger-full-access")
         self.assertEqual(thread_start["params"]["approvalPolicy"], "never")
         self.assertEqual(thread_start["params"]["personality"], "pragmatic")
-        self.assertEqual(thread_start["params"]["cwd"], str(paths.root))
+        self.assertEqual(thread_start["params"]["cwd"], str(build_instruction_paths(paths).repo_root))
         turn_start = next(payload for payload in server.received if payload["method"] == "turn/start")
         self.assertEqual(turn_start["params"]["approvalPolicy"], "never")
         self.assertEqual(turn_start["params"]["sandboxPolicy"], {"type": "dangerFullAccess"})
-        self.assertEqual(turn_start["params"]["cwd"], str(paths.root))
+        self.assertEqual(turn_start["params"]["cwd"], str(build_instruction_paths(paths).repo_root))
         self.assertEqual(turn_start["params"]["personality"], "pragmatic")
         first_input = turn_start["params"]["input"][0]["text"]
         self.assertIn("You are Tele Cli, a Telegram-first personal assistant", first_input)

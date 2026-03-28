@@ -9,7 +9,7 @@ from core.state_versions import load_versioned_state, save_versioned_state
 
 from .app_server_client import AppServerClient
 from .approval_store import ApprovalRecord
-from .instructions import render_session_instructions
+from .instructions import build_instruction_paths, render_session_instructions
 from .app_server_process import SubprocessJsonRpcTransport
 from .jsonrpc import JsonRpcClient, JsonRpcNotification, JsonRpcTransport
 from .performance import PerformanceTracker
@@ -99,6 +99,7 @@ class AppServerSession:
         return scoped
 
     def _start_or_steer_turn(self, session, text: str) -> None:
+        workspace_cwd = str(build_instruction_paths(self.session_store.paths).repo_root)
         if session.status == "RECOVERING_TURN":
             raise RuntimeError("Session is recovering an in-flight turn.")
         self.session_store.mark_user_message(session)
@@ -131,7 +132,7 @@ class AppServerSession:
                         self.performance.mark_thread_ready(session, trigger="thread_resume")
         else:
             started = self.client.thread_start(
-                cwd=self.config.state_dir,
+                cwd=workspace_cwd,
                 sandbox=self.config.sandbox_mode,
                 approvalPolicy=self.config.approval_policy,
                 personality=self.config.codex_personality,
@@ -145,7 +146,7 @@ class AppServerSession:
                     self.performance.mark_thread_ready(session, trigger="thread_start")
         if not thread_id:
             started = self.client.thread_start(
-                cwd=self.config.state_dir,
+                cwd=workspace_cwd,
                 sandbox=self.config.sandbox_mode,
                 approvalPolicy=self.config.approval_policy,
                 personality=self.config.codex_personality,
@@ -167,7 +168,7 @@ class AppServerSession:
         turn = self.client.turn_start(
             thread_id,
             turn_input,
-            cwd=self.config.state_dir,
+            cwd=workspace_cwd,
             approvalPolicy=self.config.approval_policy,
             sandboxPolicy=self.config.sandbox_mode,
             personality=self.config.codex_personality,
