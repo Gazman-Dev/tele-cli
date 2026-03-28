@@ -1057,6 +1057,29 @@ def _common_suffix_length(left: str, right: str) -> int:
     return index
 
 
+def merge_streamed_agent_delta_text(session, text: str | None) -> tuple[str, str]:
+    if not text:
+        return ("ignore", "")
+    incoming = text
+    existing_pending = session.pending_output_text
+    existing_stream = session.streaming_output_text
+    combined = f"{existing_stream}{existing_pending}"
+    delivered = session.last_delivered_output_text
+    if incoming == existing_pending or incoming == existing_stream or incoming == combined or incoming == delivered:
+        return ("ignore", "")
+    if combined and incoming.startswith(combined):
+        return ("append", incoming[len(combined) :])
+    if existing_pending and incoming.startswith(existing_pending):
+        return ("append", incoming[len(existing_pending) :])
+    if existing_stream and incoming.startswith(existing_stream):
+        return ("append", incoming[len(existing_stream) :])
+    if delivered and incoming.startswith(delivered):
+        return ("append", incoming[len(delivered) :])
+    if combined and combined.startswith(incoming):
+        return ("ignore", "")
+    return ("append", incoming)
+
+
 def merge_incremental_assistant_text(session, text: str | None) -> tuple[str, str]:
     if not text:
         return ("ignore", "")
@@ -1894,6 +1917,8 @@ def drain_codex_notifications(
                 )
                 if completed_agent_message:
                     action, payload = ("replace", text)
+                elif method == "item/agentMessage/delta":
+                    action, payload = merge_streamed_agent_delta_text(session, text)
                 else:
                     action, payload = merge_incremental_assistant_text(session, text)
                 if action != "ignore" and payload:
