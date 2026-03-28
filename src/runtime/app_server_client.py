@@ -83,9 +83,14 @@ class AppServerClient:
                     "name": client_name,
                     "version": APP_VERSION,
                 },
-                "capabilities": {},
+                "capabilities": {
+                    "experimentalApi": True,
+                },
             },
         )
+
+    def initialized(self) -> None:
+        self.rpc.notify("initialized", {})
 
     def get_account(self) -> dict[str, Any]:
         try:

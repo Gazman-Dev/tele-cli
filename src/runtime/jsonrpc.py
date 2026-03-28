@@ -125,6 +125,17 @@ class JsonRpcClient:
             )
         )
 
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        self.transport.write_line(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": method,
+                    "params": params or {},
+                }
+            )
+        )
+
     def _allocate_id(self) -> int:
         request_id = self._next_id
         self._next_id += 1

@@ -2593,6 +2593,36 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(text, "Searching: latest codex releases")
 
+    def test_extract_activity_text_from_command_output_delta(self) -> None:
+        text = extract_activity_text(
+            "item/commandExecution/outputDelta",
+            {
+                "delta": "cloning into repository...",
+            },
+        )
+
+        self.assertEqual(text, "Command output: cloning into repository...")
+
+    def test_extract_activity_text_from_file_change_output_delta(self) -> None:
+        text = extract_activity_text(
+            "item/fileChange/outputDelta",
+            {
+                "delta": "updated README.md",
+            },
+        )
+
+        self.assertEqual(text, "Applying file changes: updated README.md")
+
+    def test_extract_activity_text_from_plan_delta(self) -> None:
+        text = extract_activity_text(
+            "item/plan/delta",
+            {
+                "delta": "inspect the auth flow first",
+            },
+        )
+
+        self.assertEqual(text, "Planning: inspect the auth flow first")
+
     def test_extract_event_driven_status_from_agent_message_delta(self) -> None:
         text = extract_event_driven_status("item/agentMessage/delta", {})
         self.assertIsNone(text)
@@ -2607,6 +2637,10 @@ class ServiceFlowTests(unittest.TestCase):
             {"status": {"type": "active", "activeFlags": ["waitingOnApproval"]}},
         )
         self.assertEqual(text, "Waiting On Approval")
+
+    def test_extract_event_driven_status_from_server_request_resolved(self) -> None:
+        text = extract_event_driven_status("serverRequest/resolved", {"threadId": "thread-1", "requestId": 8})
+        self.assertEqual(text, "Approval resolved.")
 
     def test_non_default_thinking_text_is_not_overwritten_by_idle_refresh(self) -> None:
         auth = AuthState(

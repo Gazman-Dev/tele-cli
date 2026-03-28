@@ -87,6 +87,9 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertEqual(persisted.protocol_version, "1.0")
             self.assertEqual(persisted.account_status, "ready")
             self.assertEqual(persisted.account_type, "chatgpt")
+            initialize = next(payload for payload in server.received if payload.get("method") == "initialize")
+            self.assertEqual(initialize["params"]["capabilities"], {"experimentalApi": True})
+            self.assertIn("initialized", [payload.get("method") for payload in server.received])
 
     def test_bootstrap_marks_auth_required_without_breaking_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

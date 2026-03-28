@@ -378,6 +378,7 @@ def bootstrap_app_server_session(
     client = client_factory(rpc)
     initialize_result = normalize_initialize_result(client.initialize())
     validate_initialize_result(initialize_result)
+    client.initialized()
     account_result = client.get_account()
     login_result: dict[str, Any] | None = None
     if derive_codex_state(account_result) == "AUTH_REQUIRED":

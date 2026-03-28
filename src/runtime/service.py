@@ -579,7 +579,38 @@ def _extract_search_hint(arguments: object) -> str | None:
     return None
 
 
+def _extract_delta_text(params: dict, *, limit: int = 80) -> str | None:
+    for key in ("delta", "text", "summary", "outputText"):
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            return _shorten_activity_text(value.strip(), limit=limit)
+    item = params.get("item")
+    if isinstance(item, dict):
+        for key in ("delta", "text", "summary", "outputText"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return _shorten_activity_text(value.strip(), limit=limit)
+    return None
+
+
 def extract_activity_text(method: str, params: dict) -> str | None:
+    if method == "item/commandExecution/outputDelta":
+        delta = _extract_delta_text(params)
+        if delta:
+            return f"Command output: {delta}"
+        return "Running command..."
+    if method == "item/fileChange/outputDelta":
+        delta = _extract_delta_text(params)
+        if delta:
+            return f"Applying file changes: {delta}"
+        return "Applying file changes..."
+    if method == "item/plan/delta":
+        delta = _extract_delta_text(params)
+        if delta:
+            return f"Planning: {delta}"
+        return "Planning next steps..."
+    if method == "serverRequest/resolved":
+        return "Approval resolved."
     item = params.get("item")
     if not isinstance(item, dict):
         return None
@@ -630,6 +661,8 @@ def extract_activity_text(method: str, params: dict) -> str | None:
 
 
 def extract_event_driven_status(method: str, params: dict) -> str | None:
+    if method == "serverRequest/resolved":
+        return "Approval resolved."
     if method == "thread/status/changed":
         status_value = params.get("status")
         if isinstance(status_value, dict):
