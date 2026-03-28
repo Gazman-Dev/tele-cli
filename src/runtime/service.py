@@ -38,7 +38,7 @@ from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
 from .sleep import has_pending_sleep_work, run_sleep, should_run_sleep
-from .telegram_markdown import escape_telegram_markdown_v2, to_telegram_markdown_v2
+from .telegram_markdown import code_block_telegram_markdown_v2, escape_telegram_markdown_v2, to_telegram_markdown_v2
 from .telegram_update_store import TelegramUpdateStore
 
 
@@ -70,6 +70,36 @@ def append_app_server_notification_log(paths: AppPaths, method: str, params: dic
         "params": params,
     }
     with paths.root.joinpath("app_server_notifications.log").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def append_telegram_format_failure_log(
+    paths: AppPaths,
+    *,
+    session_id: str,
+    thread_id: str | None,
+    turn_id: str | None,
+    stage: str,
+    error: str,
+    raw_text: str,
+    rich_text: str,
+    escaped_text: str,
+    emergency_text: str | None = None,
+) -> None:
+    paths.root.mkdir(parents=True, exist_ok=True)
+    record = {
+        "timestamp": utc_now(),
+        "session_id": session_id,
+        "thread_id": thread_id,
+        "turn_id": turn_id,
+        "stage": stage,
+        "error": error,
+        "raw_text": raw_text,
+        "rich_text": rich_text,
+        "escaped_text": escaped_text,
+        "emergency_text": emergency_text,
+    }
+    with paths.root.joinpath("telegram_format_failures.log").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
@@ -940,28 +970,87 @@ def flush_buffer(
                 fallback_parse_mode=TELEGRAM_MARKDOWN_MODE if mark_agent else None,
                 **context,
             )
-    except TelegramError:
-        if session.streaming_message_id is not None:
+    except TelegramError as exc:
+        if mark_agent:
+            emergency_chunks = [code_block_telegram_markdown_v2(chunk) for chunk in plain_chunks]
+            append_telegram_format_failure_log(
+                session_store.paths,
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                turn_id=session.active_turn_id or session.last_completed_turn_id,
+                stage="agent_output_delivery_failed",
+                error=str(exc),
+                raw_text=text,
+                rich_text="\n\n---chunk---\n\n".join(chunks),
+                escaped_text="\n\n---chunk---\n\n".join(fallback_chunks),
+                emergency_text="\n\n---chunk---\n\n".join(emergency_chunks),
+            )
             try:
-                edit_telegram_message(
+                if session.streaming_message_id is not None:
+                    edit_telegram_message(
+                        telegram,
+                        target_chat_id,
+                        session.streaming_message_id,
+                        emergency_chunks[0],
+                        parse_mode=TELEGRAM_MARKDOWN_MODE,
+                        **context,
+                    )
+                else:
+                    send_telegram_message(
+                        telegram,
+                        target_chat_id,
+                        emergency_chunks[0],
+                        topic_id=session.transport_topic_id,
+                        parse_mode=TELEGRAM_MARKDOWN_MODE,
+                        **context,
+                    )
+                for chunk in emergency_chunks[1:]:
+                    send_telegram_message(
+                        telegram,
+                        target_chat_id,
+                        chunk,
+                        topic_id=session.transport_topic_id,
+                        parse_mode=TELEGRAM_MARKDOWN_MODE,
+                        **context,
+                    )
+            except TelegramError as emergency_exc:
+                append_telegram_format_failure_log(
+                    session_store.paths,
+                    session_id=session.session_id,
+                    thread_id=session.thread_id,
+                    turn_id=session.active_turn_id or session.last_completed_turn_id,
+                    stage="agent_output_emergency_delivery_failed",
+                    error=str(emergency_exc),
+                    raw_text=text,
+                    rich_text="\n\n---chunk---\n\n".join(chunks),
+                    escaped_text="\n\n---chunk---\n\n".join(fallback_chunks),
+                    emergency_text="\n\n---chunk---\n\n".join(emergency_chunks),
+                )
+                raise
+            session.streaming_message_id = None
+            session_store.save_session(session)
+        else:
+            if session.streaming_message_id is not None:
+                try:
+                    edit_telegram_message(
+                        telegram,
+                        target_chat_id,
+                        session.streaming_message_id,
+                        "Reply continues below.",
+                        **context,
+                    )
+                except TelegramError:
+                    pass
+            for chunk in plain_chunks:
+                send_telegram_message(
                     telegram,
                     target_chat_id,
-                    session.streaming_message_id,
-                    "Reply continues below.",
+                    chunk,
+                    topic_id=session.transport_topic_id,
                     **context,
                 )
-            except TelegramError:
-                pass
-        for chunk in plain_chunks:
-            send_telegram_message(
-                telegram,
-                target_chat_id,
-                chunk,
-                topic_id=session.transport_topic_id,
-                **context,
-            )
-        session.streaming_message_id = None
-        session_store.save_session(session)
+            session.streaming_message_id = None
+            session_store.save_session(session)
     recorder.record("assistant", text)
     session.streaming_output_text = text
     session.thinking_message_text = ""

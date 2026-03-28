@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from runtime.telegram_markdown import escape_telegram_markdown_v2, to_telegram_markdown_v2
+from runtime.telegram_markdown import code_block_telegram_markdown_v2, escape_telegram_markdown_v2, to_telegram_markdown_v2
 
 
 class TelegramMarkdownTests(unittest.TestCase):
@@ -40,6 +40,16 @@ class TelegramMarkdownTests(unittest.TestCase):
         text = "# Title\n**bold**"
         rendered = escape_telegram_markdown_v2(text)
         self.assertEqual(rendered, "\\# Title\n\\*\\*bold\\*\\*")
+
+    def test_escape_telegram_markdown_v2_escapes_backslashes(self) -> None:
+        text = r"Path C:\temp\file.txt"
+        rendered = escape_telegram_markdown_v2(text)
+        self.assertEqual(rendered, r"Path C:\\temp\\file\.txt")
+
+    def test_code_block_telegram_markdown_v2_wraps_multiline_text(self) -> None:
+        text = "hello\n`code`"
+        rendered = code_block_telegram_markdown_v2(text)
+        self.assertEqual(rendered, "```\nhello\n\\`code\\`\n```")
 
 
 if __name__ == "__main__":

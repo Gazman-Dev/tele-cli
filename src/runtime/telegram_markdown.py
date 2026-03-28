@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 
-_SPECIAL_CHARS = set("_*[]()~`>#+-=|{}.!")
+_SPECIAL_CHARS = set("\\_*[]()~`>#+-=|{}.!")
 
 
 def _escape_plain(text: str) -> str:
@@ -22,6 +22,12 @@ def escape_telegram_markdown_v2(text: str) -> str:
 
 def _escape_code(text: str) -> str:
     return text.replace("\\", "\\\\").replace("`", "\\`")
+
+
+def code_block_telegram_markdown_v2(text: str, language: str = "") -> str:
+    body = _escape_code(text)
+    prefix = f"```{language}\n" if language else "```\n"
+    return f"{prefix}{body}\n```"
 
 
 def _escape_link_url(url: str) -> str:
