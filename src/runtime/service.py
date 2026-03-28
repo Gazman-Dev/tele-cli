@@ -53,6 +53,8 @@ LOCAL_AUTH_CALLBACK_RE = re.compile(r"https?://(?:localhost|127\.0\.0\.1):1455/a
 TELEGRAM_TEXT_LIMIT = 4000
 TELEGRAM_MARKDOWN_MODE = "MarkdownV2"
 _AGENT_MESSAGE_PHASES: dict[str, str] = {}
+_AGENT_MESSAGE_TEXTS: dict[str, str] = {}
+COMMENTARY_STREAM_MIN_INTERVAL_SECONDS = 1.0
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -126,13 +128,41 @@ def remember_agent_message_phase(method: str, params: dict) -> str | None:
         phase = item.get("phase")
         if isinstance(item_id, str) and item_id and isinstance(phase, str) and phase:
             _AGENT_MESSAGE_PHASES[item_id] = phase
+            if method == "item/started":
+                _AGENT_MESSAGE_TEXTS[item_id] = ""
+            if method == "item/completed":
+                _AGENT_MESSAGE_TEXTS.pop(item_id, None)
             if len(_AGENT_MESSAGE_PHASES) > 256:
                 oldest = next(iter(_AGENT_MESSAGE_PHASES))
                 _AGENT_MESSAGE_PHASES.pop(oldest, None)
+            if len(_AGENT_MESSAGE_TEXTS) > 256:
+                oldest = next(iter(_AGENT_MESSAGE_TEXTS))
+                _AGENT_MESSAGE_TEXTS.pop(oldest, None)
             return phase
     item_id = params.get("itemId")
     if isinstance(item_id, str) and item_id:
         return _AGENT_MESSAGE_PHASES.get(item_id)
+    return None
+
+
+def accumulate_agent_message_text(method: str, params: dict) -> str | None:
+    item_id = params.get("itemId")
+    if isinstance(item_id, str) and item_id and method == "item/agentMessage/delta":
+        delta = params.get("delta")
+        if isinstance(delta, str) and delta:
+            combined = f"{_AGENT_MESSAGE_TEXTS.get(item_id, '')}{delta}"
+            _AGENT_MESSAGE_TEXTS[item_id] = combined
+            return combined
+        return _AGENT_MESSAGE_TEXTS.get(item_id)
+    item = params.get("item")
+    if isinstance(item, dict) and item.get("type") == "agentMessage":
+        item_id = item.get("id")
+        text = extract_assistant_text(params)
+        if isinstance(item_id, str) and item_id and text:
+            _AGENT_MESSAGE_TEXTS[item_id] = text
+        if method == "item/completed" and isinstance(item_id, str) and item_id:
+            _AGENT_MESSAGE_TEXTS.pop(item_id, None)
+        return text
     return None
 
 
@@ -719,6 +749,12 @@ def maybe_stream_partial_output(
     )
 
 
+def replace_pending_output(session_store: SessionStore, session, text: str) -> None:
+    session.pending_output_text = text
+    session.pending_output_updated_at = utc_now()
+    session_store.save_session(session)
+
+
 def extract_thinking_text(params: dict) -> str | None:
     candidates = [
         params.get("reasoning"),
@@ -983,7 +1019,9 @@ def flush_buffer(
     if not pending_text.strip():
         return
     text = pending_text.strip()
-    if session.streaming_output_text:
+    if session.streaming_phase == "commentary":
+        text = pending_text.strip()
+    elif session.streaming_output_text:
         streamed_text = session.streaming_output_text.strip()
         if text.startswith(streamed_text):
             text = text
@@ -1005,6 +1043,7 @@ def flush_buffer(
         if mark_agent:
             session.streaming_message_id = None
             session.streaming_output_text = ""
+            session.streaming_phase = ""
             session.thinking_message_text = ""
             session_store.save_session(session)
         session_store.consume_pending_output(session)
@@ -1124,6 +1163,7 @@ def flush_buffer(
     if mark_agent:
         session.streaming_message_id = None
         session.streaming_output_text = ""
+        session.streaming_phase = ""
         session.thinking_message_text = ""
         session_store.save_session(session)
     session_store.consume_pending_output(session)
@@ -1481,6 +1521,7 @@ def handle_authorized_message(
         session.last_delivered_output_text = ""
         session.streaming_message_id = None
         session.streaming_output_text = ""
+        session.streaming_phase = ""
         session.thinking_message_text = ""
         session.status = "ACTIVE"
         session_store.save_session(session)
@@ -2064,29 +2105,53 @@ def drain_codex_notifications(
             "item/completed",
             "turn/output",
         }:
+            commentary_text = accumulate_agent_message_text(method, params) if agent_message_phase == "commentary" else None
             text = None if agent_message_phase == "commentary" else extract_assistant_text(params)
             thinking_text = extract_thinking_text(params)
             activity_text = extract_activity_text(method, params)
-            if session is not None and text:
-                completed_agent_message = (
-                    method == "item/completed"
-                    and isinstance(params.get("item"), dict)
-                    and params["item"].get("type") == "agentMessage"
-                    and bool(session.pending_output_text.strip() or session.streaming_output_text.strip())
-                )
-                if completed_agent_message:
+            if session is not None and commentary_text:
+                if performance is not None:
+                    performance.mark_reply_started(session, trigger=method)
+                session.streaming_phase = "commentary"
+                replace_pending_output(session_store, session, commentary_text)
+                if method == "item/agentMessage/delta":
+                    maybe_stream_partial_output(
+                        auth,
+                        telegram,
+                        recorder,
+                        session_store,
+                        session,
+                        performance=performance,
+                        min_interval_seconds=COMMENTARY_STREAM_MIN_INTERVAL_SECONDS,
+                    )
+            elif session is not None and text:
+                if session.streaming_phase == "commentary":
+                    session.streaming_phase = "answer"
+                    replace_pending_output(session_store, session, text)
+                    session.streaming_output_text = ""
+                    session_store.save_session(session)
                     action, payload = ("replace", text)
-                elif method == "item/agentMessage/delta":
-                    action, payload = merge_streamed_agent_delta_text(session, text)
                 else:
-                    action, payload = merge_incremental_assistant_text(session, text)
+                    session.streaming_phase = "answer"
+                    completed_agent_message = (
+                        method == "item/completed"
+                        and isinstance(params.get("item"), dict)
+                        and params["item"].get("type") == "agentMessage"
+                        and bool(session.pending_output_text.strip() or session.streaming_output_text.strip())
+                    )
+                    if completed_agent_message:
+                        action, payload = ("replace", text)
+                    elif method == "item/agentMessage/delta":
+                        action, payload = merge_streamed_agent_delta_text(session, text)
+                    else:
+                        action, payload = merge_incremental_assistant_text(session, text)
                 if action != "ignore" and payload:
                     if performance is not None:
                         performance.mark_reply_started(session, trigger=method)
                     if action == "replace":
-                        session.pending_output_text = payload
-                        session.pending_output_updated_at = utc_now()
+                        replace_pending_output(session_store, session, payload)
                         session.streaming_output_text = ""
+                        session.streaming_phase = "answer"
                         session_store.save_session(session)
                     else:
                         session_store.append_pending_output(session, payload)
@@ -2168,6 +2233,7 @@ def drain_codex_notifications(
                         session.pending_output_text = payload
                         session.pending_output_updated_at = utc_now()
                         session.streaming_output_text = ""
+                        session.streaming_phase = ""
                         session_store.save_session(session)
                     else:
                         session_store.append_pending_output(session, payload)
@@ -2183,6 +2249,7 @@ def drain_codex_notifications(
             if not session.pending_output_text.strip():
                 session.streaming_message_id = None
                 session.streaming_output_text = ""
+                session.streaming_phase = ""
                 session.thinking_message_text = ""
                 session_store.save_session(session)
                 continue

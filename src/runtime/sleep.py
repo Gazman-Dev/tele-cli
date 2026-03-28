@@ -24,6 +24,7 @@ SLEEP_AI_TIMEOUT_SECONDS = 30.0
 class SleepState:
     last_completed_at: str | None = None
     last_scheduled_for: str | None = None
+    last_attempted_for: str | None = None
     generation: int = 0
 
     def to_dict(self) -> dict:
@@ -34,6 +35,7 @@ class SleepState:
         return cls(
             last_completed_at=data.get("last_completed_at"),
             last_scheduled_for=data.get("last_scheduled_for"),
+            last_attempted_for=data.get("last_attempted_for"),
             generation=int(data.get("generation", 0)),
         )
 
@@ -64,8 +66,12 @@ def latest_sleep_deadline(now: datetime, hour_local: int) -> datetime:
 
 def should_run_sleep(paths: AppPaths, now: datetime, hour_local: int) -> bool:
     deadline = latest_sleep_deadline(now, hour_local)
-    last_scheduled = _parse_iso(load_sleep_state(paths).last_scheduled_for)
-    return last_scheduled is None or last_scheduled < deadline
+    state = load_sleep_state(paths)
+    last_scheduled = _parse_iso(state.last_scheduled_for)
+    if last_scheduled is not None and last_scheduled >= deadline:
+        return False
+    last_attempted = _parse_iso(state.last_attempted_for)
+    return last_attempted is None or last_attempted < deadline
 
 
 def _read_lines(path: Path) -> list[str]:
@@ -261,6 +267,9 @@ def run_sleep(
     current = now or datetime.now().astimezone()
     instruction_paths = ensure_instruction_files(paths)
     deadline = latest_sleep_deadline(current, hour_local)
+    state_before = load_sleep_state(paths)
+    state_before.last_attempted_for = deadline.astimezone(timezone.utc).isoformat()
+    save_sleep_state(paths, state_before)
     session_files = sorted(instruction_paths.session_memory_dir.glob("*.short_memory.md"))
     session_entries: list[tuple[str, list[str]]] = []
     for path in session_files:
@@ -284,7 +293,6 @@ def run_sleep(
         max_wait_seconds=max_wait_seconds,
     )
     instruction_paths.long_memory.write_text(long_memory_text.strip() + "\n", encoding="utf-8")
-    state_before = load_sleep_state(paths)
     next_generation = state_before.generation + 1
     lesson_file = lesson_path(instruction_paths, next_generation, deadline.date().isoformat())
     lesson_file.write_text(lesson_text.strip() + "\n", encoding="utf-8")
@@ -307,6 +315,7 @@ def run_sleep(
         SleepState(
             last_completed_at=current.astimezone(timezone.utc).isoformat(),
             last_scheduled_for=deadline.astimezone(timezone.utc).isoformat(),
+            last_attempted_for=deadline.astimezone(timezone.utc).isoformat(),
             generation=next_generation,
         ),
     )

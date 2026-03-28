@@ -148,6 +148,7 @@ class SessionRecord:
     active_turn_id: Optional[str] = None
     streaming_message_id: Optional[int] = None
     streaming_output_text: str = ""
+    streaming_phase: str = ""
     thinking_message_text: str = ""
     pending_output_text: str = ""
     pending_output_updated_at: Optional[str] = None

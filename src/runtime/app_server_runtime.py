@@ -156,6 +156,7 @@ class AppServerSession:
                 session.pending_output_updated_at = None
                 session.streaming_message_id = None
                 session.streaming_output_text = ""
+                session.streaming_phase = ""
                 session.thinking_message_text = ""
                 session.status = "ACTIVE"
                 self.session_store.save_session(session)
@@ -215,6 +216,7 @@ class AppServerSession:
         session.last_delivered_output_text = ""
         session.streaming_message_id = None
         session.streaming_output_text = ""
+        session.streaming_phase = ""
         session.thinking_message_text = ""
         self.session_store.save_session(session)
         turn = self.client.turn_start(

@@ -11,9 +11,11 @@ from core.paths import build_paths
 from runtime.instructions import ensure_instruction_files
 from runtime.session_store import SessionStore
 from runtime.sleep import (
+    SleepState,
     build_refresh_instructions,
     load_sleep_state,
     run_sleep,
+    save_sleep_state,
     should_run_sleep,
 )
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
@@ -111,8 +113,6 @@ class SleepTests(unittest.TestCase):
                 store.save_session(session)
                 lesson_file = instruction_paths.lessons_dir / "0001-2026-03-27.md"
                 lesson_file.write_text("# Lesson\n\n- Small delta\n", encoding="utf-8")
-                from runtime.sleep import save_sleep_state, SleepState
-
                 save_sleep_state(paths, SleepState(generation=1))
 
                 refresh, generation = build_refresh_instructions(paths, session)
@@ -148,6 +148,41 @@ class SleepTests(unittest.TestCase):
             paths = build_paths(Path(tmp))
 
             self.assertTrue(should_run_sleep(paths, datetime(2026, 3, 27, 9, 0, 0).astimezone(), 2))
+
+    def test_should_run_sleep_skips_window_that_already_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            deadline = datetime(2026, 3, 27, 2, 0, 0).astimezone()
+            save_sleep_state(paths, SleepState(last_attempted_for=deadline.isoformat(), generation=0))
+
+            self.assertFalse(should_run_sleep(paths, datetime(2026, 3, 27, 9, 0, 0).astimezone(), 2))
+
+    def test_run_sleep_timeout_records_attempted_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            with patch.dict("os.environ", {"TELE_CLI_REPO_ROOT": str(paths.root)}):
+                ensure_instruction_files(paths)
+                transport = InMemoryJsonRpcTransport()
+                server = FakeAppServer(transport)
+                server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+                server.on("getAccount", lambda payload: {"status": "ready"})
+                server.on("thread/start", lambda payload: {"threadId": "sleep-thread"})
+                server.on("turn/start", lambda payload: {"turnId": "sleep-turn"})
+
+                run_at = datetime(2026, 3, 27, 3, 0, 0).astimezone()
+                with self.assertRaisesRegex(RuntimeError, "Sleep AI timed out"):
+                    run_sleep(
+                        paths,
+                        Config(state_dir=str(paths.root)),
+                        now=run_at,
+                        hour_local=2,
+                        transport_factory=lambda cfg, auth: transport,
+                        max_wait_seconds=0.01,
+                    )
+
+                state = load_sleep_state(paths)
+                self.assertIsNotNone(state.last_attempted_for)
+                self.assertFalse(should_run_sleep(paths, run_at, 2))
 
 
 if __name__ == "__main__":
