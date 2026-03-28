@@ -1965,14 +1965,19 @@ def drain_codex_notifications(
     runtime: ServiceRuntime | None = None,
     runtime_state: RuntimeState | None = None,
     performance: PerformanceTracker | None = None,
-) -> None:
+    max_notifications: int | None = None,
+) -> int:
     if codex is None or not hasattr(codex, "poll_notification"):
-        return
+        return 0
     session_store = SessionStore(paths)
+    handled = 0
     while True:
+        if max_notifications is not None and handled >= max_notifications:
+            break
         notification = codex.poll_notification()
         if notification is None:
             break
+        handled += 1
         method = notification.method
         params = notification.params or {}
         agent_message_phase = remember_agent_message_phase(method, params)
@@ -2136,6 +2141,7 @@ def drain_codex_notifications(
                     continue
                 session.thread_id = str(thread_id)
                 session_store.save_session(session)
+    return handled
 
 
 def bootstrap_paired_codex(
@@ -2303,7 +2309,17 @@ def run_service(
                     performance=performance,
                 )
                 drain_codex_approvals(paths, auth, telegram, codex, performance)
-                drain_codex_notifications(paths, auth, telegram, recorder, codex, runtime, runtime_state, performance)
+                drain_codex_notifications(
+                    paths,
+                    auth,
+                    telegram,
+                    recorder,
+                    codex,
+                    runtime,
+                    runtime_state,
+                    performance,
+                    max_notifications=100,
+                )
                 flush_idle_partial_outputs(
                     paths,
                     auth,
@@ -2354,7 +2370,17 @@ def run_service(
                 if has_pending_sleep_work(paths) and should_run_sleep(paths, current_local, config.sleep_hour_local):
                     run_sleep(paths, config, current_local, config.sleep_hour_local)
             drain_codex_approvals(paths, auth, telegram, codex, performance)
-            drain_codex_notifications(paths, auth, telegram, recorder, codex, runtime, runtime_state, performance)
+            drain_codex_notifications(
+                paths,
+                auth,
+                telegram,
+                recorder,
+                codex,
+                runtime,
+                runtime_state,
+                performance,
+                max_notifications=100,
+            )
             flush_idle_partial_outputs(
                 paths,
                 auth,

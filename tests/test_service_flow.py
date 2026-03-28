@@ -2795,6 +2795,41 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.thinking_message_text, "Thinking...")
         self.assertEqual(telegram.edits, [])
 
+    def test_drain_codex_notifications_respects_max_notifications_budget(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("thread/tokenUsage/updated", {"threadId": "thread-1", "turnId": "turn-1"}),
+                Notification("thread/tokenUsage/updated", {"threadId": "thread-1", "turnId": "turn-1"}),
+                Notification("thread/tokenUsage/updated", {"threadId": "thread-1", "turnId": "turn-1"}),
+            ]
+        )
+
+        handled = drain_codex_notifications(
+            self.paths,
+            auth,
+            telegram,
+            self.recorder,
+            codex,
+            max_notifications=2,
+        )
+
+        self.assertEqual(handled, 2)
+        self.assertEqual(len(codex.pending_notifications), 1)
+
     def test_drain_codex_notifications_streams_item_agent_message_delta(self) -> None:
         auth = AuthState(
             bot_token="token",
