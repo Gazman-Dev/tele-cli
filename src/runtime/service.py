@@ -894,16 +894,62 @@ def set_visible_thinking_message(
 ) -> None:
     ensure_thinking_message(auth, telegram, session, text=text, performance=performance)
     session.streaming_phase = "commentary"
-    replace_pending_output(session_store, session, render_thinking_message(session.thinking_message_text))
-    maybe_stream_partial_output(
-        auth,
-        telegram,
-        recorder,
-        session_store,
-        session,
-        performance=performance,
-        min_interval_seconds=min_interval_seconds,
-    )
+    target_chat_id = session.transport_chat_id or auth.telegram_chat_id
+    if not session.attached or not target_chat_id:
+        return
+    rendered = render_thinking_message(session.thinking_message_text)
+    now = datetime.now(timezone.utc)
+    if session.thinking_message_id is not None:
+        last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
+        if last_sent_at is not None and (now - last_sent_at).total_seconds() < min_interval_seconds:
+            session_store.save_session(session)
+            return
+        edit_telegram_message(
+            telegram,
+            target_chat_id,
+            session.thinking_message_id,
+            safe_stream_markdown_v2(rendered),
+            parse_mode=TELEGRAM_MARKDOWN_MODE,
+            performance=performance,
+            category="thinking_output",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id or session.last_completed_turn_id,
+        )
+    else:
+        session.thinking_message_id = send_telegram_message(
+            telegram,
+            target_chat_id,
+            safe_stream_markdown_v2(rendered),
+            topic_id=session.transport_topic_id,
+            parse_mode=TELEGRAM_MARKDOWN_MODE,
+            performance=performance,
+            category="thinking_output",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id or session.last_completed_turn_id,
+        )
+    session_store.mark_agent_message(session)
+    session_store.save_session(session)
+
+
+def clear_thinking_message(
+    auth: AuthState,
+    telegram: TelegramClient,
+    session_store: SessionStore,
+    session,
+    *,
+    performance: PerformanceTracker | None = None,
+) -> None:
+    target_chat_id = session.transport_chat_id or auth.telegram_chat_id
+    if target_chat_id and session.thinking_message_id is not None and hasattr(telegram, "delete_message"):
+        try:
+            telegram.delete_message(target_chat_id, session.thinking_message_id)
+        except Exception:
+            pass
+    session.thinking_message_id = None
+    session.thinking_message_text = ""
+    session_store.save_session(session)
 
 
 def maybe_refresh_thinking_message(
@@ -1131,6 +1177,7 @@ def flush_buffer(
     if text == session.last_delivered_output_text:
         if mark_agent:
             session.streaming_message_id = None
+            session.thinking_message_id = None
             session.streaming_output_text = ""
             session.streaming_phase = ""
             session.thinking_message_text = ""
@@ -1250,6 +1297,7 @@ def flush_buffer(
     session_store.mark_delivered_output(session, text)
     session_store.mark_agent_message(session)
     if mark_agent:
+        clear_thinking_message(auth, telegram, session_store, session, performance=performance)
         session.streaming_message_id = None
         session.streaming_output_text = ""
         session.streaming_phase = ""
@@ -1609,6 +1657,7 @@ def handle_authorized_message(
         session.last_completed_turn_id = None
         session.last_delivered_output_text = ""
         session.streaming_message_id = None
+        session.thinking_message_id = None
         session.streaming_output_text = ""
         session.streaming_phase = ""
         session.thinking_message_text = ""
@@ -2223,6 +2272,9 @@ def drain_codex_notifications(
             elif session is not None and text:
                 if session.streaming_phase == "commentary":
                     session.streaming_phase = "answer"
+                    if session.streaming_message_id is None and session.thinking_message_id is not None:
+                        session.streaming_message_id = session.thinking_message_id
+                        session.thinking_message_id = None
                     replace_pending_output(session_store, session, text)
                     session.streaming_output_text = ""
                     session_store.save_session(session)
@@ -2364,6 +2416,7 @@ def drain_codex_notifications(
                     outcome="completed" if method == "turn/completed" else "failed",
                 )
             if not session.pending_output_text.strip():
+                clear_thinking_message(auth, telegram, session_store, session, performance=performance)
                 session.streaming_message_id = None
                 session.streaming_output_text = ""
                 session.streaming_phase = ""

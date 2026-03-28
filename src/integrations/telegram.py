@@ -125,6 +125,9 @@ class TelegramClient:
             params["parse_mode"] = parse_mode
         return self._request("editMessageText", params=params)
 
+    def delete_message(self, chat_id: int, message_id: int) -> dict:
+        return self._request("deleteMessage", params={"chat_id": chat_id, "message_id": message_id})
+
     def send_photo(
         self,
         chat_id: int,

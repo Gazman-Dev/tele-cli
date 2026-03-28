@@ -155,6 +155,7 @@ class AppServerSession:
                 session.pending_output_text = ""
                 session.pending_output_updated_at = None
                 session.streaming_message_id = None
+                session.thinking_message_id = None
                 session.streaming_output_text = ""
                 session.streaming_phase = ""
                 session.thinking_message_text = ""
@@ -215,6 +216,7 @@ class AppServerSession:
             raise RuntimeError("App server did not return a thread id.")
         session.last_delivered_output_text = ""
         session.streaming_message_id = None
+        session.thinking_message_id = None
         session.streaming_output_text = ""
         session.streaming_phase = ""
         session.thinking_message_text = ""

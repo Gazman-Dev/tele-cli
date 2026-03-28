@@ -6,6 +6,7 @@ class FakeTelegramClient:
         self._updates = list(updates or [])
         self.messages: list[tuple[int, str]] = []
         self.edits: list[tuple[int, int, str]] = []
+        self.deletes: list[tuple[int, int]] = []
         self.typing_actions: list[int] = []
         self.photos: list[tuple[int, str, str | None]] = []
         self.documents: list[tuple[int, str, str | None]] = []
@@ -25,6 +26,10 @@ class FakeTelegramClient:
     def edit_message_text(self, chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> dict:
         self.edits.append((chat_id, message_id, text))
         return {"message_id": message_id}
+
+    def delete_message(self, chat_id: int, message_id: int) -> dict:
+        self.deletes.append((chat_id, message_id))
+        return {"ok": True}
 
     def send_photo(
         self,

@@ -2187,7 +2187,7 @@ class ServiceFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
-        session.streaming_message_id = 1
+        session.thinking_message_id = 1
         session.thinking_message_text = "Thinking..."
         store.save_session(session)
 
@@ -2321,7 +2321,7 @@ class ServiceFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
-        session.streaming_message_id = 1
+        session.thinking_message_id = 1
         session.thinking_message_text = "Thinking..."
         store.save_session(session)
 
@@ -2353,7 +2353,6 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.last_delivered_output_text, "Hello there friend")
         self.assertEqual(updated.pending_output_text, "")
         self.assertEqual(updated.streaming_output_text, "")
-        self.assertEqual(telegram.edits[0], (22, 1, "Hello"))
         self.assertEqual(telegram.edits[-1], (22, 1, "Hello there friend"))
 
     def test_final_reply_is_chunked_when_placeholder_edit_is_too_large(self) -> None:
@@ -2538,8 +2537,8 @@ class ServiceFlowTests(unittest.TestCase):
 
         updated = store.get_or_create_telegram_session(auth)
         self.assertEqual(telegram.messages, [(22, "Thinking\n\nChecking recent release notes\\.\\.\\.")])
-        self.assertEqual(updated.thinking_message_text, "")
-        self.assertEqual(updated.streaming_output_text, "Thinking\n\nChecking recent release notes...")
+        self.assertEqual(updated.thinking_message_text, "Checking recent release notes...")
+        self.assertEqual(updated.streaming_output_text, "")
 
     def test_drain_codex_notifications_surfaces_command_activity(self) -> None:
         auth = AuthState(
@@ -2577,7 +2576,7 @@ class ServiceFlowTests(unittest.TestCase):
 
         updated = store.get_or_create_telegram_session(auth)
         self.assertEqual(telegram.messages, [(22, "Thinking\n\nCommand: git status \\-\\-short")])
-        self.assertEqual(updated.thinking_message_text, "")
+        self.assertEqual(updated.thinking_message_text, "Command: git status --short")
 
     def test_extract_activity_text_from_search_tool(self) -> None:
         text = extract_activity_text(
@@ -2753,7 +2752,7 @@ class ServiceFlowTests(unittest.TestCase):
 
         updated = store.get_or_create_telegram_session(auth)
         self.assertEqual(telegram.messages, [(22, "Thinking\n\nChecking docs\nComparing schemas")])
-        self.assertEqual(updated.thinking_message_text, "")
+        self.assertEqual(updated.thinking_message_text, "Checking docs\nComparing schemas")
 
     def test_drain_codex_notifications_streams_short_item_agent_message_delta(self) -> None:
         auth = AuthState(
@@ -2802,7 +2801,7 @@ class ServiceFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
-        session.streaming_message_id = 1
+        session.thinking_message_id = 1
         session.thinking_message_text = "Thinking..."
         store.save_session(session)
 
@@ -2841,10 +2840,9 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(updated.streaming_output_text, "Thinking\n\nI am using a skill.")
-        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.thinking_message_id, 1)
         self.assertEqual(updated.streaming_phase, "commentary")
-        self.assertEqual(updated.thinking_message_text, "")
+        self.assertEqual(updated.thinking_message_text, "I am using a skill.")
         self.assertEqual(telegram.edits, [(22, 1, "Thinking\n\nI am using a skill\\.")])
 
     def test_drain_codex_notifications_replaces_commentary_with_final_answer(self) -> None:
@@ -2859,8 +2857,8 @@ class ServiceFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
-        session.streaming_message_id = 1
-        session.streaming_output_text = "I am using a skill."
+        session.thinking_message_id = 1
+        session.thinking_message_text = "I am using a skill."
         session.streaming_phase = "commentary"
         store.save_session(session)
 
@@ -2881,7 +2879,50 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.streaming_output_text, "Final answer")
         self.assertEqual(updated.pending_output_text, "")
         self.assertEqual(updated.streaming_phase, "answer")
+        self.assertIsNone(updated.thinking_message_id)
         self.assertEqual(telegram.edits, [(22, 1, "Final answer")])
+
+    def test_status_after_answer_uses_separate_thinking_message_and_is_cleared_on_completion(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.thinking_message_id = 1
+        session.thinking_message_text = "Checking repo"
+        session.streaming_phase = "commentary"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("item/agentMessage/delta", {"threadId": "thread-1", "turnId": "turn-1", "delta": "Final answer"}),
+                Notification("thread/tokenUsage/updated", {"threadId": "thread-1", "turnId": "turn-1", "tokenUsage": {}}),
+                Notification("turn/completed", {"turnId": "turn-1", "outputText": "Final answer"}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.edits, [(22, 1, "Final answer")])
+        self.assertEqual(telegram.messages, [(22, "Thinking\n\nFinalizing answer\\.\\.\\.")])
+        self.assertEqual(len(telegram.deletes), 1)
+        self.assertEqual(telegram.deletes[0][0], 22)
+        self.assertIsNone(updated.thinking_message_id)
+        self.assertIsNone(updated.streaming_message_id)
 
     def test_commentary_stream_keeps_only_latest_pending_update_until_min_interval(self) -> None:
         auth = AuthState(
@@ -2895,8 +2936,8 @@ class ServiceFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
-        session.streaming_message_id = 1
-        session.streaming_output_text = "Thinking"
+        session.thinking_message_id = 1
+        session.thinking_message_text = "Thinking"
         session.streaming_phase = "commentary"
         session.last_agent_message_at = datetime.now(timezone.utc).isoformat()
         store.save_session(session)
@@ -2932,8 +2973,8 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(updated.pending_output_text, "Thinking\n\nChecking repo")
-        self.assertEqual(updated.streaming_output_text, "Thinking")
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.thinking_message_text, "Checking repo")
         self.assertEqual(telegram.edits, [])
 
         flush_idle_partial_outputs(
@@ -2947,7 +2988,8 @@ class ServiceFlowTests(unittest.TestCase):
         )
 
         refreshed = store.get_or_create_telegram_session(auth)
-        self.assertEqual(refreshed.streaming_output_text, "Thinking\n\nChecking repo")
+        self.assertEqual(refreshed.thinking_message_id, 1)
+        self.assertEqual(refreshed.thinking_message_text, "Checking repo")
 
     def test_drain_codex_notifications_respects_max_notifications_budget(self) -> None:
         auth = AuthState(
