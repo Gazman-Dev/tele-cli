@@ -1863,9 +1863,9 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         self.assertEqual(telegram.message_calls[0][3], "MarkdownV2")
-        self.assertEqual(telegram.message_calls[0][1], "Hello \\*world")
+        self.assertEqual(telegram.message_calls[0][1], "Hello *world*")
         self.assertEqual(telegram.edit_calls[-1][3], "MarkdownV2")
-        self.assertEqual(telegram.edit_calls[-1][2], "Hello \\*world \\- ok\\!")
+        self.assertEqual(telegram.edit_calls[-1][2], "Hello *world \\- ok\\!*")
 
     def test_final_reply_uses_telegram_markdownv2(self) -> None:
         auth = AuthState(

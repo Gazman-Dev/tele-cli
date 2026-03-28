@@ -44,9 +44,53 @@ def normalize_telegram_markdown_source(text: str) -> str:
     return normalized
 
 
+def _count_unescaped(text: str, token: str) -> int:
+    count = 0
+    index = 0
+    step = len(token)
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text.startswith(token, index):
+            count += 1
+            index += step
+            continue
+        index += 1
+    return count
+
+
+def _balance_stream_markdown_source(text: str) -> str:
+    balanced = normalize_telegram_markdown_source(text)
+    if _count_unescaped(balanced, "```") % 2 == 1:
+        if not balanced.endswith("\n"):
+            balanced += "\n"
+        balanced += "```"
+
+    fence_parts = re.split(r"(```.*?```)", balanced, flags=re.DOTALL)
+    updated_parts: list[str] = []
+    for part in fence_parts:
+        if not part:
+            continue
+        if part.startswith("```") and part.endswith("```"):
+            updated_parts.append(part)
+            continue
+        segment = part
+        if _count_unescaped(segment, "`") % 2 == 1:
+            segment += "`"
+        if _count_unescaped(segment, "*") % 2 == 1:
+            segment += "*"
+        if _count_unescaped(segment, "_") % 2 == 1:
+            segment += "_"
+        if _count_unescaped(segment, "~") % 2 == 1:
+            segment += "~"
+        updated_parts.append(segment)
+    return "".join(updated_parts)
+
+
 def safe_stream_markdown_v2(text: str) -> str:
-    normalized = normalize_telegram_markdown_source(text)
-    return escape_telegram_markdown_v2(normalized)
+    balanced = _balance_stream_markdown_source(text)
+    return to_telegram_markdown_v2(balanced)
 
 
 def _escape_code(text: str) -> str:

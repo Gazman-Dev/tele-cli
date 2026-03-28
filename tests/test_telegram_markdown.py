@@ -76,7 +76,22 @@ class TelegramMarkdownTests(unittest.TestCase):
     def test_safe_stream_markdown_v2_escapes_partial_text_conservatively(self) -> None:
         text = "Hello *world - ok!"
         rendered = safe_stream_markdown_v2(text)
-        self.assertEqual(rendered, "Hello \\*world \\- ok\\!")
+        self.assertEqual(rendered, "Hello *world \\- ok\\!*")
+
+    def test_safe_stream_markdown_v2_closes_partial_inline_code(self) -> None:
+        text = "Use `pip install"
+        rendered = safe_stream_markdown_v2(text)
+        self.assertEqual(rendered, "Use `pip install`")
+
+    def test_safe_stream_markdown_v2_closes_partial_fenced_code_block(self) -> None:
+        text = "```python\nprint('hi')"
+        rendered = safe_stream_markdown_v2(text)
+        self.assertEqual(rendered, "```python\nprint('hi')\n```")
+
+    def test_safe_stream_markdown_v2_keeps_headings_readable(self) -> None:
+        text = "# Title"
+        rendered = safe_stream_markdown_v2(text)
+        self.assertEqual(rendered, "*Title*")
 
 
 if __name__ == "__main__":

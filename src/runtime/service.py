@@ -1260,7 +1260,8 @@ def maybe_send_typing_indicator(
     if not target_chat_id:
         return last_sent_at
     now = now or datetime.now(timezone.utc)
-    if last_sent_at is not None and (now - last_sent_at).total_seconds() < interval_seconds:
+    effective_interval = min(interval_seconds, 2.5)
+    if last_sent_at is not None and (now - last_sent_at).total_seconds() < effective_interval:
         return last_sent_at
     if hasattr(telegram, "send_typing"):
         try:
