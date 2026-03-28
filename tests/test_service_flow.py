@@ -1879,6 +1879,57 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [(22, "Final answer")])
         self.assertEqual(updated.last_delivered_output_text, "Final answer")
 
+    def test_item_completed_full_snapshot_replaces_streamed_agent_message(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.thinking_message_text = "Thinking..."
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        final_text = (
+            "I’m a coding-focused AI assistant working with you directly in this workspace.\n\n"
+            "I can inspect the repo, edit files, run commands, debug issues, review code, and explain technical tradeoffs."
+        )
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("item/agentMessage/delta", {"threadId": "thread-1", "turnId": "turn-1", "delta": "I’m a coding-focused AI assistant working with you directly in this workspace.\n\n"}),
+                Notification("item/agentMessage/delta", {"threadId": "thread-1", "turnId": "turn-1", "delta": " can inspect the repo, edit files, run commands, debug issues, review code, and explain technical tradeoffs."}),
+                Notification(
+                    "item/completed",
+                    {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "item": {"type": "agentMessage", "text": final_text, "phase": "final_answer"},
+                    },
+                ),
+                Notification("turn/completed", {"threadId": "thread-1", "turn": {"id": "turn-1"}}),
+            ]
+        )
+        telegram = FakeTelegramClient()
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_delivered_output_text, final_text)
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(telegram.edits[-1], (22, 1, final_text.replace("-", "\\-").replace(".", "\\.")))
+
     def test_cumulative_assistant_message_deltas_do_not_duplicate_output(self) -> None:
         auth = AuthState(
             bot_token="token",

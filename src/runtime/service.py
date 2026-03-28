@@ -1077,9 +1077,6 @@ def merge_incremental_assistant_text(session, text: str | None) -> tuple[str, st
         return ("append", incoming[len(delivered) :])
     if combined and combined.startswith(incoming):
         return ("ignore", "")
-    overlap = _suffix_prefix_overlap(combined, incoming) if combined else 0
-    if overlap >= max(16, min(len(combined), len(incoming)) // 3):
-        return ("append", incoming[overlap:])
     prefix = _common_prefix_length(combined, incoming) if combined else 0
     suffix = _common_suffix_length(combined, incoming) if combined else 0
     if combined and (prefix + suffix) >= max(48, int(min(len(combined), len(incoming)) * 0.8)):
@@ -1089,6 +1086,9 @@ def merge_incremental_assistant_text(session, text: str | None) -> tuple[str, st
         delivered_suffix = _common_suffix_length(delivered, incoming)
         if (delivered_prefix + delivered_suffix) >= max(48, int(min(len(delivered), len(incoming)) * 0.8)):
             return ("replace", incoming)
+    overlap = _suffix_prefix_overlap(combined, incoming) if combined else 0
+    if overlap >= max(16, min(len(combined), len(incoming)) // 3):
+        return ("append", incoming[overlap:])
     return ("append", incoming)
 
 
@@ -1886,7 +1886,16 @@ def drain_codex_notifications(
             thinking_text = extract_thinking_text(params)
             activity_text = extract_activity_text(method, params)
             if session is not None and text:
-                action, payload = merge_incremental_assistant_text(session, text)
+                completed_agent_message = (
+                    method == "item/completed"
+                    and isinstance(params.get("item"), dict)
+                    and params["item"].get("type") == "agentMessage"
+                    and bool(session.pending_output_text.strip() or session.streaming_output_text.strip())
+                )
+                if completed_agent_message:
+                    action, payload = ("replace", text)
+                else:
+                    action, payload = merge_incremental_assistant_text(session, text)
                 if action != "ignore" and payload:
                     if performance is not None:
                         performance.mark_reply_started(session, trigger=method)
