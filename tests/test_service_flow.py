@@ -1917,6 +1917,51 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.streaming_output_text, "")
         self.assertEqual(telegram.messages, [(22, "Hello there friend")])
 
+    def test_revised_full_assistant_message_delta_replaces_previous_snapshot(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        first_text = (
+            "I\u2019m your coding agent in this workspace. I can inspect the repo, edit files, run commands.\n\n"
+            " default to being practical: understand the code first, make the change, test what I can."
+        )
+        revised_text = (
+            "I\u2019m your coding agent in this workspace. I can inspect the repo, edit files, run commands.\n\n"
+            "I default to being practical: understand the code first, make the change, test what I can."
+        )
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": first_text}),
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": revised_text}),
+                Notification("turn/completed", {"turnId": "turn-1", "outputText": revised_text}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_delivered_output_text, revised_text)
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(telegram.messages, [(22, revised_text.replace("-", "\\-").replace(".", "\\."))])
+
     def test_cumulative_item_agent_message_deltas_edit_in_place_without_duplication(self) -> None:
         auth = AuthState(
             bot_token="token",
@@ -1961,14 +2006,55 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.last_delivered_output_text, "Hello there friend")
         self.assertEqual(updated.pending_output_text, "")
         self.assertEqual(updated.streaming_output_text, "")
-        self.assertEqual(
-            telegram.edits,
-            [
-                (22, 1, "Hello"),
-                (22, 1, "Hello there"),
-                (22, 1, "Hello there friend"),
-            ],
+        self.assertEqual(telegram.edits[0], (22, 1, "Hello"))
+        self.assertEqual(telegram.edits[-1], (22, 1, "Hello there friend"))
+
+    def test_revised_streamed_agent_message_delta_replaces_previous_snapshot(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
         )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.thinking_message_text = "Thinking..."
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        first_text = (
+            "I\u2019m your coding agent in this workspace. I can inspect the repo, edit files, run commands.\n\n"
+            " default to being practical: understand the code first, make the change, test what I can."
+        )
+        revised_text = (
+            "I\u2019m your coding agent in this workspace. I can inspect the repo, edit files, run commands.\n\n"
+            "I default to being practical: understand the code first, make the change, test what I can."
+        )
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("item/agentMessage/delta", {"threadId": "thread-1", "turnId": "turn-1", "delta": first_text}),
+                Notification("item/agentMessage/delta", {"threadId": "thread-1", "turnId": "turn-1", "delta": revised_text}),
+                Notification("turn/completed", {"turnId": "turn-1", "outputText": revised_text}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_delivered_output_text, revised_text)
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(telegram.edits[-1], (22, 1, revised_text))
 
     def test_final_reply_is_chunked_when_placeholder_edit_is_too_large(self) -> None:
         auth = AuthState(

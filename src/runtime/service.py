@@ -63,6 +63,11 @@ def append_app_server_notification_log(paths: AppPaths, method: str, params: dic
         "thread_id": params.get("threadId") or params.get("thread_id"),
         "turn_id": params.get("turnId") or params.get("turn_id"),
         "item_type": item.get("type"),
+        "assistant_text": extract_assistant_text(params),
+        "thinking_text": extract_thinking_text(params),
+        "activity_text": extract_activity_text(method, params),
+        "status_text": extract_event_driven_status(method, params),
+        "params": params,
     }
     with paths.root.joinpath("app_server_notifications.log").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
@@ -1028,24 +1033,63 @@ def should_append_completion_text(session, assistant_text: str | None) -> bool:
     return True
 
 
-def normalize_incremental_assistant_text(session, text: str | None) -> str:
+def _common_prefix_length(left: str, right: str) -> int:
+    limit = min(len(left), len(right))
+    index = 0
+    while index < limit and left[index] == right[index]:
+        index += 1
+    return index
+
+
+def _suffix_prefix_overlap(left: str, right: str) -> int:
+    limit = min(len(left), len(right))
+    for size in range(limit, 0, -1):
+        if left[-size:] == right[:size]:
+            return size
+    return 0
+
+
+def _common_suffix_length(left: str, right: str) -> int:
+    limit = min(len(left), len(right))
+    index = 0
+    while index < limit and left[-(index + 1)] == right[-(index + 1)]:
+        index += 1
+    return index
+
+
+def merge_incremental_assistant_text(session, text: str | None) -> tuple[str, str]:
     if not text:
-        return ""
+        return ("ignore", "")
+    incoming = text
     existing_pending = session.pending_output_text
     existing_stream = session.streaming_output_text
     combined = f"{existing_stream}{existing_pending}"
-    if combined and text.startswith(combined):
-        return text[len(combined) :]
-    if existing_pending and text.startswith(existing_pending):
-        return text[len(existing_pending) :]
-    if existing_stream and text.startswith(existing_stream):
-        return text[len(existing_stream) :]
     delivered = session.last_delivered_output_text
-    if delivered and text.startswith(delivered):
-        return text[len(delivered) :]
-    if text == delivered or text == combined or text == existing_pending or text == existing_stream:
-        return ""
-    return text
+    if incoming == delivered or incoming == combined or incoming == existing_pending or incoming == existing_stream:
+        return ("ignore", "")
+    if combined and incoming.startswith(combined):
+        return ("append", incoming[len(combined) :])
+    if existing_pending and incoming.startswith(existing_pending):
+        return ("append", incoming[len(existing_pending) :])
+    if existing_stream and incoming.startswith(existing_stream):
+        return ("append", incoming[len(existing_stream) :])
+    if delivered and incoming.startswith(delivered):
+        return ("append", incoming[len(delivered) :])
+    if combined and combined.startswith(incoming):
+        return ("ignore", "")
+    overlap = _suffix_prefix_overlap(combined, incoming) if combined else 0
+    if overlap >= max(16, min(len(combined), len(incoming)) // 3):
+        return ("append", incoming[overlap:])
+    prefix = _common_prefix_length(combined, incoming) if combined else 0
+    suffix = _common_suffix_length(combined, incoming) if combined else 0
+    if combined and (prefix + suffix) >= max(48, int(min(len(combined), len(incoming)) * 0.8)):
+        return ("replace", incoming)
+    if delivered:
+        delivered_prefix = _common_prefix_length(delivered, incoming)
+        delivered_suffix = _common_suffix_length(delivered, incoming)
+        if (delivered_prefix + delivered_suffix) >= max(48, int(min(len(delivered), len(incoming)) * 0.8)):
+            return ("replace", incoming)
+    return ("append", incoming)
 
 
 def parse_utc_timestamp(value: str | None) -> datetime | None:
@@ -1842,20 +1886,26 @@ def drain_codex_notifications(
             thinking_text = extract_thinking_text(params)
             activity_text = extract_activity_text(method, params)
             if session is not None and text:
-                text = normalize_incremental_assistant_text(session, text)
-            if session is not None and text:
-                if performance is not None:
-                    performance.mark_reply_started(session, trigger=method)
-                session_store.append_pending_output(session, text)
-                if method == "item/agentMessage/delta":
-                    maybe_stream_partial_output(
-                        auth,
-                        telegram,
-                        recorder,
-                        session_store,
-                        session,
-                        performance=performance,
-                    )
+                action, payload = merge_incremental_assistant_text(session, text)
+                if action != "ignore" and payload:
+                    if performance is not None:
+                        performance.mark_reply_started(session, trigger=method)
+                    if action == "replace":
+                        session.pending_output_text = payload
+                        session.pending_output_updated_at = utc_now()
+                        session.streaming_output_text = ""
+                        session_store.save_session(session)
+                    else:
+                        session_store.append_pending_output(session, payload)
+                    if method == "item/agentMessage/delta":
+                        maybe_stream_partial_output(
+                            auth,
+                            telegram,
+                            recorder,
+                            session_store,
+                            session,
+                            performance=performance,
+                        )
             elif session is not None and thinking_text:
                 ensure_thinking_message(auth, telegram, session, text=thinking_text, performance=performance)
                 session_store.save_session(session)
@@ -1916,9 +1966,17 @@ def drain_codex_notifications(
                 except Exception:
                     assistant_text = None
             if should_append_completion_text(session, assistant_text):
-                if performance is not None:
-                    performance.mark_reply_started(session, trigger=method)
-                session_store.append_pending_output(session, assistant_text)
+                action, payload = merge_incremental_assistant_text(session, assistant_text)
+                if action != "ignore" and payload:
+                    if performance is not None:
+                        performance.mark_reply_started(session, trigger=method)
+                    if action == "replace":
+                        session.pending_output_text = payload
+                        session.pending_output_updated_at = utc_now()
+                        session.streaming_output_text = ""
+                        session_store.save_session(session)
+                    else:
+                        session_store.append_pending_output(session, payload)
             session.active_turn_id = None
             session.last_completed_turn_id = str(turn_id)
             session.status = "ACTIVE"
