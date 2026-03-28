@@ -38,6 +38,7 @@ from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
 from .sleep import has_pending_sleep_work, run_sleep, should_run_sleep
+from .telegram_markdown import to_telegram_markdown_v2
 from .telegram_update_store import TelegramUpdateStore
 
 
@@ -932,6 +933,8 @@ def flush_buffer(
     chunks = split_telegram_text(text)
     if not chunks:
         return
+    if mark_agent:
+        chunks = [to_telegram_markdown_v2(chunk) for chunk in chunks]
     context = {
         "performance": performance,
         "category": "assistant_output",

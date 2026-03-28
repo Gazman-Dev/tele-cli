@@ -1620,7 +1620,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.last_completed_turn_id, "turn-1")
         self.assertEqual(updated.last_delivered_output_text, final_text)
         self.assertEqual(updated.pending_output_text, "")
-        self.assertEqual(telegram.messages, [(22, final_text)])
+        self.assertEqual(telegram.messages, [(22, "I do not have human\\-style ongoing memory by default\\.")])
         self.assertEqual(self.recorder.records, [("assistant", final_text)])
 
     def test_completed_turn_does_not_duplicate_matching_streamed_full_answer(self) -> None:
@@ -1735,10 +1735,91 @@ class ServiceFlowTests(unittest.TestCase):
 
         updated = store.get_or_create_telegram_session(auth)
         self.assertEqual(telegram.messages, [(22, "Hello")])
-        self.assertEqual(telegram.edits, [(22, 1, "Hello world"), (22, 1, "Hello world!")])
+        self.assertEqual(telegram.edits, [(22, 1, "Hello world"), (22, 1, "Hello world\\!")])
         self.assertEqual(updated.streaming_message_id, None)
         self.assertEqual(updated.streaming_output_text, "")
         self.assertEqual(updated.last_delivered_output_text, "Hello world!")
+
+    def test_final_reply_uses_telegram_markdownv2(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        class MarkdownRecordingTelegram(FakeTelegramClient):
+            def __init__(self):
+                super().__init__()
+                self.message_calls: list[tuple[int, str, int | None, str | None]] = []
+
+            def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode: str | None = None) -> dict:
+                self.message_calls.append((chat_id, text, topic_id, parse_mode))
+                return super().send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
+
+        telegram = MarkdownRecordingTelegram()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification("turn/completed", {"turnId": "turn-1", "outputText": "# Title\n**bold**"})
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        self.assertEqual(len(telegram.message_calls), 1)
+        self.assertEqual(telegram.message_calls[0][3], "MarkdownV2")
+        self.assertEqual(telegram.messages, [(22, "*Title*\n*bold*")])
+
+    def test_final_reply_falls_back_to_plain_text_when_markdown_send_fails(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        class FallbackTelegram(FakeTelegramClient):
+            def __init__(self):
+                super().__init__()
+                self.parse_modes: list[str | None] = []
+
+            def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode: str | None = None) -> dict:
+                self.parse_modes.append(parse_mode)
+                if parse_mode == "MarkdownV2":
+                    raise TelegramError("can't parse entities")
+                return super().send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
+
+        telegram = FallbackTelegram()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification("turn/completed", {"turnId": "turn-1", "outputText": "# Title\n**bold**"})
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        self.assertEqual(telegram.parse_modes, ["MarkdownV2", None])
+        self.assertEqual(telegram.messages, [(22, "*Title*\n*bold*")])
 
     def test_turn_completed_does_not_duplicate_item_completed_agent_message(self) -> None:
         auth = AuthState(
