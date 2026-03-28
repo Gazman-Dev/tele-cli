@@ -52,6 +52,7 @@ from .telegram_update_store import TelegramUpdateStore
 LOCAL_AUTH_CALLBACK_RE = re.compile(r"https?://(?:localhost|127\.0\.0\.1):1455/auth/callback\?[^\s]+", re.IGNORECASE)
 TELEGRAM_TEXT_LIMIT = 4000
 TELEGRAM_MARKDOWN_MODE = "MarkdownV2"
+_AGENT_MESSAGE_PHASES: dict[str, str] = {}
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -108,6 +109,23 @@ def append_telegram_format_failure_log(
     }
     with paths.root.joinpath("telegram_format_failures.log").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def remember_agent_message_phase(method: str, params: dict) -> str | None:
+    item = params.get("item")
+    if isinstance(item, dict) and item.get("type") == "agentMessage":
+        item_id = item.get("id")
+        phase = item.get("phase")
+        if isinstance(item_id, str) and item_id and isinstance(phase, str) and phase:
+            _AGENT_MESSAGE_PHASES[item_id] = phase
+            if len(_AGENT_MESSAGE_PHASES) > 256:
+                oldest = next(iter(_AGENT_MESSAGE_PHASES))
+                _AGENT_MESSAGE_PHASES.pop(oldest, None)
+            return phase
+    item_id = params.get("itemId")
+    if isinstance(item_id, str) and item_id:
+        return _AGENT_MESSAGE_PHASES.get(item_id)
+    return None
 
 
 def split_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
@@ -1944,6 +1962,7 @@ def drain_codex_notifications(
             break
         method = notification.method
         params = notification.params or {}
+        agent_message_phase = remember_agent_message_phase(method, params)
         append_app_server_notification_log(paths, method, params)
         if performance is not None:
             performance.mark_notification_received(method, params)
@@ -1961,7 +1980,7 @@ def drain_codex_notifications(
             "item/completed",
             "turn/output",
         }:
-            text = extract_assistant_text(params)
+            text = None if agent_message_phase == "commentary" else extract_assistant_text(params)
             thinking_text = extract_thinking_text(params)
             activity_text = extract_activity_text(method, params)
             if session is not None and text:

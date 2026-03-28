@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core.models import AuthState, CodexServerState, Config, RuntimeState
@@ -174,6 +175,71 @@ class AppServerRuntimeTests(unittest.TestCase):
         turn_steer = next(payload for payload in server.received if payload["method"] == "turn/steer")
         self.assertEqual(turn_steer["params"]["turnId"], "turn-1")
         self.assertEqual(turn_steer["params"]["input"], [{"type": "text", "text": "again"}])
+
+    def test_app_server_session_send_interrupts_stale_active_turn_before_new_turn(self) -> None:
+        transport = InMemoryJsonRpcTransport()
+        server = FakeAppServer(transport)
+        server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+        server.on("getAccount", lambda payload: {"status": "ready"})
+        server.on("thread/start", lambda payload: {"threadId": "thread-1"})
+        turn_counter = {"count": 0}
+
+        def handle_turn_start(payload):
+            turn_counter["count"] += 1
+            return {"turnId": f"turn-{turn_counter['count']}"}
+
+        server.on("turn/start", handle_turn_start)
+        server.on("turn/interrupt", lambda payload: {"ok": True})
+        server.on("turn/steer", lambda payload: {"turnId": payload["params"]["turnId"]})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            session = bootstrap_app_server_session(
+                paths=paths,
+                auth=auth,
+                runtime=runtime,
+                runtime_state=runtime_state,
+                transport=transport,
+                config=Config(state_dir=str(paths.root)),
+            )
+            session.send("hello")
+
+            from runtime.session_store import SessionStore
+
+            store = SessionStore(paths)
+            current = store.get_current_telegram_session(auth)
+            assert current is not None
+            current.last_agent_message_at = (datetime.now(timezone.utc) - timedelta(seconds=45)).isoformat()
+            current.pending_output_updated_at = current.last_agent_message_at
+            current.streaming_message_id = 99
+            current.streaming_output_text = "stale partial"
+            current.pending_output_text = "stale pending"
+            current.thinking_message_text = "Thinking..."
+            store.save_session(current)
+
+            session.send("again")
+
+            refreshed = store.get_current_telegram_session(auth)
+            assert refreshed is not None
+            self.assertEqual(refreshed.active_turn_id, "turn-2")
+            self.assertEqual(refreshed.pending_output_text, "")
+            self.assertEqual(refreshed.streaming_output_text, "")
+            self.assertEqual(refreshed.thinking_message_text, "")
+
+        methods = [payload["method"] for payload in server.received]
+        self.assertEqual(methods.count("turn/start"), 2)
+        self.assertEqual(methods.count("turn/interrupt"), 1)
+        self.assertEqual(methods.count("turn/steer"), 0)
 
     def test_send_starts_new_thread_when_resume_rejects_stale_thread(self) -> None:
         transport = InMemoryJsonRpcTransport()

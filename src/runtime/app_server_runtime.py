@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from core.json_store import save_json
@@ -16,6 +17,35 @@ from .performance import PerformanceTracker
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
 from .sleep import build_refresh_instructions, current_generation
+
+
+STALE_ACTIVE_TURN_SECONDS = 30.0
+
+
+def parse_session_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def is_stale_active_turn(session, *, now: datetime | None = None, threshold_seconds: float = STALE_ACTIVE_TURN_SECONDS) -> bool:
+    if not session.active_turn_id:
+        return False
+    now = now or datetime.now(timezone.utc)
+    candidates = [
+        parse_session_timestamp(session.pending_output_updated_at),
+        parse_session_timestamp(session.last_agent_message_at),
+    ]
+    last_activity = max((candidate for candidate in candidates if candidate is not None), default=None)
+    if last_activity is None:
+        return False
+    return (now - last_activity).total_seconds() >= threshold_seconds
 
 
 def normalize_initialize_result(initialize_result: dict[str, Any]) -> dict[str, Any]:
@@ -110,12 +140,23 @@ class AppServerSession:
         thread_id = session.thread_id
         turn_input = self._build_turn_input(session, text)
         if session.active_turn_id:
-            self.client.turn_steer(session.active_turn_id, text)
-            session.status = "RUNNING_TURN"
-            self.session_store.save_session(session)
-            if self.performance is not None:
-                self.performance.mark_turn_registered(session)
-            return
+            if is_stale_active_turn(session):
+                self.client.turn_interrupt(session.active_turn_id)
+                session.active_turn_id = None
+                session.pending_output_text = ""
+                session.pending_output_updated_at = None
+                session.streaming_message_id = None
+                session.streaming_output_text = ""
+                session.thinking_message_text = ""
+                session.status = "ACTIVE"
+                self.session_store.save_session(session)
+            else:
+                self.client.turn_steer(session.active_turn_id, text)
+                session.status = "RUNNING_TURN"
+                self.session_store.save_session(session)
+                if self.performance is not None:
+                    self.performance.mark_turn_registered(session)
+                return
         if thread_id:
             if thread_id not in self._resumed_threads:
                 try:
