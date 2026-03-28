@@ -106,19 +106,26 @@ class AppServerSession:
         self.performance = performance
         self._resumed_threads: set[str] = set()
 
-    def _build_turn_input(self, session, text: str) -> str:
+    def _build_turn_input(self, session, text: str, *, recovered_from_error: bool = False) -> str:
+        user_request = text
+        if recovered_from_error:
+            user_request = (
+                "System: recovered from error, the previous message got interrupted.\n\n"
+                "---\n\n"
+                f"{text}"
+            )
         if not session.instructions_dirty:
-            return text
+            return user_request
         if not session.thread_id:
             instructions = render_session_instructions(self.session_store.paths, session, refresh_reason="session_start")
             if not instructions:
-                return text
-            return f"{instructions}\n\nUser request:\n{text}"
+                return user_request
+            return f"{instructions}\n\nUser request:\n{user_request}"
         refresh, generation = build_refresh_instructions(self.session_store.paths, session)
         if refresh:
             session.last_seen_generation = generation
-            return f"{refresh}\n\nUser request:\n{text}"
-        return text
+            return f"{refresh}\n\nUser request:\n{user_request}"
+        return user_request
 
     def _scoped_auth(self, *, chat_id: int | None = None, user_id: int | None = None) -> AuthState:
         scoped = AuthState.from_dict(self.auth.to_dict())
@@ -128,7 +135,7 @@ class AppServerSession:
             scoped.telegram_user_id = user_id
         return scoped
 
-    def _start_or_steer_turn(self, session, text: str) -> None:
+    def _start_or_steer_turn(self, session, text: str) -> bool:
         workspace_cwd = str(build_instruction_paths(self.session_store.paths).repo_root)
         if session.status == "RECOVERING_TURN":
             raise RuntimeError("Session is recovering an in-flight turn.")
@@ -138,7 +145,7 @@ class AppServerSession:
         if session.status != "ARCHIVED":
             session.status = "ACTIVE"
         thread_id = session.thread_id
-        turn_input = self._build_turn_input(session, text)
+        recovered_from_error = False
         if session.active_turn_id:
             if is_stale_active_turn(session):
                 self.client.turn_interrupt(session.active_turn_id)
@@ -150,13 +157,15 @@ class AppServerSession:
                 session.thinking_message_text = ""
                 session.status = "ACTIVE"
                 self.session_store.save_session(session)
+                recovered_from_error = True
             else:
                 self.client.turn_steer(session.active_turn_id, text)
                 session.status = "RUNNING_TURN"
                 self.session_store.save_session(session)
                 if self.performance is not None:
                     self.performance.mark_turn_registered(session)
-                return
+                return False
+        turn_input = self._build_turn_input(session, text, recovered_from_error=recovered_from_error)
         if thread_id:
             if thread_id not in self._resumed_threads:
                 try:
@@ -222,6 +231,7 @@ class AppServerSession:
         self.session_store.save_session(session)
         if self.performance is not None:
             self.performance.mark_turn_registered(session)
+        return recovered_from_error
 
     def send(
         self,
@@ -230,14 +240,14 @@ class AppServerSession:
         *,
         chat_id: int | None = None,
         user_id: int | None = None,
-    ) -> None:
+    ) -> bool:
         scoped_auth = self._scoped_auth(chat_id=chat_id, user_id=user_id)
         session = self.session_store.get_or_create_telegram_session(scoped_auth, topic_id)
-        self._start_or_steer_turn(session, text)
+        return self._start_or_steer_turn(session, text)
 
-    def send_local(self, channel: str, text: str) -> None:
+    def send_local(self, channel: str, text: str) -> bool:
         session = self.session_store.get_or_create_local_session(channel)
-        self._start_or_steer_turn(session, text)
+        return self._start_or_steer_turn(session, text)
 
     def interrupt(self, topic_id: int | None = None, *, chat_id: int | None = None, user_id: int | None = None) -> bool:
         scoped_auth = self._scoped_auth(chat_id=chat_id, user_id=user_id)

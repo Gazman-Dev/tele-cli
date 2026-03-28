@@ -1645,18 +1645,22 @@ def handle_authorized_message(
         )
         return
     session_id: str | None = None
+    recovered_from_stale_turn = False
     if session_store is not None and performance is not None:
         tracked_session = session_store.get_or_create_telegram_session(auth, topic_id)
         session_id = tracked_session.session_id
         performance.mark_turn_requested(tracked_session, topic_id=topic_id, text=text)
     try:
-        codex.send(text, topic_id=topic_id, chat_id=auth.telegram_chat_id, user_id=auth.telegram_user_id)
+        send_result = codex.send(text, topic_id=topic_id, chat_id=auth.telegram_chat_id, user_id=auth.telegram_user_id)
+        recovered_from_stale_turn = bool(send_result)
     except TypeError:
         try:
-            codex.send(text, topic_id=topic_id)
+            send_result = codex.send(text, topic_id=topic_id)
+            recovered_from_stale_turn = bool(send_result)
         except TypeError:
             try:
-                codex.send(text)
+                send_result = codex.send(text)
+                recovered_from_stale_turn = bool(send_result)
             except Exception as exc:
                 if performance is not None and session_id is not None:
                     performance.mark_turn_failed(session_id, error=str(exc))
@@ -1693,6 +1697,15 @@ def handle_authorized_message(
             category="error",
         )
         return
+    if recovered_from_stale_turn:
+        send_telegram_message(
+            telegram,
+            auth.telegram_chat_id,
+            "Something went wrong with the previous message. I recovered the session and restarted your request.",
+            topic_id=topic_id,
+            performance=performance,
+            category="status",
+        )
     recorder.record("telegram", text)
     if session_store is not None and auth.telegram_chat_id:
         thinking_session = session_store.get_current_telegram_session(auth, topic_id)

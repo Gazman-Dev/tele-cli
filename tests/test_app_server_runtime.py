@@ -212,7 +212,8 @@ class AppServerRuntimeTests(unittest.TestCase):
                 transport=transport,
                 config=Config(state_dir=str(paths.root)),
             )
-            session.send("hello")
+            recovered = session.send("hello")
+            self.assertFalse(recovered)
 
             from runtime.session_store import SessionStore
 
@@ -227,7 +228,8 @@ class AppServerRuntimeTests(unittest.TestCase):
             current.thinking_message_text = "Thinking..."
             store.save_session(current)
 
-            session.send("again")
+            recovered = session.send("again")
+            self.assertTrue(recovered)
 
             refreshed = store.get_current_telegram_session(auth)
             assert refreshed is not None
@@ -240,6 +242,11 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(methods.count("turn/start"), 2)
         self.assertEqual(methods.count("turn/interrupt"), 1)
         self.assertEqual(methods.count("turn/steer"), 0)
+        turn_starts = [payload for payload in server.received if payload["method"] == "turn/start"]
+        second_input = turn_starts[-1]["params"]["input"][0]["text"]
+        self.assertIn("System: recovered from error, the previous message got interrupted.", second_input)
+        self.assertIn("---", second_input)
+        self.assertIn("again", second_input)
 
     def test_send_starts_new_thread_when_resume_rejects_stale_thread(self) -> None:
         transport = InMemoryJsonRpcTransport()

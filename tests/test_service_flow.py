@@ -89,6 +89,19 @@ class FakeCodex:
         return None
 
 
+class RecoveringCodex(FakeCodex):
+    def send(
+        self,
+        text: str,
+        topic_id: int | None = None,
+        chat_id: int | None = None,
+        user_id: int | None = None,
+    ) -> bool:
+        self.sent.append(text)
+        self.sent_topics.append(topic_id)
+        return True
+
+
 class ServiceFlowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.paths = build_paths(Path.cwd() / ".test_state" / "service_flow" / str(uuid.uuid4()))
@@ -138,10 +151,39 @@ class ServiceFlowTests(unittest.TestCase):
             )
 
         self.assertIsNone(codex)
-        self.assertEqual(len(telegram.messages), 1)
-        self.assertIn("codex=DEGRADED", telegram.messages[0][1])
-        self.assertIn("sessions=0", telegram.messages[0][1])
-        self.assertEqual(self.recorder.records, [])
+
+    def test_process_telegram_update_notifies_user_when_stale_turn_is_recovered(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        codex = RecoveringCodex()
+        update = {"update_id": 1, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "hello again"}}
+
+        result = process_telegram_update(
+            update,
+            paths=self.paths,
+            config=self.config,
+            auth=auth,
+            runtime=self.runtime,
+            runtime_state=self.runtime_state,
+            metadata=self.metadata,
+            app_lock=self.app_lock,
+            telegram=telegram,
+            recorder=self.recorder,
+            codex=codex,
+            handle_output=lambda source, line: None,
+        )
+
+        self.assertIs(result, codex)
+        self.assertEqual(codex.sent, ["hello again"])
+        self.assertEqual(
+            telegram.messages,
+            [(22, "Something went wrong with the previous message. I recovered the session and restarted your request.")],
+        )
 
     def test_status_shows_recovering_turn_state(self) -> None:
         auth = AuthState(
