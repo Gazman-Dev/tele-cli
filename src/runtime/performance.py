@@ -169,24 +169,55 @@ def send_telegram_message(
     text: str,
     *,
     topic_id: int | None = None,
+    parse_mode: str | None = None,
+    allow_plain_fallback: bool = False,
     performance: PerformanceTracker | None = None,
     **context: Any,
 ) -> int | None:
     started_at = time.monotonic()
     if performance is not None:
-        performance.log("telegram_send_started", chat_id=chat_id, topic_id=topic_id, text_chars=len(text), **context)
+        performance.log(
+            "telegram_send_started",
+            chat_id=chat_id,
+            topic_id=topic_id,
+            text_chars=len(text),
+            parse_mode=parse_mode,
+            **context,
+        )
     try:
         try:
-            result = telegram.send_message(chat_id, text, topic_id=topic_id)
+            result = telegram.send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
         except TypeError:
             result = telegram.send_message(chat_id, text)
     except Exception as exc:
+        if allow_plain_fallback and parse_mode:
+            if performance is not None:
+                performance.log(
+                    "telegram_send_retry_plain",
+                    chat_id=chat_id,
+                    topic_id=topic_id,
+                    text_chars=len(text),
+                    parse_mode=parse_mode,
+                    error=str(exc),
+                    **context,
+                )
+            return send_telegram_message(
+                telegram,
+                chat_id,
+                text,
+                topic_id=topic_id,
+                parse_mode=None,
+                allow_plain_fallback=False,
+                performance=performance,
+                **context,
+            )
         if performance is not None:
             performance.log(
                 "telegram_send_failed",
                 chat_id=chat_id,
                 topic_id=topic_id,
                 text_chars=len(text),
+                parse_mode=parse_mode,
                 duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
                 error=str(exc),
                 **context,
@@ -198,6 +229,7 @@ def send_telegram_message(
             chat_id=chat_id,
             topic_id=topic_id,
             text_chars=len(text),
+            parse_mode=parse_mode,
             duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
             **context,
         )
@@ -214,6 +246,8 @@ def edit_telegram_message(
     message_id: int,
     text: str,
     *,
+    parse_mode: str | None = None,
+    allow_plain_fallback: bool = False,
     performance: PerformanceTracker | None = None,
     **context: Any,
 ) -> None:
@@ -224,17 +258,44 @@ def edit_telegram_message(
             chat_id=chat_id,
             message_id=message_id,
             text_chars=len(text),
+            parse_mode=parse_mode,
             **context,
         )
     try:
-        telegram.edit_message_text(chat_id, message_id, text)
+        try:
+            telegram.edit_message_text(chat_id, message_id, text, parse_mode=parse_mode)
+        except TypeError:
+            telegram.edit_message_text(chat_id, message_id, text)
     except Exception as exc:
+        if allow_plain_fallback and parse_mode:
+            if performance is not None:
+                performance.log(
+                    "telegram_edit_retry_plain",
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text_chars=len(text),
+                    parse_mode=parse_mode,
+                    error=str(exc),
+                    **context,
+                )
+            edit_telegram_message(
+                telegram,
+                chat_id,
+                message_id,
+                text,
+                parse_mode=None,
+                allow_plain_fallback=False,
+                performance=performance,
+                **context,
+            )
+            return
         if performance is not None:
             performance.log(
                 "telegram_edit_failed",
                 chat_id=chat_id,
                 message_id=message_id,
                 text_chars=len(text),
+                parse_mode=parse_mode,
                 duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
                 error=str(exc),
                 **context,
@@ -246,6 +307,7 @@ def edit_telegram_message(
             chat_id=chat_id,
             message_id=message_id,
             text_chars=len(text),
+            parse_mode=parse_mode,
             duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
             **context,
         )

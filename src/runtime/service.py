@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import inspect
 import json
+import mimetypes
 import queue
 import time
 import threading
@@ -42,6 +43,7 @@ from .telegram_update_store import TelegramUpdateStore
 
 LOCAL_AUTH_CALLBACK_RE = re.compile(r"https?://(?:localhost|127\.0\.0\.1):1455/auth/callback\?[^\s]+", re.IGNORECASE)
 TELEGRAM_TEXT_LIMIT = 4000
+TELEGRAM_MARKDOWN_MODE = "MarkdownV2"
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -339,6 +341,64 @@ def extract_update_topic_id(update: dict) -> int | None:
     message = update.get("message") or {}
     topic_id = message.get("message_thread_id")
     return int(topic_id) if isinstance(topic_id, int) else None
+
+
+def telegram_media_dir(paths: AppPaths):
+    directory = paths.root / "telegram_media"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def sanitize_telegram_filename(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
+    return cleaned or "attachment"
+
+
+def save_telegram_file(
+    paths: AppPaths,
+    telegram: TelegramClient,
+    *,
+    file_id: str,
+    suggested_name: str,
+) -> str:
+    metadata = telegram.get_file(file_id)
+    file_path = str(metadata.get("file_path") or "").strip()
+    if not file_path:
+        raise TelegramError(f"Telegram file metadata missing file_path for {file_id}")
+    destination = telegram_media_dir(paths) / f"{utc_now().replace(':', '').replace('-', '')}_{sanitize_telegram_filename(suggested_name)}"
+    destination.write_bytes(telegram.download_file(file_path))
+    return destination.relative_to(paths.root).as_posix()
+
+
+def build_telegram_attachment_notes(paths: AppPaths, telegram: TelegramClient, message: dict) -> list[str]:
+    notes: list[str] = []
+    document = message.get("document")
+    if isinstance(document, dict) and document.get("file_id"):
+        file_name = str(document.get("file_name") or f"document_{document.get('file_unique_id') or document['file_id']}")
+        relative_path = save_telegram_file(paths, telegram, file_id=str(document["file_id"]), suggested_name=file_name)
+        mime_type = document.get("mime_type") or mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        notes.append(f"File saved to {relative_path} (name={file_name}, mime={mime_type}).")
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        photo = photos[-1]
+        if isinstance(photo, dict) and photo.get("file_id"):
+            photo_name = f"photo_{photo.get('file_unique_id') or photo['file_id']}.jpg"
+            relative_path = save_telegram_file(paths, telegram, file_id=str(photo["file_id"]), suggested_name=photo_name)
+            notes.append(f"Image saved to {relative_path}.")
+    return notes
+
+
+def build_telegram_input_text(paths: AppPaths, telegram: TelegramClient, message: dict) -> str:
+    base_text = str(message.get("text") or message.get("caption") or "").strip()
+    attachment_notes = build_telegram_attachment_notes(paths, telegram, message)
+    if not attachment_notes:
+        return base_text
+    parts: list[str] = []
+    if base_text:
+        parts.append(base_text)
+    parts.append("Telegram attachments:")
+    parts.extend(f"- {note}" for note in attachment_notes)
+    return "\n".join(parts).strip()
 
 
 def extract_assistant_text(params: dict) -> str | None:
@@ -879,6 +939,7 @@ def flush_buffer(
         "thread_id": session.thread_id,
         "turn_id": session.active_turn_id or session.last_completed_turn_id,
     }
+    parse_mode = TELEGRAM_MARKDOWN_MODE if mark_agent else None
     try:
         if session.streaming_message_id is not None:
             edit_telegram_message(
@@ -886,6 +947,8 @@ def flush_buffer(
                 target_chat_id,
                 session.streaming_message_id,
                 chunks[0],
+                parse_mode=parse_mode,
+                allow_plain_fallback=mark_agent,
                 **context,
             )
         else:
@@ -894,6 +957,8 @@ def flush_buffer(
                 target_chat_id,
                 chunks[0],
                 topic_id=session.transport_topic_id,
+                parse_mode=parse_mode,
+                allow_plain_fallback=mark_agent,
                 **context,
             )
             if not mark_agent:
@@ -905,6 +970,8 @@ def flush_buffer(
                 target_chat_id,
                 chunk,
                 topic_id=session.transport_topic_id,
+                parse_mode=parse_mode,
+                allow_plain_fallback=mark_agent,
                 **context,
             )
     except TelegramError:
@@ -1500,7 +1567,7 @@ def process_telegram_update(
     message = update.get("message", {}) or {}
     chat_id = message.get("chat", {}).get("id")
     user_id = message.get("from", {}).get("id")
-    text = (message.get("text") or "").strip()
+    text = build_telegram_input_text(paths, telegram, message)
     if performance is not None and text:
         performance.mark_telegram_message_received(
             update_id=update_id if isinstance(update_id, int) else None,

@@ -10,6 +10,9 @@ It is designed for Linux and macOS and focuses on one local operator, one Telegr
 - Separate setup and service conflict handling with recovery prompts
 - Single-instance protection with runtime metadata and stale lock detection
 - Single-controller Telegram pairing with local `reset-auth` support
+- Telegram channel commands for sending text, images, and files from scripts or services
+- Telegram attachment intake for inbound photos and documents
+- Telegram MarkdownV2 formatting on final assistant chat replies with plain-text fallback
 - Terminal recording and local runtime output mirroring
 - Docker-based Linux validation harness
 
@@ -71,6 +74,9 @@ tele-cli update
 tele-cli uninstall
 tele-cli reset-auth
 tele-cli complete-pairing
+tele-cli telegram channel message --channel main "hello"
+tele-cli telegram channel image --channel current ./image.png --caption "look"
+tele-cli telegram channel file --channel -100123456/77 ./report.pdf --caption "report"
 ```
 
 `tele-cli` and `tele-cli menu` open the interactive app shell. In an interactive terminal, `setup`, `update`, and `uninstall` also route through the app shell; the direct subcommands remain available for non-interactive use.
@@ -90,6 +96,24 @@ Once the bot is paired, the authorized Telegram chat can use:
 /approve <request_id>
 /deny <request_id>
 ```
+
+## Telegram Channels
+
+For outbound scriptable Telegram sends:
+
+```bash
+tele-cli telegram channel message --channel current "Done."
+tele-cli telegram channel message --channel main "Done."
+tele-cli telegram channel image --channel current ./image.png --caption "Preview"
+tele-cli telegram channel file --channel -100123456/77 ./report.pdf --caption "Report"
+```
+
+Channel formats:
+
+- `main`: the default one-to-one paired chat
+- `current`: the most recently active attached Telegram session/topic
+- `<chat_id>`: an explicit Telegram chat id
+- `<chat_id>/<topic_id>`: an explicit Telegram topic inside a group chat
 
 ## UX Demo
 

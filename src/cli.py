@@ -12,6 +12,7 @@ from local_chat import run_local_chat
 from runtime.service import reset_auth, run_service
 from setup.admin import run_uninstall, run_update
 from setup.setup_flow import complete_pending_pairing, run_setup
+from telegram_command import run_telegram_command
 
 
 def _is_interactive_terminal() -> bool:
@@ -36,6 +37,21 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("update")
     subparsers.add_parser("uninstall")
     subparsers.add_parser("complete-pairing")
+    telegram_parser = subparsers.add_parser("telegram")
+    telegram_subparsers = telegram_parser.add_subparsers(dest="telegram_group", required=True)
+    channel_parser = telegram_subparsers.add_parser("channel")
+    channel_subparsers = channel_parser.add_subparsers(dest="telegram_target", required=True)
+    channel_message_parser = channel_subparsers.add_parser("message")
+    channel_message_parser.add_argument("--channel", default="main")
+    channel_message_parser.add_argument("text")
+    channel_image_parser = channel_subparsers.add_parser("image")
+    channel_image_parser.add_argument("--channel", default="main")
+    channel_image_parser.add_argument("path")
+    channel_image_parser.add_argument("--caption", default=None)
+    channel_file_parser = channel_subparsers.add_parser("file")
+    channel_file_parser.add_argument("--channel", default="main")
+    channel_file_parser.add_argument("path")
+    channel_file_parser.add_argument("--caption", default=None)
     chat_parser = subparsers.add_parser("chat")
     chat_parser.add_argument("--channel", default="main")
     return parser
@@ -79,6 +95,8 @@ def main() -> None:
         if not auth or not auth.bot_token:
             raise SystemExit("Telegram bot token is not configured.")
         complete_pending_pairing(paths, auth, TelegramClient(auth.bot_token))
+    elif args.command == "telegram":
+        run_telegram_command(paths, args)
     elif args.command == "chat":
         run_local_chat(paths, channel=channel)
 

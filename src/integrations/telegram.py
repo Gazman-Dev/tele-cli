@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from pathlib import Path
 from typing import Optional
 
 from core.models import AuthState, utc_now
@@ -17,19 +20,75 @@ class TelegramClient:
     def __init__(self, token: str):
         self.token = token
         self.base_url = f"https://api.telegram.org/bot{token}"
+        self.file_base_url = f"https://api.telegram.org/file/bot{token}"
 
-    def _request(self, method: str, params: Optional[dict] = None) -> dict:
+    def _request(
+        self,
+        method: str,
+        params: Optional[dict] = None,
+        *,
+        data: bytes | None = None,
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict:
         url = f"{self.base_url}/{method}"
-        if params:
-            url = f"{url}?{urllib.parse.urlencode(params)}"
+        request_headers = dict(headers or {})
+        request: urllib.request.Request | str
+        if data is not None:
+            request = urllib.request.Request(url, data=data, headers=request_headers, method="POST")
+        else:
+            if params:
+                url = f"{url}?{urllib.parse.urlencode(params)}"
+            request = url
         try:
-            with urllib.request.urlopen(url, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=30) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.URLError as exc:
             raise TelegramError(str(exc)) from exc
         if not payload.get("ok"):
             raise TelegramError(str(payload))
         return payload["result"]
+
+    def _request_bytes(self, url: str) -> bytes:
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                return response.read()
+        except urllib.error.URLError as exc:
+            raise TelegramError(str(exc)) from exc
+
+    def _multipart_request(
+        self,
+        method: str,
+        *,
+        params: dict[str, object],
+        file_field: str,
+        file_path: Path,
+    ) -> dict:
+        boundary = f"tele-cli-{uuid.uuid4().hex}"
+        body = bytearray()
+        for key, value in params.items():
+            if value is None:
+                continue
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+            body.extend(str(value).encode("utf-8"))
+            body.extend(b"\r\n")
+        filename = file_path.name
+        mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(
+            (
+                f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+                f"Content-Type: {mime_type}\r\n\r\n"
+            ).encode("utf-8")
+        )
+        body.extend(file_path.read_bytes())
+        body.extend(b"\r\n")
+        body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+        return self._request(
+            method,
+            data=bytes(body),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
 
     def validate(self) -> dict:
         return self._request("getMe")
@@ -40,14 +99,76 @@ class TelegramClient:
             params["offset"] = offset
         return self._request("getUpdates", params=params)
 
-    def send_message(self, chat_id: int, text: str, topic_id: int | None = None) -> dict:
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        topic_id: int | None = None,
+        parse_mode: str | None = None,
+    ) -> dict:
         params = {"chat_id": chat_id, "text": text}
         if topic_id is not None:
             params["message_thread_id"] = topic_id
+        if parse_mode:
+            params["parse_mode"] = parse_mode
         return self._request("sendMessage", params=params)
 
-    def edit_message_text(self, chat_id: int, message_id: int, text: str) -> dict:
-        return self._request("editMessageText", params={"chat_id": chat_id, "message_id": message_id, "text": text})
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        parse_mode: str | None = None,
+    ) -> dict:
+        params = {"chat_id": chat_id, "message_id": message_id, "text": text}
+        if parse_mode:
+            params["parse_mode"] = parse_mode
+        return self._request("editMessageText", params=params)
+
+    def send_photo(
+        self,
+        chat_id: int,
+        photo_path: Path | str,
+        *,
+        topic_id: int | None = None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+    ) -> dict:
+        path = Path(photo_path).expanduser().resolve()
+        params: dict[str, object] = {"chat_id": chat_id}
+        if topic_id is not None:
+            params["message_thread_id"] = topic_id
+        if caption:
+            params["caption"] = caption
+        if parse_mode:
+            params["parse_mode"] = parse_mode
+        return self._multipart_request("sendPhoto", params=params, file_field="photo", file_path=path)
+
+    def send_document(
+        self,
+        chat_id: int,
+        document_path: Path | str,
+        *,
+        topic_id: int | None = None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+    ) -> dict:
+        path = Path(document_path).expanduser().resolve()
+        params: dict[str, object] = {"chat_id": chat_id}
+        if topic_id is not None:
+            params["message_thread_id"] = topic_id
+        if caption:
+            params["caption"] = caption
+        if parse_mode:
+            params["parse_mode"] = parse_mode
+        return self._multipart_request("sendDocument", params=params, file_field="document", file_path=path)
+
+    def get_file(self, file_id: str) -> dict:
+        return self._request("getFile", params={"file_id": file_id})
+
+    def download_file(self, file_path: str) -> bytes:
+        encoded_path = "/".join(urllib.parse.quote(segment) for segment in file_path.split("/"))
+        return self._request_bytes(f"{self.file_base_url}/{encoded_path}")
 
     def send_typing(self, chat_id: int, topic_id: int | None = None) -> None:
         params = {"chat_id": chat_id, "action": "typing"}

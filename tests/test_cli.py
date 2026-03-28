@@ -40,6 +40,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.command, "chat")
         self.assertEqual(args.channel, "main")
 
+        args = parser.parse_args(["telegram", "channel", "message", "--channel", "main", "hello"])
+        self.assertEqual(args.command, "telegram")
+        self.assertEqual(args.telegram_group, "channel")
+        self.assertEqual(args.telegram_target, "message")
+        self.assertEqual(args.channel, "main")
+        self.assertEqual(args.text, "hello")
+
     def test_parser_accepts_chat_flags(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["-chat", "-channel", "my_group/topic1"])
@@ -123,6 +130,16 @@ class CliTests(unittest.TestCase):
 
         run_setup_mock.assert_called_once()
         run_app_shell_mock.assert_not_called()
+
+    def test_main_routes_telegram_channel_command(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli", "telegram", "channel", "message", "--channel", "main", "hello"]),
+            patch("cli.run_telegram_command") as run_telegram_command_mock,
+        ):
+            main()
+
+        run_telegram_command_mock.assert_called_once()
 
     def test_main_runs_update_directly_without_tty(self) -> None:
         with (

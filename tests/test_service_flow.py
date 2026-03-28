@@ -251,6 +251,54 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(started_codex.sent, ["hello topic"])
         self.assertEqual(started_codex.sent_topics, [99])
 
+    def test_regular_update_downloads_telegram_attachments_and_forwards_paths(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        telegram.files["doc-1"] = {"file_path": "documents/file_1.txt"}
+        telegram.downloads["documents/file_1.txt"] = b"hello"
+        telegram.files["photo-1"] = {"file_path": "photos/file_2.jpg"}
+        telegram.downloads["photos/file_2.jpg"] = b"jpg"
+        update = {
+            "update_id": 12,
+            "message": {
+                "chat": {"id": 22},
+                "from": {"id": 11},
+                "caption": "please review",
+                "document": {"file_id": "doc-1", "file_name": "notes.txt", "mime_type": "text/plain"},
+                "photo": [{"file_id": "photo-1", "file_unique_id": "uniq-photo"}],
+            },
+        }
+        started_codex = FakeCodex()
+
+        with patch("runtime.service.save_json"):
+            codex = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=None,
+                handle_output=lambda source, line: None,
+                start_codex_session_fn=lambda *args, **kwargs: started_codex,
+            )
+
+        self.assertIs(codex, started_codex)
+        self.assertEqual(len(started_codex.sent), 1)
+        self.assertIn("please review", started_codex.sent[0])
+        self.assertIn("Telegram attachments:", started_codex.sent[0])
+        self.assertIn("telegram_media/", started_codex.sent[0])
+        self.assertEqual(len(list((self.paths.root / "telegram_media").glob("*"))), 2)
+
     def test_regular_update_allows_paired_user_in_different_chat(self) -> None:
         auth = AuthState(
             bot_token="token",
