@@ -7,6 +7,7 @@ from runtime.telegram_markdown import (
     escape_telegram_markdown_v2,
     normalize_existing_telegram_markdown_v2,
     normalize_telegram_markdown_source,
+    safe_stream_markdown_v2,
     to_telegram_markdown_v2,
 )
 
@@ -71,6 +72,11 @@ class TelegramMarkdownTests(unittest.TestCase):
         text = "Telegram\\-first\n\\- bullet\n\\*not bold\\*"
         rendered = normalize_telegram_markdown_source(text)
         self.assertEqual(rendered, "Telegram-first\n- bullet\n*not bold*")
+
+    def test_safe_stream_markdown_v2_escapes_partial_text_conservatively(self) -> None:
+        text = "Hello *world - ok!"
+        rendered = safe_stream_markdown_v2(text)
+        self.assertEqual(rendered, "Hello \\*world \\- ok\\!")
 
 
 if __name__ == "__main__":

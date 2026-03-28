@@ -43,6 +43,7 @@ from .telegram_markdown import (
     escape_telegram_markdown_v2,
     normalize_existing_telegram_markdown_v2,
     normalize_telegram_markdown_source,
+    safe_stream_markdown_v2,
     to_telegram_markdown_v2,
 )
 from .telegram_update_store import TelegramUpdateStore
@@ -630,6 +631,7 @@ def maybe_stream_partial_output(
         recorder,
         session_store,
         mark_agent=False,
+        stream_format=True,
         performance=performance,
     )
 
@@ -887,6 +889,7 @@ def flush_buffer(
     session_store: SessionStore,
     *,
     mark_agent: bool,
+    stream_format: bool = False,
     performance: PerformanceTracker | None = None,
 ) -> None:
     session = next((item for item in session_store.load().sessions if item.session_id == session_id), None)
@@ -933,7 +936,7 @@ def flush_buffer(
         "thread_id": session.thread_id,
         "turn_id": session.active_turn_id or session.last_completed_turn_id,
     }
-    parse_mode = TELEGRAM_MARKDOWN_MODE if mark_agent else None
+    parse_mode = TELEGRAM_MARKDOWN_MODE if (mark_agent or stream_format) else None
     def _deliver(chunks: list[str], *, parse_mode_value: str | None) -> None:
         if session.streaming_message_id is not None:
             edit_telegram_message(
@@ -1005,8 +1008,9 @@ def flush_buffer(
         session.streaming_message_id = None
         session_store.save_session(session)
     else:
+        stream_chunks = [safe_stream_markdown_v2(chunk) for chunk in plain_chunks] if stream_format else plain_chunks
         try:
-            _deliver(plain_chunks, parse_mode_value=parse_mode)
+            _deliver(stream_chunks, parse_mode_value=parse_mode)
         except TelegramError:
             if session.streaming_message_id is not None:
                 try:
@@ -1180,6 +1184,7 @@ def flush_idle_partial_outputs(
             recorder,
             session_store,
             mark_agent=False,
+            stream_format=True,
             performance=performance,
         )
 
@@ -1308,6 +1313,8 @@ def handle_authorized_message(
     session_store: SessionStore | None = None,
     topic_id: int | None = None,
     performance: PerformanceTracker | None = None,
+    paths: AppPaths | None = None,
+    config: Config | None = None,
 ) -> None:
     if not auth.telegram_chat_id:
         return
@@ -1410,6 +1417,28 @@ def handle_authorized_message(
             performance=performance,
             category="status",
             session_id=session.session_id,
+        )
+        return
+    if text == "/sleep":
+        if paths is None or config is None:
+            send_telegram_message(
+                telegram,
+                auth.telegram_chat_id,
+                "Sleep is not available.",
+                topic_id=topic_id,
+                performance=performance,
+                category="status",
+            )
+            return
+        current_local = datetime.now().astimezone()
+        run_sleep(paths, config, current_local, config.sleep_hour_local)
+        send_telegram_message(
+            telegram,
+            auth.telegram_chat_id,
+            "Sleep completed.",
+            topic_id=topic_id,
+            performance=performance,
+            category="status",
         )
         return
     approval_store = ApprovalStore(session_store.paths) if session_store is not None else None
@@ -1827,7 +1856,7 @@ def process_telegram_update(
         )
         return codex
 
-    if text in {"/status", "/sessions", "/new", "/stop", "/abort"} or text.startswith("/approve ") or text.startswith("/deny "):
+    if text in {"/status", "/sessions", "/new", "/stop", "/abort", "/sleep"} or text.startswith("/approve ") or text.startswith("/deny "):
         handle_authorized_message(
             text,
             scoped_auth,
@@ -1838,6 +1867,8 @@ def process_telegram_update(
             session_store,
             topic_id,
             performance,
+            paths=paths,
+            config=config,
         )
         return codex
 
@@ -2003,6 +2034,7 @@ def drain_codex_notifications(
                     recorder,
                     session_store,
                     mark_agent=False,
+                    stream_format=True,
                     performance=performance,
                 )
             continue

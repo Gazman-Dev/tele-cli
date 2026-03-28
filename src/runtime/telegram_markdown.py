@@ -44,6 +44,11 @@ def normalize_telegram_markdown_source(text: str) -> str:
     return normalized
 
 
+def safe_stream_markdown_v2(text: str) -> str:
+    normalized = normalize_telegram_markdown_source(text)
+    return escape_telegram_markdown_v2(normalized)
+
+
 def _escape_code(text: str) -> str:
     return text.replace("\\", "\\\\").replace("`", "\\`")
 

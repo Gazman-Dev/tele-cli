@@ -382,6 +382,39 @@ class ServiceFlowTests(unittest.TestCase):
             [(22, "Current session is recovering an in-flight turn. Wait for recovery, use /stop, or start fresh with /new.")],
         )
 
+    def test_sleep_command_runs_sleep_and_reports_completion(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        update = {"update_id": 30, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "/sleep"}}
+
+        with (
+            patch("runtime.service.save_json"),
+            patch("runtime.service.run_sleep") as run_sleep_mock,
+        ):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=None,
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIsNone(returned)
+        run_sleep_mock.assert_called_once()
+        self.assertEqual(telegram.messages, [(22, "Sleep completed.")])
+
     def test_duplicate_update_id_does_not_forward_message_twice(self) -> None:
         auth = AuthState(
             bot_token="token",
@@ -1741,6 +1774,57 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.streaming_output_text, "")
         self.assertEqual(updated.last_delivered_output_text, "Hello world!")
 
+    def test_partial_stream_uses_safe_markdown_v2(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        class StreamingTelegram(FakeTelegramClient):
+            def __init__(self):
+                super().__init__()
+                self.message_calls: list[tuple[int, str, int | None, str | None]] = []
+                self.edit_calls: list[tuple[int, int, str, str | None]] = []
+
+            def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode: str | None = None) -> dict:
+                self.message_calls.append((chat_id, text, topic_id, parse_mode))
+                return super().send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
+
+            def edit_message_text(self, chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> dict:
+                self.edit_calls.append((chat_id, message_id, text, parse_mode))
+                return super().edit_message_text(chat_id, message_id, text, parse_mode=parse_mode)
+
+        telegram = StreamingTelegram()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": "Hello *world"}),
+                Notification("assistant/message.partial", {"threadId": "thread-1"}),
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": " - ok!"}),
+                Notification("assistant/message.partial", {"threadId": "thread-1"}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        self.assertEqual(telegram.message_calls[0][3], "MarkdownV2")
+        self.assertEqual(telegram.message_calls[0][1], "Hello \\*world")
+        self.assertEqual(telegram.edit_calls[-1][3], "MarkdownV2")
+        self.assertEqual(telegram.edit_calls[-1][2], "Hello \\*world \\- ok\\!")
+
     def test_final_reply_uses_telegram_markdownv2(self) -> None:
         auth = AuthState(
             bot_token="token",
@@ -2653,7 +2737,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.thinking_message_text, "")
         self.assertEqual(updated.streaming_output_text, "Collecting release notes and grouping changes by date.")
         self.assertEqual(updated.pending_output_text, "")
-        self.assertEqual(telegram.edits, [(22, 1, "Collecting release notes and grouping changes by date.")])
+        self.assertEqual(telegram.edits, [(22, 1, "Collecting release notes and grouping changes by date\\.")])
 
     def test_extract_assistant_text_reads_structured_text_object(self) -> None:
         text = extract_assistant_text(
