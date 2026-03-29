@@ -2763,8 +2763,8 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Thinking\n\nCommand: git status \\-\\-short")])
-        self.assertEqual(updated.thinking_message_text, "Command: git status --short")
+        self.assertEqual(telegram.messages, [(22, "Running\n\n```bash\ngit status --short\n```")])
+        self.assertEqual(updated.thinking_message_text, "__tele_cli_command__:git status --short")
 
     def test_extract_activity_text_from_search_tool(self) -> None:
         text = extract_activity_text(
@@ -2791,7 +2791,7 @@ class ServiceFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(text, 'Command: sed -n \'1,40p\' \\"$HOME/project/file.ts\\"')
+        self.assertEqual(text, '__tele_cli_command__:sed -n \'1,40p\' \\"$HOME/project/file.ts\\"')
 
     def test_extract_activity_text_from_command_output_delta(self) -> None:
         text = extract_activity_text(
@@ -2801,7 +2801,7 @@ class ServiceFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(text, "Command: cloning into repository...")
+        self.assertEqual(text, "cloning into repository...")
 
     def test_extract_activity_text_from_file_change_output_delta(self) -> None:
         text = extract_activity_text(

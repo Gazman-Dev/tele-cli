@@ -57,6 +57,7 @@ _AGENT_MESSAGE_PHASES: dict[str, str] = {}
 _AGENT_MESSAGE_TEXTS: dict[str, str] = {}
 COMMENTARY_STREAM_MIN_INTERVAL_SECONDS = 1.0
 DEFAULT_THINKING_STREAM_MIN_INTERVAL_SECONDS = 1.0
+_COMMAND_ACTIVITY_PREFIX = "__tele_cli_command__:"
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -663,11 +664,24 @@ def _extract_command_label(command: str, *, limit: int = 96) -> str:
     return _shorten_activity_text(compact, limit=limit)
 
 
+def _encode_command_activity(command: str) -> str:
+    return f"{_COMMAND_ACTIVITY_PREFIX}{command}"
+
+
+def _decode_command_activity(text: str | None) -> str | None:
+    if not isinstance(text, str):
+        return None
+    if not text.startswith(_COMMAND_ACTIVITY_PREFIX):
+        return None
+    command = text[len(_COMMAND_ACTIVITY_PREFIX) :].strip()
+    return command or None
+
+
 def extract_activity_text(method: str, params: dict) -> str | None:
     if method == "item/commandExecution/outputDelta":
         delta = _extract_delta_text(params)
         if delta:
-            return f"Command: {delta}"
+            return delta
         return "Running command..."
     if method == "item/fileChange/outputDelta":
         delta = _extract_delta_text(params)
@@ -688,7 +702,7 @@ def extract_activity_text(method: str, params: dict) -> str | None:
     if item_type == "commandExecution":
         command = item.get("command")
         if isinstance(command, str) and command.strip():
-            return f"Command: {_extract_command_label(command.strip())}"
+            return _encode_command_activity(_extract_command_label(command.strip()))
         return "Running command..."
     if item_type == "mcpToolCall":
         server = str(item.get("server") or "").strip()
@@ -893,6 +907,9 @@ def render_thinking_message(text: str | None) -> str:
     body = (text or "").strip()
     if not body:
         return "Thinking"
+    command = _decode_command_activity(body)
+    if command:
+        return f"Running\n\n```bash\n{command}\n```"
     if body == "Thinking":
         return body
     return f"Thinking\n\n{body}"
@@ -913,8 +930,13 @@ def draft_id_for_session(session) -> int:
 def render_stream_draft_text(*, answer_text: str | None, thinking_text: str | None) -> str:
     answer = (answer_text or "").strip()
     thinking = (thinking_text or "").strip()
+    thinking_title = "Thinking"
+    command = _decode_command_activity(thinking)
+    if command:
+        thinking_title = "Running"
+        thinking = f"```bash\n{command}\n```"
     if answer and thinking:
-        return f"{answer}\n\n---\n\nThinking\n\n{thinking}"
+        return f"{answer}\n\n---\n\n{thinking_title}\n\n{thinking}"
     if answer:
         return answer
     return render_thinking_message(thinking_text)

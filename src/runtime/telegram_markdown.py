@@ -107,6 +107,13 @@ def _escape_link_url(url: str) -> str:
     return url.replace("\\", "\\\\").replace(")", "\\)")
 
 
+def _looks_like_supported_link_target(target: str) -> bool:
+    stripped = target.strip()
+    return bool(
+        stripped.startswith(("http://", "https://", "tg://", "/"))
+    )
+
+
 def _apply_line_level_rules(text: str) -> str:
     lines: list[str] = []
     for line in text.splitlines():
@@ -145,11 +152,14 @@ def to_telegram_markdown_v2(text: str) -> str:
     normalized = re.sub(r"`([^`\n]+)`", replace_inline_code, normalized)
 
     def replace_link(match: re.Match[str]) -> str:
+        raw_target = match.group(2).strip()
+        if not _looks_like_supported_link_target(raw_target):
+            return match.group(0)
         label = _escape_plain(match.group(1))
-        url = _escape_link_url(match.group(2).strip())
+        url = _escape_link_url(raw_target)
         return stash(f"[{label}]({url})")
 
-    normalized = re.sub(r"\[([^\]\n]+)\]\((https?://[^\s)]+(?:\)[^\s)]*)?)\)", replace_link, normalized)
+    normalized = re.sub(r"\[([^\]\n]+)\]\(((?:\\.|[^)\n])+)\)", replace_link, normalized)
 
     def replace_bold(match: re.Match[str]) -> str:
         return stash(f"*{_escape_plain(match.group(1))}*")

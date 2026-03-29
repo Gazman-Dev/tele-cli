@@ -43,6 +43,14 @@ class TelegramMarkdownTests(unittest.TestCase):
         rendered = to_telegram_markdown_v2(text)
         self.assertEqual(rendered, "See [OpenAI](https://openai.com/docs)\\.")
 
+    def test_preserves_file_links_with_line_anchors(self) -> None:
+        text = "See [job.ts](/Users/ilyagazman/git/websites/scripts/eval-loop/job.ts#L123)."
+        rendered = to_telegram_markdown_v2(text)
+        self.assertEqual(
+            rendered,
+            "See [job\\.ts](/Users/ilyagazman/git/websites/scripts/eval-loop/job.ts#L123)\\.",
+        )
+
     def test_malformed_markdown_degrades_safely(self) -> None:
         text = "**bold\n[broken](not-a-url)"
         rendered = to_telegram_markdown_v2(text)
