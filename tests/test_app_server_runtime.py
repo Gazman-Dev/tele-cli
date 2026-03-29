@@ -157,17 +157,17 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertEqual(persisted.login_type, "chatgpt")
             self.assertEqual(persisted.login_url, "https://example.test/login")
 
-    def test_app_server_session_send_steers_when_turn_is_already_active(self) -> None:
+    def test_app_server_session_send_queues_followup_when_turn_is_already_active(self) -> None:
         transport = InMemoryJsonRpcTransport()
         server = FakeAppServer(transport)
         server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
         server.on("getAccount", lambda payload: {"status": "ready"})
         server.on("thread/start", lambda payload: {"threadId": "thread-1"})
         server.on("turn/start", lambda payload: {"turnId": "turn-1"})
-        server.on("turn/steer", lambda payload: {"turnId": payload["params"]["turnId"]})
 
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
             runtime_state = RuntimeState(
                 session_id="1",
                 service_state="RUNNING",
@@ -179,7 +179,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             runtime = ServiceRuntime(runtime_state)
             session = bootstrap_app_server_session(
                 paths=paths,
-                auth=AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now"),
+                auth=auth,
                 runtime=runtime,
                 runtime_state=runtime_state,
                 transport=transport,
@@ -188,10 +188,18 @@ class AppServerRuntimeTests(unittest.TestCase):
             session.send("hello")
             session.send("again")
 
+            from runtime.session_store import SessionStore
+
+            store = SessionStore(paths)
+            stored = store.get_current_telegram_session(auth)
+            assert stored is not None
+            self.assertEqual(stored.active_turn_id, "turn-1")
+            self.assertEqual(stored.queued_user_input_text, "again")
+
         methods = [payload["method"] for payload in server.received]
         self.assertEqual(methods.count("thread/start"), 1)
         self.assertEqual(methods.count("turn/start"), 1)
-        self.assertEqual(methods.count("turn/steer"), 1)
+        self.assertEqual(methods.count("turn/steer"), 0)
         thread_start = next(payload for payload in server.received if payload["method"] == "thread/start")
         self.assertEqual(thread_start["params"]["sandbox"], "danger-full-access")
         self.assertEqual(thread_start["params"]["approvalPolicy"], "never")
@@ -206,9 +214,6 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertIn("You are Tele Cli, a Telegram-first personal assistant", first_input)
         self.assertIn("memory/sessions/", first_input)
         self.assertIn("User request:\nhello", first_input)
-        turn_steer = next(payload for payload in server.received if payload["method"] == "turn/steer")
-        self.assertEqual(turn_steer["params"]["turnId"], "turn-1")
-        self.assertEqual(turn_steer["params"]["input"], [{"type": "text", "text": "again"}])
 
     def test_app_server_session_send_interrupts_stale_active_turn_before_new_turn(self) -> None:
         transport = InMemoryJsonRpcTransport()

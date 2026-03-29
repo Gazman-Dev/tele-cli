@@ -152,6 +152,7 @@ class SessionRecord:
     streaming_phase: str = ""
     thinking_message_text: str = ""
     pending_output_text: str = ""
+    queued_user_input_text: str = ""
     pending_output_updated_at: Optional[str] = None
     last_completed_turn_id: Optional[str] = None
     last_delivered_output_text: str = ""

@@ -477,6 +477,7 @@ def reset_session_after_request_failure(
         return
     session.active_turn_id = None
     session.pending_output_text = ""
+    session.queued_user_input_text = ""
     session.pending_output_updated_at = None
     session.streaming_message_id = None
     session.thinking_message_id = None
@@ -1610,6 +1611,47 @@ def maybe_send_typing_indicator(
     return last_sent_at
 
 
+def dispatch_queued_followup(
+    auth: AuthState,
+    telegram: TelegramClient,
+    recorder: Recorder,
+    session_store: SessionStore,
+    session,
+    codex,
+    *,
+    runtime_state: RuntimeState | None = None,
+    performance: PerformanceTracker | None = None,
+    paths: AppPaths | None = None,
+    config: Config | None = None,
+) -> None:
+    queued_text = (session.queued_user_input_text or "").strip()
+    if not queued_text:
+        return
+    session.queued_user_input_text = ""
+    session_store.save_session(session)
+    handle_authorized_message(
+        queued_text,
+        auth,
+        runtime_state
+        or RuntimeState(
+            session_id="",
+            service_state="RUNNING",
+            codex_state="RUNNING",
+            telegram_state="RUNNING",
+            recorder_state="RUNNING",
+            debug_state="RUNNING",
+        ),
+        codex,
+        telegram,
+        recorder,
+        session_store,
+        session.transport_topic_id,
+        performance,
+        paths=paths,
+        config=config,
+    )
+
+
 def codex_is_alive(codex) -> bool:
     if codex is None:
         return False
@@ -2340,6 +2382,7 @@ def drain_codex_notifications(
     codex,
     runtime: ServiceRuntime | None = None,
     runtime_state: RuntimeState | None = None,
+    config: Config | None = None,
     performance: PerformanceTracker | None = None,
     max_notifications: int | None = None,
 ) -> int:
@@ -2550,6 +2593,19 @@ def drain_codex_notifications(
                 session.streaming_phase = ""
                 session.thinking_message_text = ""
                 session_store.save_session(session)
+                if session.queued_user_input_text.strip():
+                    dispatch_queued_followup(
+                        auth,
+                        telegram,
+                        recorder,
+                        session_store,
+                        session,
+                        codex,
+                        runtime_state=runtime_state,
+                        performance=performance,
+                        paths=paths,
+                        config=config,
+                    )
                 continue
             flush_buffer(
                 session.session_id,
@@ -2560,6 +2616,20 @@ def drain_codex_notifications(
                 mark_agent=True,
                 performance=performance,
             )
+            refreshed = session_store.get_current_telegram_session(auth, session.transport_topic_id)
+            if refreshed is not None and refreshed.session_id == session.session_id and refreshed.queued_user_input_text.strip():
+                dispatch_queued_followup(
+                    auth,
+                    telegram,
+                    recorder,
+                    session_store,
+                    refreshed,
+                    codex,
+                    runtime_state=runtime_state,
+                    performance=performance,
+                    paths=paths,
+                    config=config,
+                )
             continue
         if method in {"thread/updated", "thread/resumed"}:
             thread_id = params.get("threadId")
@@ -2764,6 +2834,7 @@ def run_service(
                     codex,
                     runtime,
                     runtime_state,
+                    config,
                     performance,
                     max_notifications=100,
                 )
@@ -2831,6 +2902,7 @@ def run_service(
                 codex,
                 runtime,
                 runtime_state,
+                config,
                 performance,
                 max_notifications=100,
             )
