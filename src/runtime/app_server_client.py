@@ -152,8 +152,14 @@ class AppServerClient:
         payload = {"threadId": thread_id, "input": _text_input(text), **params}
         return _normalize_turn_payload(self.rpc.request("turn/start", payload))
 
-    def turn_steer(self, turn_id: str, text: str) -> dict[str, Any]:
-        return _normalize_turn_payload(self.rpc.request("turn/steer", {"turnId": turn_id, "input": _text_input(text)}))
+    def turn_steer(self, thread_id: str, turn_id: str, text: str) -> dict[str, Any]:
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            raise RuntimeError("Cannot steer app-server turn without a valid thread id.")
+        if not isinstance(turn_id, str) or not turn_id.strip():
+            raise RuntimeError("Cannot steer app-server turn without a valid turn id.")
+        return _normalize_turn_payload(
+            self.rpc.request("turn/steer", {"threadId": thread_id, "turnId": turn_id, "input": _text_input(text)})
+        )
 
     def turn_interrupt(self, turn_id: str) -> dict[str, Any]:
         return self.rpc.request("turn/interrupt", {"turnId": turn_id})

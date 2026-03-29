@@ -1284,46 +1284,6 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIsNone(updated.active_turn_id)
         self.assertEqual(updated.status, "ACTIVE")
 
-    def test_turn_completed_dispatches_queued_followup(self) -> None:
-        auth = AuthState(
-            bot_token="token",
-            telegram_user_id=11,
-            telegram_chat_id=22,
-            paired_at="now",
-        )
-        store = SessionStore(self.paths)
-        session = store.get_or_create_telegram_session(auth, topic_id=120)
-        session.thread_id = "thread-1"
-        session.active_turn_id = "turn-1"
-        session.status = "RUNNING_TURN"
-        session.queued_user_input_text = "more context for the screenshot"
-        store.save_session(session)
-
-        class Notification:
-            def __init__(self, method: str, params: dict):
-                self.method = method
-                self.params = params
-
-        telegram = FakeTelegramClient()
-        codex = FakeCodex()
-        codex.pending_notifications.append(Notification("turn/completed", {"turnId": "turn-1"}))
-
-        drain_codex_notifications(
-            self.paths,
-            auth,
-            telegram,
-            self.recorder,
-            codex,
-            runtime_state=self.runtime_state,
-            config=self.config,
-        )
-
-        updated = store.get_current_telegram_session(auth, 120)
-        assert updated is not None
-        self.assertEqual(codex.sent, ["more context for the screenshot"])
-        self.assertEqual(codex.sent_topics, [120])
-        self.assertEqual(updated.queued_user_input_text, "")
-
     def test_drain_codex_notifications_persists_thread_update(self) -> None:
         auth = AuthState(
             bot_token="token",

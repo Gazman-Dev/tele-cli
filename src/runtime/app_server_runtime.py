@@ -107,14 +107,6 @@ class AppServerSession:
         self.performance = performance
         self._resumed_threads: set[str] = set()
 
-    @staticmethod
-    def _append_queued_user_input(session, text: str) -> None:
-        existing = (session.queued_user_input_text or "").strip()
-        addition = text.strip()
-        if not addition:
-            return
-        session.queued_user_input_text = f"{existing}\n\n{addition}".strip() if existing else addition
-
     def _build_turn_input(self, session, text: str, *, recovered_from_error: bool = False) -> str:
         user_request = text
         if recovered_from_error:
@@ -164,7 +156,6 @@ class AppServerSession:
                 self.client.turn_interrupt(session.active_turn_id)
                 session.active_turn_id = None
                 session.pending_output_text = ""
-                session.queued_user_input_text = ""
                 session.pending_output_updated_at = None
                 session.streaming_message_id = None
                 session.thinking_message_id = None
@@ -175,7 +166,9 @@ class AppServerSession:
                 self.session_store.save_session(session)
                 recovered_from_error = True
             else:
-                self._append_queued_user_input(session, text)
+                if not thread_id:
+                    raise RuntimeError("Cannot steer active app-server turn without a valid thread id.")
+                self.client.turn_steer(thread_id, session.active_turn_id, text)
                 session.status = "RUNNING_TURN"
                 self.session_store.save_session(session)
                 if self.performance is not None:
@@ -250,7 +243,6 @@ class AppServerSession:
         )
         session.active_turn_id = turn.get("turnId")
         session.pending_output_text = ""
-        session.queued_user_input_text = ""
         session.status = "RUNNING_TURN"
         session.instructions_dirty = False
         session.last_seen_generation = current_generation(self.session_store.paths)
@@ -346,7 +338,6 @@ def recover_inflight_sessions(client: AppServerClient, session_store: SessionSto
         if session.active_turn_id or session.pending_output_text or session.streaming_output_text or session.thinking_message_text:
             session.active_turn_id = None
             session.pending_output_text = ""
-            session.queued_user_input_text = ""
             session.pending_output_updated_at = None
             session.last_delivered_output_text = ""
             session.last_completed_turn_id = None
