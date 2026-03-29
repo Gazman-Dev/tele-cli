@@ -132,13 +132,20 @@ def render_telegram_progress_html(text: str | None) -> str:
     return f"<b>{title}</b>\n\n{to_telegram_html(body)}"
 
 
-def render_final_telegram_html(*, answer_text: str, thinking_history_text: str | None) -> str:
-    answer_html = answer_text.strip() if looks_like_telegram_html(answer_text) else to_telegram_html(answer_text)
+def render_collapsed_thinking_html(thinking_history_text: str | None) -> str:
     thinking_lines = [line.strip() for line in (thinking_history_text or "").split("\n") if line.strip()]
     if not thinking_lines:
-        return answer_html
+        return ""
     rendered_entries = [render_telegram_progress_html(line) for line in thinking_lines]
     thinking_body = "\n\n".join(entry for entry in rendered_entries if entry.strip())
     if not thinking_body:
+        return ""
+    return f"<b>Thinking</b>\n<blockquote expandable>{thinking_body}</blockquote>"
+
+
+def render_final_telegram_html(*, answer_text: str, thinking_history_text: str | None) -> str:
+    answer_html = answer_text.strip() if looks_like_telegram_html(answer_text) else to_telegram_html(answer_text)
+    thinking_html = render_collapsed_thinking_html(thinking_history_text)
+    if not thinking_html:
         return answer_html
-    return f"<b>Thinking</b>\n<blockquote expandable>{thinking_body}</blockquote>\n\n{answer_html}"
+    return f"{thinking_html}\n\n{answer_html}"

@@ -33,12 +33,18 @@ from .approval_store import ApprovalStore
 from .codex_cli_config import read_codex_cli_preferences, write_codex_cli_preferences
 from .control import ServiceConflictChoices, isatty, prepare_service_lock, reset_auth, start_codex_session
 from .instructions import ensure_instruction_files
-from .performance import PerformanceTracker, send_telegram_message
+from .performance import PerformanceTracker, edit_telegram_message, send_telegram_message
 from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
 from .sleep import has_pending_sleep_work, run_sleep, should_run_sleep
-from .telegram_html import escape_telegram_html, render_final_telegram_html, render_telegram_progress_html, to_telegram_html
+from .telegram_html import (
+    escape_telegram_html,
+    looks_like_telegram_html,
+    render_collapsed_thinking_html,
+    render_telegram_progress_html,
+    to_telegram_html,
+)
 from .telegram_update_store import TelegramUpdateStore
 
 
@@ -50,6 +56,7 @@ _AGENT_MESSAGE_TEXTS: dict[str, str] = {}
 COMMENTARY_STREAM_MIN_INTERVAL_SECONDS = 1.0
 DEFAULT_THINKING_STREAM_MIN_INTERVAL_SECONDS = 1.0
 _COMMAND_ACTIVITY_PREFIX = "__tele_cli_command__:"
+MIN_LIVE_THINKING_LENGTH = 12
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -647,7 +654,7 @@ def _extract_delta_text(params: dict, *, limit: int = 80) -> str | None:
     return None
 
 
-def _extract_command_label(command: str, *, limit: int = 96) -> str:
+def _extract_command_label(command: str, *, limit: int = 4096) -> str:
     compact = " ".join(command.split())
     shell_wrapper = re.match(r'^(?:/[\w./-]+/)?(?:zsh|bash|sh)\s+-lc\s+["\'](?P<body>.+)["\']$', compact)
     if shell_wrapper:
@@ -697,7 +704,7 @@ def extract_activity_text(method: str, params: dict) -> str | None:
         command = item.get("command")
         if isinstance(command, str) and command.strip():
             return _encode_command_activity(_extract_command_label(command.strip()))
-        return "Running command..."
+        return "Running command"
     if item_type == "mcpToolCall":
         server = str(item.get("server") or "").strip()
         tool = str(item.get("tool") or "").strip()
@@ -711,7 +718,7 @@ def extract_activity_text(method: str, params: dict) -> str | None:
             if hint:
                 return f"Tool: {tool} ({hint})"
             return f"Tool: {tool}"
-        return "Using external tool..."
+        return "Using external tool"
     if item_type == "dynamicToolCall":
         tool = item.get("tool")
         arguments = item.get("arguments")
@@ -723,7 +730,7 @@ def extract_activity_text(method: str, params: dict) -> str | None:
             if hint:
                 return f"Tool: {tool} ({hint})"
             return f"Tool: {tool}"
-        return "Using tool..."
+        return "Using tool"
     if item_type == "collabAgentToolCall":
         tool = str(item.get("tool") or "")
         status = str(item.get("status") or "")
@@ -735,14 +742,14 @@ def extract_activity_text(method: str, params: dict) -> str | None:
             return "Tool: coordinating helper agents"
         return "Tool: helper agent"
     if item_type == "fileChange":
-        return "Applying file changes..."
+        return "Applying file changes"
     if item_type == "plan":
-        return "Planning next steps..."
+        return "Planning next steps"
     if item_type == "search":
         query = _extract_search_hint(item)
         if query:
             return f"Searching: {query}"
-        return "Searching..."
+        return "Searching"
     return None
 
 
@@ -910,6 +917,21 @@ def extract_thinking_body(text: str | None) -> str:
     return value
 
 
+def _is_meaningful_live_thinking_text(text: str | None) -> bool:
+    body = (text or "").strip()
+    if not body:
+        return False
+    if _decode_command_activity(body):
+        return True
+    if body in {"Thinking", "Running"}:
+        return False
+    if len(body) >= MIN_LIVE_THINKING_LENGTH:
+        return True
+    if any(char in body for char in {" ", "\n", ".", "!", "?", ":"}):
+        return True
+    return False
+
+
 def set_visible_thinking_message(
     auth: AuthState,
     telegram: TelegramClient,
@@ -924,37 +946,62 @@ def set_visible_thinking_message(
     ensure_thinking_message(auth, telegram, session, text=text, performance=performance)
     target_chat_id = session.transport_chat_id or auth.telegram_chat_id
     if not session.attached or not target_chat_id:
+        session_store.save_session(session)
         return
-    rendered = render_telegram_progress_html(session.thinking_message_text)
+    current_text = session.thinking_message_text.strip()
+    if not _is_meaningful_live_thinking_text(current_text):
+        session_store.save_session(session)
+        return
+    rendered = render_telegram_progress_html(current_text)
     if not rendered.strip():
+        session_store.save_session(session)
         return
     now = datetime.now(timezone.utc)
     last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
-    if last_sent_at is not None and (now - last_sent_at).total_seconds() < min_interval_seconds:
+    if (
+        session.thinking_message_id is None
+        and last_sent_at is not None
+        and (now - last_sent_at).total_seconds() < min_interval_seconds
+    ):
         session_store.save_session(session)
         return
-    if session.last_thinking_sent_text.strip() == session.thinking_message_text.strip():
+    if session.last_thinking_sent_text.strip() == current_text:
+        session_store.save_session(session)
         return
     history_lines = [line for line in session.thinking_history_text.split("\n") if line.strip()]
-    current_text = session.thinking_message_text.strip()
     if current_text and (not history_lines or history_lines[-1] != current_text):
         history_lines.append(current_text)
         session.thinking_history_text = "\n".join(history_lines)
     try:
-        send_telegram_message(
-            telegram,
-            target_chat_id,
-            rendered,
-            topic_id=session.transport_topic_id,
-            parse_mode=TELEGRAM_PARSE_MODE,
-            disable_notification=True,
-            performance=performance,
-            category="thinking_output",
-            session_id=session.session_id,
-            thread_id=session.thread_id,
-            turn_id=session.active_turn_id or session.last_completed_turn_id,
-        )
+        if session.thinking_message_id is not None:
+            edit_telegram_message(
+                telegram,
+                target_chat_id,
+                session.thinking_message_id,
+                rendered,
+                parse_mode=TELEGRAM_PARSE_MODE,
+                performance=performance,
+                category="thinking_output",
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                turn_id=session.active_turn_id or session.last_completed_turn_id,
+            )
+        else:
+            session.thinking_message_id = send_telegram_message(
+                telegram,
+                target_chat_id,
+                rendered,
+                topic_id=session.transport_topic_id,
+                parse_mode=TELEGRAM_PARSE_MODE,
+                disable_notification=True,
+                performance=performance,
+                category="thinking_output",
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                turn_id=session.active_turn_id or session.last_completed_turn_id,
+            )
     except TelegramError:
+        session.thinking_message_id = None
         session_store.save_session(session)
         return
     session.last_thinking_sent_text = current_text
@@ -970,10 +1017,15 @@ def clear_thinking_message(
     *,
     performance: PerformanceTracker | None = None,
 ) -> None:
+    target_chat_id = session.transport_chat_id or auth.telegram_chat_id
+    if session.thinking_message_id is not None and target_chat_id:
+        try:
+            telegram.delete_message(target_chat_id, session.thinking_message_id)
+        except TelegramError:
+            pass
     session.thinking_message_id = None
     session.thinking_message_text = ""
     session.last_thinking_sent_text = ""
-    session.thinking_history_text = ""
     session_store.save_session(session)
 
 
@@ -1232,11 +1284,21 @@ def flush_buffer(
         session_store.save_session(session)
         return
 
-    final_html = render_final_telegram_html(
-        answer_text=text,
-        thinking_history_text=session.thinking_history_text,
-    )
-    formatted_chunks = split_telegram_text(final_html)
+    clear_thinking_message(auth, telegram, session_store, session, performance=performance)
+    thinking_html = render_collapsed_thinking_html(session.thinking_history_text)
+    answer_html = text.strip() if looks_like_telegram_html(text) else to_telegram_html(text)
+    if thinking_html:
+        for chunk in split_telegram_text(thinking_html):
+            send_telegram_message(
+                telegram,
+                target_chat_id,
+                chunk,
+                topic_id=session.transport_topic_id,
+                parse_mode=TELEGRAM_PARSE_MODE,
+                disable_notification=True,
+                **context,
+            )
+    formatted_chunks = split_telegram_text(answer_html)
     escaped_chunks = split_telegram_text(escape_telegram_html(text))
     delivered = False
     for stage, attempt_chunks in (("formatted_html", formatted_chunks), ("escaped_html", escaped_chunks)):
@@ -1261,7 +1323,7 @@ def flush_buffer(
                 stage=stage,
                 error=str(exc),
                 raw_text=text,
-                rich_text=final_html,
+                rich_text=answer_html,
                 escaped_text=escape_telegram_html(text),
                 emergency_text=None,
             )
@@ -1274,7 +1336,10 @@ def flush_buffer(
     session.last_thinking_sent_text = ""
     session_store.mark_delivered_output(session, text)
     session_store.mark_agent_message(session)
-    clear_thinking_message(auth, telegram, session_store, session, performance=performance)
+    session.thinking_history_text = ""
+    session.thinking_message_text = ""
+    session.thinking_message_id = None
+    session_store.save_session(session)
     session_store.consume_pending_output(session)
     pruned = session_store.prune_detached_sessions()
     if pruned:
@@ -1444,7 +1509,7 @@ def maybe_send_typing_indicator(
     if not target_chat_id:
         return last_sent_at
     now = now or datetime.now(timezone.utc)
-    effective_interval = min(interval_seconds, 2.5)
+    effective_interval = min(interval_seconds, 1.5)
     if last_sent_at is not None and (now - last_sent_at).total_seconds() < effective_interval:
         return last_sent_at
     if hasattr(telegram, "send_typing"):

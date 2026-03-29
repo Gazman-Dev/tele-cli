@@ -58,10 +58,58 @@ class TelegramHtmlFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        self.assertEqual(
-            telegram.message_details,
-            [(22, "<b>Thinking</b>\n\nChecking logs", None, "HTML", True)],
+        self.assertEqual(telegram.message_details, [(22, "<b>Thinking</b>\n\nChecking logs", None, "HTML", True)])
+        refreshed = store.get_or_create_telegram_session(auth)
+        self.assertEqual(refreshed.thinking_message_id, 1)
+
+    def test_short_token_delta_does_not_send_live_thinking_message(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification(
+                    "item/started",
+                    {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "msg-1", "type": "agentMessage", "phase": "commentary", "text": ""}},
+                ),
+                Notification("item/agentMessage/delta", {"threadId": "thread-1", "turnId": "turn-1", "itemId": "msg-1", "delta": "I"}),
+            ]
         )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        self.assertEqual(telegram.messages, [])
+        refreshed = store.get_or_create_telegram_session(auth)
+        self.assertEqual(refreshed.thinking_message_text, "I")
+        self.assertIsNone(refreshed.thinking_message_id)
+
+    def test_second_thinking_update_edits_existing_message(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("item/updated", {"threadId": "thread-1", "item": {"type": "reasoning", "text": "Checking logs"}}),
+                Notification("item/updated", {"threadId": "thread-1", "item": {"type": "reasoning", "text": "Checking logs and config"}}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        self.assertEqual(telegram.messages, [(22, "<b>Thinking</b>\n\nChecking logs")])
+        self.assertEqual(telegram.edits, [(22, 1, "<b>Thinking</b>\n\nChecking logs and config")])
 
     def test_final_reply_includes_collapsed_thinking_block(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
@@ -71,20 +119,23 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
         session.pending_output_text = "# Title\n**done**"
+        session.thinking_message_id = 1
         session.thinking_history_text = "Checking repo\n__tele_cli_command__:git status --short"
         store.save_session(session)
         telegram = FakeTelegramClient()
 
         flush_buffer(session.session_id, auth, telegram, self.recorder, store, mark_agent=True)
 
+        self.assertEqual(telegram.deletes, [(22, 1)])
         self.assertEqual(
             telegram.messages,
             [
                 (
                     22,
                     "<b>Thinking</b>\n<blockquote expandable><b>Thinking</b>\n\nChecking repo\n\n<b>Running</b>\n\n"
-                    '<pre><code class="language-bash">git status --short</code></pre></blockquote>\n\n<b>Title</b>\n<b>done</b>',
-                )
+                    '<pre><code class="language-bash">git status --short</code></pre></blockquote>',
+                ),
+                (22, "<b>Title</b>\n<b>done</b>"),
             ],
         )
 
