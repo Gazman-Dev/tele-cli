@@ -84,6 +84,16 @@ class AppServerClientTests(unittest.TestCase):
         self.assertEqual(self.server.received[0]["params"]["model"], "gpt-5.3-codex")
         self.assertEqual(self.server.received[1]["params"]["threadId"], "thread-1")
 
+    def test_thread_payload_normalization_accepts_direct_or_nested_thread_id_variants(self) -> None:
+        self.server.on("thread/start", lambda payload: {"threadId": "thread-direct"})
+        started = self.client.thread_start(model="gpt-5.3-codex")
+        self.assertEqual(started["threadId"], "thread-direct")
+
+        self.server.received.clear()
+        self.server.on("thread/start", lambda payload: {"thread": {"threadId": "thread-nested"}})
+        started = self.client.thread_start(model="gpt-5.3-codex")
+        self.assertEqual(started["threadId"], "thread-nested")
+
     def test_turn_start_sends_thread_id_and_input(self) -> None:
         self.server.on("turn/start", lambda payload: {"turn": {"id": "turn-1"}})
 
@@ -94,6 +104,14 @@ class AppServerClientTests(unittest.TestCase):
         self.assertEqual(self.server.received[0]["params"]["input"], [{"type": "text", "text": "hello"}])
         self.assertEqual(self.server.received[0]["params"]["approvalPolicy"], "never")
         self.assertEqual(self.server.received[0]["params"]["sandboxPolicy"], {"type": "dangerFullAccess"})
+
+    def test_turn_start_requires_non_empty_thread_id(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self.client.turn_start("", "hello")
+
+    def test_thread_resume_requires_non_empty_thread_id(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self.client.thread_resume("")
 
     def test_turn_steer_sends_typed_text_input(self) -> None:
         self.server.on("turn/steer", lambda payload: {"turn": {"id": payload["params"]["turnId"]}})

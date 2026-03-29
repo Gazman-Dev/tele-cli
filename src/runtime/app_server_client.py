@@ -35,23 +35,47 @@ def _normalize_account_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _extract_thread_id(payload: dict[str, Any]) -> str | None:
+    for key in ("threadId", "thread_id", "id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    thread = payload.get("thread")
+    if isinstance(thread, dict):
+        for key in ("id", "threadId", "thread_id"):
+            value = thread.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return None
+
+
 def _normalize_thread_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
-    thread = normalized.get("thread")
-    if isinstance(thread, dict):
-        thread_id = thread.get("id")
-        if isinstance(thread_id, str) and thread_id:
-            normalized.setdefault("threadId", thread_id)
+    thread_id = _extract_thread_id(normalized)
+    if thread_id:
+        normalized.setdefault("threadId", thread_id)
     return normalized
+
+
+def _extract_turn_id(payload: dict[str, Any]) -> str | None:
+    for key in ("turnId", "turn_id", "id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    turn = payload.get("turn")
+    if isinstance(turn, dict):
+        for key in ("id", "turnId", "turn_id"):
+            value = turn.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return None
 
 
 def _normalize_turn_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
-    turn = normalized.get("turn")
-    if isinstance(turn, dict):
-        turn_id = turn.get("id")
-        if isinstance(turn_id, str) and turn_id:
-            normalized.setdefault("turnId", turn_id)
+    turn_id = _extract_turn_id(normalized)
+    if turn_id:
+        normalized.setdefault("turnId", turn_id)
     return normalized
 
 
@@ -116,9 +140,13 @@ class AppServerClient:
         return _normalize_thread_payload(self.rpc.request("thread/start", params))
 
     def thread_resume(self, thread_id: str) -> dict[str, Any]:
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            raise RuntimeError("Cannot resume app-server thread without a valid thread id.")
         return _normalize_thread_payload(self.rpc.request("thread/resume", {"threadId": thread_id}))
 
     def turn_start(self, thread_id: str, text: str, **params: Any) -> dict[str, Any]:
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            raise RuntimeError("Cannot start app-server turn without a valid thread id.")
         if "sandboxPolicy" in params:
             params["sandboxPolicy"] = _normalize_sandbox_policy(params["sandboxPolicy"])
         payload = {"threadId": thread_id, "input": _text_input(text), **params}
@@ -131,6 +159,8 @@ class AppServerClient:
         return self.rpc.request("turn/interrupt", {"turnId": turn_id})
 
     def thread_read(self, thread_id: str, include_turns: bool = True) -> dict[str, Any]:
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            raise RuntimeError("Cannot read app-server thread without a valid thread id.")
         return _normalize_thread_payload(
             self.rpc.request("thread/read", {"threadId": thread_id, "includeTurns": include_turns})
         )

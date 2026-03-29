@@ -146,7 +146,10 @@ class AppServerSession:
             self.performance.mark_ai_dispatch_started(session)
         if session.status != "ARCHIVED":
             session.status = "ACTIVE"
-        thread_id = session.thread_id
+        thread_id = session.thread_id if isinstance(session.thread_id, str) and session.thread_id.strip() else None
+        if session.thread_id != thread_id:
+            session.thread_id = thread_id
+            self.session_store.save_session(session)
         recovered_from_error = False
         if session.active_turn_id:
             if stale_active_turn:
@@ -180,10 +183,13 @@ class AppServerSession:
                     thread_id = None
                 else:
                     thread_id = resumed.get("threadId") or thread_id
+                    if not isinstance(thread_id, str) or not thread_id.strip():
+                        thread_id = None
                     session.thread_id = thread_id
-                    self._resumed_threads.add(thread_id)
-                    if self.performance is not None:
-                        self.performance.mark_thread_ready(session, trigger="thread_resume")
+                    if thread_id:
+                        self._resumed_threads.add(thread_id)
+                        if self.performance is not None:
+                            self.performance.mark_thread_ready(session, trigger="thread_resume")
         else:
             started = self.client.thread_start(
                 cwd=workspace_cwd,
@@ -192,6 +198,8 @@ class AppServerSession:
                 personality=self.config.codex_personality,
             )
             thread_id = started.get("threadId")
+            if not isinstance(thread_id, str) or not thread_id.strip():
+                thread_id = None
             session.thread_id = thread_id
             self.session_store.save_session(session)
             if thread_id:
@@ -206,6 +214,8 @@ class AppServerSession:
                 personality=self.config.codex_personality,
             )
             thread_id = started.get("threadId")
+            if not isinstance(thread_id, str) or not thread_id.strip():
+                thread_id = None
             session.thread_id = thread_id
             self.session_store.save_session(session)
             if thread_id:
