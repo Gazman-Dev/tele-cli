@@ -738,8 +738,6 @@ def extract_event_driven_status(method: str, params: dict) -> str | None:
             return None
         if status in {"running", "in_progress", "working"}:
             return "Working..."
-    if method == "thread/tokenUsage/updated":
-        return "Finalizing answer..."
     return None
 
 
@@ -932,10 +930,53 @@ def set_visible_thinking_message(
     )
     if supports_telegram_message_draft(telegram, target_chat_id):
         if len(rendered) <= TELEGRAM_TEXT_LIMIT:
-            send_telegram_message_draft(
+            try:
+                send_telegram_message_draft(
+                    telegram,
+                    target_chat_id,
+                    draft_id_for_session(session),
+                    safe_stream_markdown_v2(rendered),
+                    topic_id=session.transport_topic_id,
+                    parse_mode=TELEGRAM_MARKDOWN_MODE,
+                    performance=performance,
+                    category="thinking_output",
+                    session_id=session.session_id,
+                    thread_id=session.thread_id,
+                    turn_id=session.active_turn_id or session.last_completed_turn_id,
+                )
+                session_store.mark_agent_message(session)
+                session_store.save_session(session)
+                return
+            except TelegramError:
+                pass
+    now = datetime.now(timezone.utc)
+    if session.streaming_message_id is not None:
+        last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
+        if last_sent_at is not None and (now - last_sent_at).total_seconds() < min_interval_seconds:
+            session_store.save_session(session)
+            return
+        try:
+            edit_telegram_message(
                 telegram,
                 target_chat_id,
-                draft_id_for_session(session),
+                session.streaming_message_id,
+                safe_stream_markdown_v2(rendered),
+                parse_mode=TELEGRAM_MARKDOWN_MODE,
+                performance=performance,
+                category="thinking_output",
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                turn_id=session.active_turn_id or session.last_completed_turn_id,
+            )
+        except TelegramError:
+            session.streaming_message_id = None
+            session_store.save_session(session)
+            return
+    else:
+        try:
+            session.streaming_message_id = send_telegram_message(
+                telegram,
+                target_chat_id,
                 safe_stream_markdown_v2(rendered),
                 topic_id=session.transport_topic_id,
                 parse_mode=TELEGRAM_MARKDOWN_MODE,
@@ -945,40 +986,9 @@ def set_visible_thinking_message(
                 thread_id=session.thread_id,
                 turn_id=session.active_turn_id or session.last_completed_turn_id,
             )
-            session_store.mark_agent_message(session)
+        except TelegramError:
             session_store.save_session(session)
             return
-    now = datetime.now(timezone.utc)
-    if session.streaming_message_id is not None:
-        last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
-        if last_sent_at is not None and (now - last_sent_at).total_seconds() < min_interval_seconds:
-            session_store.save_session(session)
-            return
-        edit_telegram_message(
-            telegram,
-            target_chat_id,
-            session.streaming_message_id,
-            safe_stream_markdown_v2(rendered),
-            parse_mode=TELEGRAM_MARKDOWN_MODE,
-            performance=performance,
-            category="thinking_output",
-            session_id=session.session_id,
-            thread_id=session.thread_id,
-            turn_id=session.active_turn_id or session.last_completed_turn_id,
-        )
-    else:
-        session.streaming_message_id = send_telegram_message(
-            telegram,
-            target_chat_id,
-            safe_stream_markdown_v2(rendered),
-            topic_id=session.transport_topic_id,
-            parse_mode=TELEGRAM_MARKDOWN_MODE,
-            performance=performance,
-            category="thinking_output",
-            session_id=session.session_id,
-            thread_id=session.thread_id,
-            turn_id=session.active_turn_id or session.last_completed_turn_id,
-        )
     session_store.mark_agent_message(session)
     session_store.save_session(session)
 

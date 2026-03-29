@@ -2765,6 +2765,10 @@ class ServiceFlowTests(unittest.TestCase):
         text = extract_event_driven_status("serverRequest/resolved", {"threadId": "thread-1", "requestId": 8})
         self.assertIsNone(text)
 
+    def test_extract_event_driven_status_from_thread_token_usage_updated(self) -> None:
+        text = extract_event_driven_status("thread/tokenUsage/updated", {"threadId": "thread-1", "turnId": "turn-1"})
+        self.assertIsNone(text)
+
     def test_non_default_thinking_text_is_not_overwritten_by_idle_refresh(self) -> None:
         auth = AuthState(
             bot_token="token",
@@ -3024,10 +3028,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(
-            telegram.edits,
-            [(22, 1, "Final answer\n\n\\-\\-\\-\n\nThinking\n\nFinalizing answer\\.\\.\\.")],
-        )
+        self.assertEqual(telegram.edits, [])
         self.assertEqual(telegram.messages, [])
         self.assertEqual(telegram.deletes, [])
         self.assertIsNone(updated.thinking_message_id)
@@ -3099,6 +3100,69 @@ class ServiceFlowTests(unittest.TestCase):
         refreshed = store.get_or_create_telegram_session(auth)
         self.assertEqual(refreshed.streaming_message_id, 1)
         self.assertEqual(refreshed.thinking_message_text, "Checking repo")
+
+    def test_thinking_edit_failure_does_not_block_final_group_reply(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=-1001,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth, topic_id=120)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 7
+        session.thinking_message_text = "Checking repo"
+        session.streaming_phase = "commentary"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        class FailingThinkingTelegram(FakeTelegramClient):
+            def edit_message_text(self, chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> dict:
+                if text.startswith("Thinking"):
+                    raise TelegramError("HTTP Error 400: Bad Request")
+                return super().edit_message_text(chat_id, message_id, text, parse_mode=parse_mode)
+
+        telegram = FailingThinkingTelegram()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification(
+                    "item/started",
+                    {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "item": {"id": "msg-1", "type": "agentMessage", "phase": "commentary", "text": ""},
+                    },
+                ),
+                Notification(
+                    "item/agentMessage/delta",
+                    {"threadId": "thread-1", "turnId": "turn-1", "itemId": "msg-1", "delta": "Checking repo"},
+                ),
+                Notification(
+                    "item/completed",
+                    {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "item": {"id": "msg-2", "type": "agentMessage", "phase": "final_answer", "text": "Final answer"},
+                    },
+                ),
+                Notification("turn/completed", {"turnId": "turn-1", "outputText": "Final answer"}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth, topic_id=120)
+        self.assertEqual(updated.last_delivered_output_text, "Final answer")
+        self.assertEqual(updated.streaming_message_id, None)
+        self.assertEqual(telegram.messages, [(-1001, "Final answer", 120)])
 
     def test_drain_codex_notifications_respects_max_notifications_budget(self) -> None:
         auth = AuthState(
