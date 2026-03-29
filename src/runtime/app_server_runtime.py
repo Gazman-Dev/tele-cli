@@ -324,11 +324,28 @@ def recover_inflight_sessions(client: AppServerClient, session_store: SessionSto
     del client
     state = session_store.load()
     changed = False
+    now = datetime.now(timezone.utc)
     for session in state.sessions:
-        if session.status == "RECOVERING_TURN" and session.active_turn_id:
-            session.status = "RUNNING_TURN"
+        if session.status not in {"RECOVERING_TURN", "RUNNING_TURN"}:
+            continue
+        if session.active_turn_id and not is_stale_active_turn(session, now=now):
+            if session.status != "RUNNING_TURN":
+                session.status = "RUNNING_TURN"
+                changed = True
+            continue
+        if session.active_turn_id or session.pending_output_text or session.streaming_output_text or session.thinking_message_text:
+            session.active_turn_id = None
+            session.pending_output_text = ""
+            session.pending_output_updated_at = None
+            session.last_delivered_output_text = ""
+            session.last_completed_turn_id = None
+            session.streaming_message_id = None
+            session.streaming_output_text = ""
+            session.streaming_phase = ""
+            session.thinking_message_id = None
+            session.thinking_message_text = ""
             changed = True
-        elif session.status == "RECOVERING_TURN":
+        if session.status != "ACTIVE":
             session.status = "ACTIVE"
             changed = True
     if changed:

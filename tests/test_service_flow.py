@@ -2669,6 +2669,30 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.edits, [])
         self.assertEqual(updated.thinking_message_text, "Thinking")
 
+    def test_maybe_refresh_thinking_message_skips_stale_active_turn(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.thinking_message_text = "Thinking"
+        session.last_user_message_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        maybe_refresh_thinking_message(self.paths, auth, telegram, store)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.edits, [])
+        self.assertEqual(updated.thinking_message_text, "Thinking")
+
     def test_drain_codex_notifications_surfaces_reasoning_text_before_answer(self) -> None:
         auth = AuthState(
             bot_token="token",
@@ -3452,6 +3476,34 @@ class ServiceFlowTests(unittest.TestCase):
         session.status = "RUNNING_TURN"
         store.save_session(session)
         ApprovalStore(self.paths).add(ApprovalRecord(17, "approval/request", {"tool": "shell"}))
+
+        telegram = FakeTelegramClient()
+        sent_at = maybe_send_typing_indicator(
+            self.paths,
+            auth,
+            telegram,
+            store,
+            interval_seconds=4.0,
+            last_sent_at=None,
+            now=datetime.now(timezone.utc),
+        )
+
+        self.assertIsNone(sent_at)
+        self.assertEqual(telegram.typing_actions, [])
+
+    def test_maybe_send_typing_indicator_is_suppressed_for_stale_active_turn(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.last_user_message_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        store.save_session(session)
 
         telegram = FakeTelegramClient()
         sent_at = maybe_send_typing_indicator(

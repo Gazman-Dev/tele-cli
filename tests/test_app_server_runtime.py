@@ -16,6 +16,7 @@ from runtime.app_server_runtime import (
     derive_codex_state,
     make_app_server_start_fn,
     normalize_initialize_result,
+    recover_inflight_sessions,
     validate_initialize_result,
 )
 from runtime.runtime import ServiceRuntime
@@ -51,6 +52,36 @@ class AppServerRuntimeTests(unittest.TestCase):
 
         self.assertEqual(normalized["protocolVersion"], "user-agent-only")
         self.assertTrue(normalized["capabilities"]["threads"])
+
+    def test_recover_inflight_sessions_clears_stale_running_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            from runtime.session_store import SessionStore
+
+            store = SessionStore(paths)
+            session = store.get_or_create_telegram_session(auth)
+            session.active_turn_id = "turn-stale"
+            session.status = "RUNNING_TURN"
+            session.pending_output_text = "partial"
+            session.streaming_output_text = "stream"
+            session.streaming_phase = "answer"
+            session.streaming_message_id = 99
+            session.thinking_message_text = "Thinking..."
+            session.last_user_message_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            store.save_session(session)
+
+            recover_inflight_sessions(None, store)
+
+            refreshed = store.get_current_telegram_session(auth)
+            assert refreshed is not None
+            self.assertEqual(refreshed.status, "ACTIVE")
+            self.assertIsNone(refreshed.active_turn_id)
+            self.assertEqual(refreshed.pending_output_text, "")
+            self.assertEqual(refreshed.streaming_output_text, "")
+            self.assertEqual(refreshed.streaming_phase, "")
+            self.assertIsNone(refreshed.streaming_message_id)
+            self.assertEqual(refreshed.thinking_message_text, "")
 
     def test_bootstrap_persists_codex_server_state_and_runtime_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

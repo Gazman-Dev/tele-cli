@@ -28,7 +28,7 @@ from integrations.telegram import (
     register_pairing_request,
 )
 from setup.setup_flow import complete_pending_pairing
-from .app_server_runtime import default_transport_factory, derive_codex_state, make_app_server_start_fn
+from .app_server_runtime import default_transport_factory, derive_codex_state, is_stale_active_turn, make_app_server_start_fn
 from .approval_store import ApprovalStore
 from .codex_cli_config import read_codex_cli_preferences, write_codex_cli_preferences
 from .control import ServiceConflictChoices, isatty, prepare_service_lock, reset_auth, start_codex_session
@@ -1052,6 +1052,8 @@ def maybe_refresh_thinking_message(
             or not session.last_user_message_at
         ):
             continue
+        if is_stale_active_turn(session):
+            continue
         if session.pending_output_text.strip() or session.streaming_output_text.strip():
             continue
         set_visible_thinking_message(
@@ -1567,6 +1569,8 @@ def maybe_send_typing_indicator(
         return last_sent_at
     current = get_latest_user_session(session_store, auth, require_active_turn=True)
     if current is None or not current.attached or not current.active_turn_id:
+        return last_sent_at
+    if is_stale_active_turn(current):
         return last_sent_at
     target_chat_id = current.transport_chat_id or auth.telegram_chat_id
     if not target_chat_id:
