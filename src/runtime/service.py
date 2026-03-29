@@ -348,6 +348,21 @@ def _sync_telegram_message_chunks(
     _set_streaming_message_ids(session, kept_ids)
 
 
+def _clear_streaming_messages(telegram: TelegramClient | None, chat_id: int | None, session) -> None:
+    if not chat_id:
+        _set_streaming_message_ids(session, [])
+        return
+    if telegram is None:
+        _set_streaming_message_ids(session, [])
+        return
+    for message_id in _streaming_message_ids(session):
+        try:
+            telegram.delete_message(chat_id, message_id)
+        except TelegramError:
+            pass
+    _set_streaming_message_ids(session, [])
+
+
 def start_telegram_polling_thread(
     *,
     paths: AppPaths,
@@ -621,6 +636,7 @@ def reset_session_after_request_failure(
     session_store: SessionStore | None,
     auth: AuthState,
     *,
+    telegram: TelegramClient | None = None,
     topic_id: int | None,
     error_text: str,
 ) -> None:
@@ -629,6 +645,7 @@ def reset_session_after_request_failure(
     session = session_store.get_current_telegram_session(auth, topic_id)
     if session is None:
         return
+    _clear_streaming_messages(telegram, session.transport_chat_id or auth.telegram_chat_id, session)
     session.active_turn_id = None
     session.pending_output_text = ""
     session.pending_output_updated_at = None
@@ -2167,10 +2184,26 @@ def handle_authorized_message(
         return
     session_id: str | None = None
     recovered_from_stale_turn = False
-    if session_store is not None and performance is not None:
+    if session_store is not None:
         tracked_session = session_store.get_or_create_telegram_session(auth, topic_id)
+        _clear_streaming_messages(telegram, tracked_session.transport_chat_id or auth.telegram_chat_id, tracked_session)
+        tracked_session.pending_output_text = ""
+        tracked_session.pending_output_updated_at = None
+        tracked_session.streaming_output_text = ""
+        tracked_session.streaming_phase = ""
+        tracked_session.thinking_message_text = ""
+        tracked_session.thinking_history_text = ""
+        tracked_session.thinking_history_order = []
+        tracked_session.thinking_history_by_source = {}
+        tracked_session.thinking_live_texts = {}
+        tracked_session.thinking_sent_texts = {}
+        tracked_session.thinking_message_ids = []
+        tracked_session.thinking_live_message_ids = {}
+        tracked_session.last_thinking_sent_text = ""
+        session_store.save_session(tracked_session)
         session_id = tracked_session.session_id
-        performance.mark_turn_requested(tracked_session, topic_id=topic_id, text=text)
+        if performance is not None:
+            performance.mark_turn_requested(tracked_session, topic_id=topic_id, text=text)
     try:
         send_result = codex.send(text, topic_id=topic_id, chat_id=auth.telegram_chat_id, user_id=auth.telegram_user_id)
         recovered_from_stale_turn = bool(send_result)
@@ -2183,7 +2216,7 @@ def handle_authorized_message(
                 send_result = codex.send(text)
                 recovered_from_stale_turn = bool(send_result)
             except Exception as exc:
-                reset_session_after_request_failure(session_store, auth, topic_id=topic_id, error_text=str(exc))
+                reset_session_after_request_failure(session_store, auth, telegram=telegram, topic_id=topic_id, error_text=str(exc))
                 if performance is not None and session_id is not None:
                     performance.mark_turn_failed(session_id, error=str(exc))
                 send_telegram_message(
@@ -2196,7 +2229,7 @@ def handle_authorized_message(
                 )
                 return
         except Exception as exc:
-            reset_session_after_request_failure(session_store, auth, topic_id=topic_id, error_text=str(exc))
+            reset_session_after_request_failure(session_store, auth, telegram=telegram, topic_id=topic_id, error_text=str(exc))
             if performance is not None and session_id is not None:
                 performance.mark_turn_failed(session_id, error=str(exc))
             send_telegram_message(
@@ -2209,7 +2242,7 @@ def handle_authorized_message(
             )
             return
     except Exception as exc:
-        reset_session_after_request_failure(session_store, auth, topic_id=topic_id, error_text=str(exc))
+        reset_session_after_request_failure(session_store, auth, telegram=telegram, topic_id=topic_id, error_text=str(exc))
         if performance is not None and session_id is not None:
             performance.mark_turn_failed(session_id, error=str(exc))
         send_telegram_message(
@@ -2703,11 +2736,6 @@ def drain_codex_notifications(
             if not session_store.is_recoverable(session):
                 continue
             assistant_text = extract_assistant_text(params)
-            if not assistant_text and not session.pending_output_text.strip() and session.thread_id and hasattr(codex, "read_thread"):
-                try:
-                    assistant_text = extract_latest_agent_message(codex.read_thread(session.thread_id, include_turns=True))
-                except Exception:
-                    assistant_text = None
             if should_append_completion_text(session, assistant_text):
                 action, payload = merge_incremental_assistant_text(session, assistant_text)
                 if action != "ignore" and payload:
@@ -2732,8 +2760,7 @@ def drain_codex_notifications(
                 )
             if not session.pending_output_text.strip():
                 clear_thinking_message(auth, telegram, session_store, session, performance=performance)
-                session.streaming_message_id = None
-                session.streaming_message_ids = []
+                _clear_streaming_messages(telegram, session.transport_chat_id or auth.telegram_chat_id, session)
                 session.streaming_output_text = ""
                 session.streaming_phase = ""
                 session.thinking_message_text = ""

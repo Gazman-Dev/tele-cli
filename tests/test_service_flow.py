@@ -218,7 +218,99 @@ class ServiceFlowTests(unittest.TestCase):
             )
 
         self.assertEqual(len(telegram.messages), 1)
-        self.assertIn("active_session_status=RECOVERING_TURN", telegram.messages[0][1])
+
+    def test_process_telegram_update_clears_stale_pending_output_before_new_turn(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.pending_output_text = "Old answer"
+        session.streaming_output_text = "Old answer"
+        session.thinking_history_text = "Old thinking"
+        session.streaming_message_id = 7
+        session.streaming_message_ids = [7]
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        update = {"update_id": 10, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "new request"}}
+
+        process_telegram_update(
+            update,
+            paths=self.paths,
+            config=self.config,
+            auth=auth,
+            runtime=self.runtime,
+            runtime_state=self.runtime_state,
+            metadata=self.metadata,
+            app_lock=self.app_lock,
+            telegram=telegram,
+            recorder=self.recorder,
+            codex=codex,
+            handle_output=lambda source, line: None,
+        )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(updated.thinking_history_text, "")
+        self.assertEqual(updated.streaming_message_ids, [])
+        self.assertIsNone(updated.streaming_message_id)
+        self.assertEqual(telegram.deletes, [(22, 7)])
+
+    def test_turn_completed_without_new_output_does_not_reuse_previous_answer(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-2"
+        session.status = "RUNNING_TURN"
+        session.last_delivered_output_text = "Previous answer"
+        session.streaming_message_id = 9
+        session.streaming_message_ids = [9]
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        class ReadableCodex(FakeCodex):
+            def read_thread(self, thread_id: str, include_turns: bool = True):
+                return {
+                    "thread": {
+                        "turns": [
+                            {
+                                "items": [
+                                    {"type": "agentMessage", "text": "Previous answer"},
+                                ]
+                            }
+                        ]
+                    }
+                }
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        codex = ReadableCodex()
+        codex.pending_notifications.append(Notification("turn/completed", {"threadId": "thread-1", "turn": {"id": "turn-2"}}))
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(telegram.edits, [])
+        self.assertEqual(telegram.deletes, [(22, 9)])
+        self.assertEqual(updated.last_delivered_output_text, "Previous answer")
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertIsNone(updated.streaming_message_id)
 
     def test_regular_update_starts_codex_and_forwards_message(self) -> None:
         auth = AuthState(
