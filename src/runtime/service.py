@@ -169,7 +169,8 @@ def accumulate_agent_message_text(method: str, params: dict) -> str | None:
     return None
 
 
-def split_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
+def split_telegram_text(text: str, limit: int | None = None) -> list[str]:
+    limit = limit or TELEGRAM_TEXT_LIMIT
     stripped = text.strip()
     if not stripped:
         return []
@@ -192,6 +193,159 @@ def split_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+def _streaming_message_ids(session) -> list[int]:
+    ids = [message_id for message_id in getattr(session, "streaming_message_ids", []) if isinstance(message_id, int)]
+    if not ids and isinstance(session.streaming_message_id, int):
+        ids = [session.streaming_message_id]
+    return ids
+
+
+def _set_streaming_message_ids(session, message_ids: list[int]) -> None:
+    session.streaming_message_ids = [message_id for message_id in message_ids if isinstance(message_id, int)]
+    session.streaming_message_id = session.streaming_message_ids[0] if session.streaming_message_ids else None
+
+
+def _split_telegram_html_text(text: str, limit: int | None = None) -> list[str]:
+    limit = limit or TELEGRAM_TEXT_LIMIT
+    normalized = (text or "").strip()
+    if not normalized:
+        return []
+    if len(normalized) <= limit:
+        return [normalized]
+
+    token_pattern = re.compile(r"(<[^>]+>)")
+    tokens = [token for token in token_pattern.split(normalized) if token]
+    chunks: list[str] = []
+    current = ""
+    open_tags: list[tuple[str, str]] = []
+
+    def closing_markup() -> str:
+        return "".join(f"</{name}>" for name, _ in reversed(open_tags))
+
+    def reopening_markup() -> str:
+        return "".join(tag for _, tag in open_tags)
+
+    def flush_current() -> None:
+        nonlocal current
+        body = current.strip()
+        if not body:
+            current = reopening_markup()
+            return
+        chunk = f"{body}{closing_markup()}".strip()
+        if chunk:
+            chunks.append(chunk)
+        current = reopening_markup()
+
+    def register_tag(tag: str) -> None:
+        stripped = tag.strip()
+        closing = re.match(r"^</\s*([a-zA-Z0-9-]+)\s*>$", stripped)
+        if closing:
+            name = closing.group(1).lower()
+            for index in range(len(open_tags) - 1, -1, -1):
+                if open_tags[index][0] == name:
+                    del open_tags[index]
+                    break
+            return
+        opening = re.match(r"^<\s*([a-zA-Z0-9-]+)\b[^>]*?>$", stripped)
+        if not opening or stripped.endswith("/>"):
+            return
+        name = opening.group(1).lower()
+        open_tags.append((name, tag))
+
+    for token in tokens:
+        if token.startswith("<") and token.endswith(">"):
+            projected = current + token + closing_markup()
+            if len(projected) > limit and current.strip():
+                flush_current()
+            current += token
+            register_tag(token)
+            continue
+
+        remaining = token
+        while remaining:
+            projected = current + remaining + closing_markup()
+            if len(projected) <= limit:
+                current += remaining
+                remaining = ""
+                continue
+            available = limit - len(current) - len(closing_markup())
+            if available <= 0:
+                flush_current()
+                continue
+            split_at = remaining.rfind("\n\n", 0, available + 1)
+            if split_at <= 0:
+                split_at = remaining.rfind("\n", 0, available + 1)
+            if split_at <= 0:
+                split_at = remaining.rfind(" ", 0, available + 1)
+            if split_at <= 0:
+                split_at = available
+            segment = remaining[:split_at]
+            if not segment:
+                segment = remaining[:available]
+                split_at = len(segment)
+            current += segment
+            remaining = remaining[split_at:]
+            flush_current()
+            remaining = remaining.lstrip()
+
+    if current.strip():
+        flush_current()
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
+def _sync_telegram_message_chunks(
+    telegram: TelegramClient,
+    chat_id: int,
+    *,
+    session,
+    rendered_chunks: list[str],
+    topic_id: int | None,
+    parse_mode: str | None,
+    disable_notification: bool,
+    performance: PerformanceTracker | None = None,
+    context: dict | None = None,
+) -> None:
+    context = dict(context or {})
+    context.pop("performance", None)
+    existing_ids = _streaming_message_ids(session)
+    kept_ids: list[int] = []
+
+    for index, chunk in enumerate(rendered_chunks):
+        if index < len(existing_ids):
+            message_id = existing_ids[index]
+            edit_telegram_message(
+                telegram,
+                chat_id,
+                message_id,
+                chunk,
+                parse_mode=parse_mode,
+                performance=performance,
+                **context,
+            )
+            kept_ids.append(message_id)
+            continue
+        message_id = send_telegram_message(
+            telegram,
+            chat_id,
+            chunk,
+            topic_id=topic_id,
+            parse_mode=parse_mode,
+            disable_notification=disable_notification,
+            performance=performance,
+            **context,
+        )
+        if isinstance(message_id, int):
+            kept_ids.append(message_id)
+
+    for message_id in existing_ids[len(rendered_chunks) :]:
+        try:
+            telegram.delete_message(chat_id, message_id)
+        except TelegramError:
+            pass
+
+    _set_streaming_message_ids(session, kept_ids)
 
 
 def start_telegram_polling_thread(
@@ -479,6 +633,7 @@ def reset_session_after_request_failure(
     session.pending_output_text = ""
     session.pending_output_updated_at = None
     session.streaming_message_id = None
+    session.streaming_message_ids = []
     session.thinking_message_id = None
     session.thinking_message_ids = []
     session.thinking_live_message_ids = {}
@@ -1050,29 +1205,17 @@ def set_visible_thinking_message(
     }
     _THINKING_SOURCE_LAST_SENT_AT[throttle_key] = now_monotonic
     try:
-        if isinstance(session.streaming_message_id, int):
-            edit_telegram_message(
-                telegram,
-                target_chat_id,
-                session.streaming_message_id,
-                rendered,
-                parse_mode=TELEGRAM_PARSE_MODE,
-                performance=performance,
-                **context,
-            )
-        else:
-            message_id = send_telegram_message(
-                telegram,
-                target_chat_id,
-                rendered,
-                topic_id=session.transport_topic_id,
-                parse_mode=TELEGRAM_PARSE_MODE,
-                disable_notification=True,
-                performance=performance,
-                **context,
-            )
-            if isinstance(message_id, int):
-                session.streaming_message_id = message_id
+        _sync_telegram_message_chunks(
+            telegram,
+            target_chat_id,
+            session=session,
+            rendered_chunks=_split_telegram_html_text(rendered),
+            topic_id=session.transport_topic_id,
+            parse_mode=TELEGRAM_PARSE_MODE,
+            disable_notification=True,
+            performance=performance,
+            context=context,
+        )
     except TelegramError:
         session_store.save_session(session)
         return
@@ -1339,6 +1482,7 @@ def flush_buffer(
     if text == session.last_delivered_output_text:
         if mark_agent:
             session.streaming_message_id = None
+            session.streaming_message_ids = []
             session.thinking_message_id = None
             session.thinking_message_ids = []
             session.thinking_live_message_ids = {}
@@ -1354,8 +1498,7 @@ def flush_buffer(
             session_store.save_session(session)
         session_store.consume_pending_output(session)
         return
-    plain_chunks = split_telegram_text(text)
-    if not plain_chunks:
+    if not text.strip():
         return
     context = {
         "performance": performance,
@@ -1372,32 +1515,28 @@ def flush_buffer(
     thinking_html = render_collapsed_thinking_html(_thinking_history_entries(session))
     final_html = answer_html if not thinking_html else f"{thinking_html}\n\n{answer_html}"
     rendered_attempts = [
-        ("formatted_html", final_html),
-        ("escaped_html", escape_telegram_html(text) if not thinking_html else f"{thinking_html}\n\n{escape_telegram_html(text)}"),
+        ("formatted_html", _split_telegram_html_text(final_html)),
+        (
+            "escaped_html",
+            _split_telegram_html_text(
+                escape_telegram_html(text) if not thinking_html else f"{thinking_html}\n\n{escape_telegram_html(text)}"
+            ),
+        ),
     ]
     delivered = False
-    for stage, rendered_text in rendered_attempts:
+    for stage, rendered_chunks in rendered_attempts:
         try:
-            if isinstance(session.streaming_message_id, int):
-                edit_telegram_message(
-                    telegram,
-                    target_chat_id,
-                    session.streaming_message_id,
-                    rendered_text,
-                    parse_mode=TELEGRAM_PARSE_MODE,
-                    **context,
-                )
-            else:
-                message_id = send_telegram_message(
-                    telegram,
-                    target_chat_id,
-                    rendered_text,
-                    topic_id=session.transport_topic_id,
-                    parse_mode=TELEGRAM_PARSE_MODE,
-                    **context,
-                )
-                if isinstance(message_id, int):
-                    session.streaming_message_id = message_id
+            _sync_telegram_message_chunks(
+                telegram,
+                target_chat_id,
+                session=session,
+                rendered_chunks=rendered_chunks,
+                topic_id=session.transport_topic_id,
+                parse_mode=TELEGRAM_PARSE_MODE,
+                disable_notification=False,
+                performance=performance,
+                context=context,
+            )
             delivered = True
             break
         except TelegramError as exc:
@@ -1410,13 +1549,15 @@ def flush_buffer(
                 error=str(exc),
                 raw_text=text,
                 rich_text=final_html,
-                escaped_text=rendered_attempts[-1][1],
+                escaped_text="\n\n".join(rendered_attempts[-1][1]),
                 emergency_text=None,
             )
     if not delivered:
         raise TelegramError("All Telegram HTML delivery attempts failed.")
     clear_thinking_message(auth, telegram, session_store, session, performance=performance)
     recorder.record("assistant", text)
+    session.streaming_message_id = None
+    session.streaming_message_ids = []
     session.streaming_output_text = ""
     session.streaming_phase = ""
     session.last_thinking_sent_text = ""
@@ -1783,6 +1924,7 @@ def handle_authorized_message(
         session.last_completed_turn_id = None
         session.last_delivered_output_text = ""
         session.streaming_message_id = None
+        session.streaming_message_ids = []
         session.thinking_message_id = None
         session.thinking_message_ids = []
         session.thinking_live_message_ids = {}
@@ -2591,6 +2733,7 @@ def drain_codex_notifications(
             if not session.pending_output_text.strip():
                 clear_thinking_message(auth, telegram, session_store, session, performance=performance)
                 session.streaming_message_id = None
+                session.streaming_message_ids = []
                 session.streaming_output_text = ""
                 session.streaming_phase = ""
                 session.thinking_message_text = ""

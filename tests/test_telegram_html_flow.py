@@ -204,7 +204,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
             ],
         )
         refreshed = store.get_or_create_telegram_session(auth)
-        self.assertEqual(refreshed.streaming_message_id, 1)
+        self.assertIsNone(refreshed.streaming_message_id)
         self.assertEqual(refreshed.thinking_live_texts, {})
 
     def test_final_reply_falls_back_to_escaped_html(self) -> None:
@@ -246,6 +246,66 @@ class TelegramHtmlFlowTests(unittest.TestCase):
 
         self.assertEqual(telegram.parse_modes, ["HTML", "HTML"])
         self.assertEqual(telegram.messages, [(22, "# Title\n**done**")])
+
+    def test_live_thinking_uses_multiple_telegram_messages_when_over_limit(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.last_user_message_at = "2026-03-29T00:00:00+00:00"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        original_limit = service_module.TELEGRAM_TEXT_LIMIT
+        try:
+            service_module.TELEGRAM_TEXT_LIMIT = 40
+            service_module.set_visible_thinking_message(
+                auth,
+                telegram,
+                self.recorder,
+                store,
+                session,
+                text="Alpha beta gamma delta epsilon zeta eta theta",
+                source_key="commentary:msg-1",
+            )
+        finally:
+            service_module.TELEGRAM_TEXT_LIMIT = original_limit
+
+        self.assertEqual(len(telegram.messages), 2)
+        refreshed = store.get_or_create_telegram_session(auth)
+        self.assertEqual(refreshed.streaming_message_ids, [1, 2])
+        self.assertEqual(refreshed.streaming_message_id, 1)
+
+    def test_final_reply_uses_multiple_telegram_messages_when_over_limit(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.streaming_message_ids = [1]
+        session.pending_output_text = "one two three four five six seven eight nine ten"
+        session.thinking_history_order = ["commentary:msg-1"]
+        session.thinking_history_by_source = {"commentary:msg-1": "checking logs and config"}
+        session.thinking_history_text = "checking logs and config"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        original_limit = service_module.TELEGRAM_TEXT_LIMIT
+        try:
+            service_module.TELEGRAM_TEXT_LIMIT = 50
+            flush_buffer(session.session_id, auth, telegram, self.recorder, store, mark_agent=True)
+        finally:
+            service_module.TELEGRAM_TEXT_LIMIT = original_limit
+
+        self.assertTrue(telegram.edits)
+        self.assertGreaterEqual(len(telegram.messages), 1)
+        refreshed = store.get_or_create_telegram_session(auth)
+        self.assertEqual(refreshed.streaming_message_ids, [])
+        self.assertIsNone(refreshed.streaming_message_id)
 
 
 if __name__ == "__main__":

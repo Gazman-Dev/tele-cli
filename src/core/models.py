@@ -147,6 +147,7 @@ class SessionRecord:
     thread_id: Optional[str] = None
     active_turn_id: Optional[str] = None
     streaming_message_id: Optional[int] = None
+    streaming_message_ids: list[int] = field(default_factory=list)
     thinking_message_id: Optional[int] = None
     thinking_message_ids: list[int] = field(default_factory=list)
     thinking_live_message_ids: dict[str, int] = field(default_factory=dict)
