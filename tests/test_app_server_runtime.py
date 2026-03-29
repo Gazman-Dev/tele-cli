@@ -212,6 +212,47 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(turn_steer["params"]["expectedTurnId"], "turn-1")
         self.assertEqual(turn_steer["params"]["input"], [{"type": "text", "text": "again"}])
 
+    def test_app_server_session_send_retries_steer_until_turn_is_active(self) -> None:
+        transport = InMemoryJsonRpcTransport()
+        server = FakeAppServer(transport)
+        server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+        server.on("getAccount", lambda payload: {"status": "ready"})
+        server.on("thread/start", lambda payload: {"threadId": "thread-1"})
+        server.on("turn/start", lambda payload: {"turnId": "turn-1"})
+        steer_attempts = {"count": 0}
+
+        def handle_turn_steer(payload):
+            steer_attempts["count"] += 1
+            if steer_attempts["count"] == 1:
+                raise RuntimeError("no active turn to steer")
+            return {"turnId": payload["params"]["turnId"]}
+
+        server.on("turn/steer", handle_turn_steer)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            session = bootstrap_app_server_session(
+                paths=paths,
+                auth=AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now"),
+                runtime=runtime,
+                runtime_state=runtime_state,
+                transport=transport,
+                config=Config(state_dir=str(paths.root)),
+            )
+            session.send("hello")
+            session.send("again")
+
+        self.assertEqual(steer_attempts["count"], 2)
+
     def test_app_server_session_send_interrupts_stale_active_turn_before_new_turn(self) -> None:
         transport = InMemoryJsonRpcTransport()
         server = FakeAppServer(transport)

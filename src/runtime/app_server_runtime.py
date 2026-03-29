@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import time
 from typing import Any, Callable
 
 from core.json_store import save_json
@@ -136,6 +137,17 @@ class AppServerSession:
             scoped.telegram_user_id = user_id
         return scoped
 
+    def _steer_active_turn(self, thread_id: str, turn_id: str, text: str) -> None:
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                self.client.turn_steer(thread_id, turn_id, text)
+                return
+            except Exception as exc:
+                if "no active turn to steer" not in str(exc).lower() or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.1)
+
     def _start_or_steer_turn(self, session, text: str) -> bool:
         workspace_cwd = str(build_instruction_paths(self.session_store.paths).repo_root)
         if session.status == "RECOVERING_TURN":
@@ -168,7 +180,7 @@ class AppServerSession:
             else:
                 if not thread_id:
                     raise RuntimeError("Cannot steer active app-server turn without a valid thread id.")
-                self.client.turn_steer(thread_id, session.active_turn_id, text)
+                self._steer_active_turn(thread_id, session.active_turn_id, text)
                 session.status = "RUNNING_TURN"
                 self.session_store.save_session(session)
                 if self.performance is not None:
