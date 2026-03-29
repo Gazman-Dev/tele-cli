@@ -120,6 +120,7 @@ class AppServerClientTests(unittest.TestCase):
 
         self.assertEqual(result["turnId"], "turn-1")
         self.assertEqual(self.server.received[0]["params"]["threadId"], "thread-1")
+        self.assertEqual(self.server.received[0]["params"]["expectedTurnId"], "turn-1")
         self.assertEqual(self.server.received[0]["params"]["input"], [{"type": "text", "text": "again"}])
 
     def test_thread_read_requests_turns(self) -> None:

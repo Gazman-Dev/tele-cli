@@ -209,6 +209,7 @@ class AppServerRuntimeTests(unittest.TestCase):
         turn_steer = next(payload for payload in server.received if payload["method"] == "turn/steer")
         self.assertEqual(turn_steer["params"]["threadId"], "thread-1")
         self.assertEqual(turn_steer["params"]["turnId"], "turn-1")
+        self.assertEqual(turn_steer["params"]["expectedTurnId"], "turn-1")
         self.assertEqual(turn_steer["params"]["input"], [{"type": "text", "text": "again"}])
 
     def test_app_server_session_send_interrupts_stale_active_turn_before_new_turn(self) -> None:

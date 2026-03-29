@@ -158,7 +158,15 @@ class AppServerClient:
         if not isinstance(turn_id, str) or not turn_id.strip():
             raise RuntimeError("Cannot steer app-server turn without a valid turn id.")
         return _normalize_turn_payload(
-            self.rpc.request("turn/steer", {"threadId": thread_id, "turnId": turn_id, "input": _text_input(text)})
+            self.rpc.request(
+                "turn/steer",
+                {
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "expectedTurnId": turn_id,
+                    "input": _text_input(text),
+                },
+            )
         )
 
     def turn_interrupt(self, turn_id: str) -> dict[str, Any]:
