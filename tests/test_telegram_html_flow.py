@@ -117,7 +117,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         maybe_refresh_thinking_message(self.paths, auth, telegram, store, recorder=self.recorder)
 
         self.assertEqual(telegram.messages, [(22, "<b>Thinking</b>\n\nChecking logs")])
-        self.assertEqual(telegram.edits, [])
+        self.assertEqual(telegram.edits, [(22, 1, "<b>Thinking</b>\n\nChecking logs and config")])
         refreshed = store.get_or_create_telegram_session(auth)
         self.assertEqual(refreshed.thinking_message_ids, [1])
         self.assertEqual(refreshed.thinking_live_texts.get("reasoning:current"), "Checking logs and config")
@@ -159,7 +159,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
                 (22, '<b>Running</b>\n\n<pre><code class="language-bash">git status --short</code></pre>'),
             ],
         )
-        self.assertEqual(telegram.edits, [])
+        self.assertEqual(telegram.edits, [(22, 1, "<b>Thinking</b>\n\nChecking repo state and package config")])
         refreshed = store.get_or_create_telegram_session(auth)
         self.assertEqual(set(refreshed.thinking_live_message_ids.keys()), {"commentary:msg-1", "command:cmd-1"})
         self.assertEqual(refreshed.thinking_live_texts.get("commentary:msg-1"), "Checking repo state and package config")
