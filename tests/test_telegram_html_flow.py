@@ -8,7 +8,8 @@ from pathlib import Path
 from core.models import AuthState
 from core.paths import build_paths
 from integrations.telegram import TelegramError
-from runtime.service import drain_codex_notifications, flush_buffer
+from runtime import service as service_module
+from runtime.service import drain_codex_notifications, flush_buffer, maybe_refresh_thinking_message
 from runtime.session_store import SessionStore
 from tests.fakes.fake_telegram import FakeTelegramClient
 
@@ -49,6 +50,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
+        session.last_user_message_at = "2026-03-29T00:00:00+00:00"
         store.save_session(session)
         telegram = FakeTelegramClient()
         codex = FakeCodex()
@@ -71,6 +73,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
+        session.last_user_message_at = "2026-03-29T00:00:00+00:00"
         store.save_session(session)
         telegram = FakeTelegramClient()
         codex = FakeCodex()
@@ -109,11 +112,14 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         )
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+        service_module._THINKING_SOURCE_LAST_SENT_AT.clear()
+        maybe_refresh_thinking_message(self.paths, auth, telegram, store, recorder=self.recorder)
 
         self.assertEqual(telegram.messages, [(22, "<b>Thinking</b>\n\nChecking logs")])
-        self.assertEqual(telegram.edits, [(22, 1, "<b>Thinking</b>\n\nChecking logs and config")])
+        self.assertEqual(telegram.edits, [])
         refreshed = store.get_or_create_telegram_session(auth)
         self.assertEqual(refreshed.thinking_message_ids, [1])
+        self.assertEqual(refreshed.thinking_live_texts.get("reasoning:current"), "Checking logs and config")
 
     def test_interleaved_commentary_and_command_keep_separate_live_messages(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
@@ -141,6 +147,8 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         )
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+        service_module._THINKING_SOURCE_LAST_SENT_AT.clear()
+        maybe_refresh_thinking_message(self.paths, auth, telegram, store, recorder=self.recorder)
 
         self.assertEqual(
             telegram.messages,
@@ -149,9 +157,10 @@ class TelegramHtmlFlowTests(unittest.TestCase):
                 (22, '<b>Running</b>\n\n<pre><code class="language-bash">git status --short</code></pre>'),
             ],
         )
-        self.assertEqual(telegram.edits, [(22, 1, "<b>Thinking</b>\n\nChecking repo state and package config")])
+        self.assertEqual(telegram.edits, [])
         refreshed = store.get_or_create_telegram_session(auth)
         self.assertEqual(set(refreshed.thinking_live_message_ids.keys()), {"commentary:msg-1", "command:cmd-1"})
+        self.assertEqual(refreshed.thinking_live_texts.get("commentary:msg-1"), "Checking repo state and package config")
 
     def test_final_reply_includes_collapsed_thinking_block(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
@@ -181,8 +190,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
             [
                 (
                     22,
-                    "<b>Thinking</b>\n<blockquote expandable><b>Thinking</b>\n\nChecking repo\n\n<b>Running</b>\n\n"
-                    '<pre><code class="language-bash">git status --short</code></pre></blockquote>',
+                    "<b>Thinking</b>\n<blockquote expandable>Thinking\n\nChecking repo\n\nRunning\n\ngit status --short</blockquote>",
                 ),
                 (22, "<b>Title</b>\n<b>done</b>"),
             ],

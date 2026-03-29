@@ -151,6 +151,7 @@ class SessionRecord:
     thinking_message_ids: list[int] = field(default_factory=list)
     thinking_live_message_ids: dict[str, int] = field(default_factory=dict)
     thinking_live_texts: dict[str, str] = field(default_factory=dict)
+    thinking_sent_texts: dict[str, str] = field(default_factory=dict)
     thinking_history_order: list[str] = field(default_factory=list)
     thinking_history_by_source: dict[str, str] = field(default_factory=dict)
     streaming_output_text: str = ""

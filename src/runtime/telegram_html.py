@@ -4,7 +4,6 @@ import html
 import re
 
 
-_PLACEHOLDER_PREFIX = "\u0000tele_cli_html_"
 _ALLOWED_HTML_TAG_RE = re.compile(r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|blockquote|tg-spoiler|tg-emoji|tg-time)\b", re.IGNORECASE)
 _COMMAND_ACTIVITY_PREFIX = "__tele_cli_command__:"
 
@@ -18,7 +17,7 @@ def looks_like_telegram_html(text: str) -> bool:
 
 
 def _make_placeholder(index: int) -> str:
-    return f"{_PLACEHOLDER_PREFIX}{index}\u0000"
+    return f"\ue000{index}\ue001"
 
 
 def _restore_placeholders(text: str, replacements: list[str]) -> str:
@@ -144,8 +143,13 @@ def render_collapsed_thinking_html(thinking_history: str | list[str] | None) -> 
         thinking_entries = [line.strip() for line in (thinking_history or "").split("\n") if line.strip()]
     if not thinking_entries:
         return ""
-    rendered_entries = [render_telegram_progress_html(entry) for entry in thinking_entries]
-    thinking_body = "\n\n".join(entry for entry in rendered_entries if entry.strip())
+    normalized_entries: list[str] = []
+    for entry in thinking_entries:
+        if entry.startswith(_COMMAND_ACTIVITY_PREFIX):
+            normalized_entries.append(f"Running\n\n{entry[len(_COMMAND_ACTIVITY_PREFIX):].strip()}")
+        else:
+            normalized_entries.append(f"Thinking\n\n{entry}")
+    thinking_body = escape_telegram_html("\n\n".join(entry for entry in normalized_entries if entry.strip()))
     if not thinking_body:
         return ""
     return f"<b>Thinking</b>\n<blockquote expandable>{thinking_body}</blockquote>"
