@@ -125,6 +125,23 @@ class TelegramClient:
             params["parse_mode"] = parse_mode
         return self._request("editMessageText", params=params)
 
+    def send_message_draft(
+        self,
+        chat_id: int,
+        draft_id: int,
+        text: str,
+        *,
+        topic_id: int | None = None,
+        parse_mode: str | None = None,
+    ) -> bool:
+        params = {"chat_id": chat_id, "draft_id": draft_id, "text": text}
+        if topic_id is not None:
+            params["message_thread_id"] = topic_id
+        if parse_mode:
+            params["parse_mode"] = parse_mode
+        result = self._request("sendMessageDraft", params=params)
+        return bool(result)
+
     def delete_message(self, chat_id: int, message_id: int) -> dict:
         return self._request("deleteMessage", params={"chat_id": chat_id, "message_id": message_id})
 

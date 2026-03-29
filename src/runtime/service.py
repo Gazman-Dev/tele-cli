@@ -34,6 +34,7 @@ from .codex_cli_config import read_codex_cli_preferences, write_codex_cli_prefer
 from .control import ServiceConflictChoices, isatty, prepare_service_lock, reset_auth, start_codex_session
 from .instructions import ensure_instruction_files
 from .performance import PerformanceTracker, edit_telegram_message, send_telegram_message
+from .performance import send_telegram_message_draft
 from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
@@ -872,6 +873,28 @@ def render_thinking_message(text: str | None) -> str:
     return f"Thinking\n\n{body}"
 
 
+def supports_telegram_message_draft(telegram: TelegramClient, chat_id: int | None) -> bool:
+    return bool(chat_id and chat_id > 0 and hasattr(telegram, "send_message_draft"))
+
+
+def draft_id_for_session(session) -> int:
+    seed = session.active_turn_id or session.session_id
+    value = 0
+    for char in str(seed):
+        value = (value * 131 + ord(char)) % 2147483647
+    return value or 1
+
+
+def render_stream_draft_text(*, answer_text: str | None, thinking_text: str | None) -> str:
+    answer = (answer_text or "").strip()
+    thinking = (thinking_text or "").strip()
+    if answer and thinking:
+        return f"{answer}\n\n---\n\nThinking\n\n{thinking}"
+    if answer:
+        return answer
+    return render_thinking_message(thinking_text)
+
+
 def extract_thinking_body(text: str | None) -> str:
     value = (text or "").strip()
     if value.startswith("Thinking\n\n"):
@@ -897,6 +920,28 @@ def set_visible_thinking_message(
     target_chat_id = session.transport_chat_id or auth.telegram_chat_id
     if not session.attached or not target_chat_id:
         return
+    if supports_telegram_message_draft(telegram, target_chat_id):
+        draft_text = render_stream_draft_text(
+            answer_text=session.streaming_output_text,
+            thinking_text=session.thinking_message_text,
+        )
+        if len(draft_text) <= TELEGRAM_TEXT_LIMIT:
+            send_telegram_message_draft(
+                telegram,
+                target_chat_id,
+                draft_id_for_session(session),
+                safe_stream_markdown_v2(draft_text),
+                topic_id=session.transport_topic_id,
+                parse_mode=TELEGRAM_MARKDOWN_MODE,
+                performance=performance,
+                category="thinking_output",
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                turn_id=session.active_turn_id or session.last_completed_turn_id,
+            )
+            session_store.mark_agent_message(session)
+            session_store.save_session(session)
+            return
     rendered = render_thinking_message(session.thinking_message_text)
     now = datetime.now(timezone.utc)
     if session.thinking_message_id is not None:
@@ -1195,6 +1240,27 @@ def flush_buffer(
         "turn_id": session.active_turn_id or session.last_completed_turn_id,
     }
     parse_mode = TELEGRAM_MARKDOWN_MODE if (mark_agent or stream_format) else None
+    if not mark_agent and stream_format and supports_telegram_message_draft(telegram, target_chat_id) and len(plain_chunks) == 1:
+        draft_source = render_stream_draft_text(
+            answer_text=text,
+            thinking_text=session.thinking_message_text if session.streaming_phase != "commentary" else None,
+        )
+        if len(draft_source) <= TELEGRAM_TEXT_LIMIT:
+            send_telegram_message_draft(
+                telegram,
+                target_chat_id,
+                draft_id_for_session(session),
+                safe_stream_markdown_v2(draft_source),
+                topic_id=session.transport_topic_id,
+                parse_mode=TELEGRAM_MARKDOWN_MODE,
+                **context,
+            )
+            recorder.record("assistant", text)
+            session.streaming_output_text = text
+            session_store.mark_delivered_output(session, text)
+            session_store.mark_agent_message(session)
+            session_store.consume_pending_output(session)
+            return
     def _deliver(chunks: list[str], *, parse_mode_value: str | None) -> None:
         if session.streaming_message_id is not None:
             edit_telegram_message(

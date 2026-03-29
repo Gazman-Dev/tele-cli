@@ -1867,6 +1867,113 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.edit_calls[-1][3], "MarkdownV2")
         self.assertEqual(telegram.edit_calls[-1][2], "Hello *world \\- ok\\!*")
 
+    def test_private_thinking_updates_use_send_message_draft(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        class DraftTelegram(FakeTelegramClient):
+            def __init__(self):
+                super().__init__()
+                self.drafts: list[tuple[int, int, str, int | None, str | None]] = []
+
+            def send_message_draft(
+                self,
+                chat_id: int,
+                draft_id: int,
+                text: str,
+                *,
+                topic_id: int | None = None,
+                parse_mode: str | None = None,
+            ) -> bool:
+                self.drafts.append((chat_id, draft_id, text, topic_id, parse_mode))
+                return True
+
+        telegram = DraftTelegram()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification(
+                "item/updated",
+                {"threadId": "thread-1", "item": {"type": "reasoning", "text": "Checking recent release notes..."}},
+            )
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        self.assertEqual(len(telegram.drafts), 1)
+        self.assertEqual(telegram.drafts[0][0], 22)
+        self.assertIn("Thinking", telegram.drafts[0][2])
+        self.assertIn("Checking recent release notes", telegram.drafts[0][2])
+        self.assertEqual(telegram.drafts[0][4], "MarkdownV2")
+
+    def test_private_partial_answer_updates_use_send_message_draft(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        class DraftTelegram(FakeTelegramClient):
+            def __init__(self):
+                super().__init__()
+                self.drafts: list[tuple[int, int, str, int | None, str | None]] = []
+
+            def send_message_draft(
+                self,
+                chat_id: int,
+                draft_id: int,
+                text: str,
+                *,
+                topic_id: int | None = None,
+                parse_mode: str | None = None,
+            ) -> bool:
+                self.drafts.append((chat_id, draft_id, text, topic_id, parse_mode))
+                return True
+
+        telegram = DraftTelegram()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": "Hello"}),
+                Notification("assistant/message.partial", {"threadId": "thread-1"}),
+                Notification("assistant/message.delta", {"threadId": "thread-1", "text": " world"}),
+                Notification("assistant/message.partial", {"threadId": "thread-1"}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        self.assertEqual(len(telegram.drafts), 2)
+        self.assertEqual(telegram.drafts[0][1], telegram.drafts[1][1])
+        self.assertEqual(telegram.drafts[0][2], "Hello")
+        self.assertEqual(telegram.drafts[1][2], "Hello world")
+
     def test_final_reply_uses_telegram_markdownv2(self) -> None:
         auth = AuthState(
             bot_token="token",
