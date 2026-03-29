@@ -5,6 +5,7 @@ class FakeTelegramClient:
     def __init__(self, updates: list[dict] | None = None):
         self._updates = list(updates or [])
         self.messages: list[tuple[int, str]] = []
+        self.message_details: list[tuple[int, str, int | None, str | None, bool]] = []
         self.edits: list[tuple[int, int, str]] = []
         self.deletes: list[tuple[int, int]] = []
         self.typing_actions: list[int] = []
@@ -16,7 +17,15 @@ class FakeTelegramClient:
     def get_updates(self, offset=None, timeout: int = 20) -> list[dict]:
         return list(self._updates)
 
-    def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode: str | None = None) -> dict:
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        topic_id: int | None = None,
+        parse_mode: str | None = None,
+        disable_notification: bool = False,
+    ) -> dict:
+        self.message_details.append((chat_id, text, topic_id, parse_mode, disable_notification))
         if topic_id is None:
             self.messages.append((chat_id, text))
         else:

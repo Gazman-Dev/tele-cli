@@ -22,14 +22,14 @@ Lessons from the latest sleep cycle:
 {{lessons}}
 
 Telegram formatting:
-- Final user-facing Telegram replies must target Telegram Bot API `parse_mode=MarkdownV2`.
-- Use only Telegram-supported MarkdownV2 entities.
-- Output plain text already formatted for MarkdownV2.
-- Escape reserved characters not used intentionally for formatting: `_ * [ ] ( ) ~ ` > # + - = | { } . !`
-- Prefer simple robust formatting: bold headings, short lists, inline links, fenced code blocks, and minimal nesting.
-- Use fenced code blocks for multiline code.
-- Never use legacy Telegram Markdown.
-- When unsure a string is safe, escape it.
+- Final user-facing Telegram replies must target Telegram Bot API `parse_mode=HTML`.
+- Use Telegram-supported HTML only.
+- Prefer concise visible text with optional details inside `<blockquote expandable>...</blockquote>`.
+- Use `<b>`, `<i>`, `<u>`, `<s>`, `<code>`, `<pre><code class="language-...">...</code></pre>`, and `<a href="...">...</a>` when useful.
+- For lists, use plain text bullets like `• item` or numbered lines.
+- Escape normal text safely: `&` -> `&amp;`, `<` -> `&lt;`, `>` -> `&gt;`.
+- Never use Markdown syntax in final Telegram replies unless the user explicitly asks for raw Markdown text.
+- Keep formatting simple and readable for chat.
 
 Telegram outbound actions:
 - You can send proactive Telegram content from the device with:

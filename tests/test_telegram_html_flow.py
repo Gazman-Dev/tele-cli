@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+import uuid
+from pathlib import Path
+
+from core.models import AuthState
+from core.paths import build_paths
+from integrations.telegram import TelegramError
+from runtime.service import drain_codex_notifications, flush_buffer
+from runtime.session_store import SessionStore
+from tests.fakes.fake_telegram import FakeTelegramClient
+
+
+class FakeRecorder:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str]] = []
+
+    def record(self, source: str, line: str) -> None:
+        self.records.append((source, line))
+
+
+class Notification:
+    def __init__(self, method: str, params: dict):
+        self.method = method
+        self.params = params
+
+
+class FakeCodex:
+    def __init__(self) -> None:
+        self.pending_notifications: list[Notification] = []
+
+    def poll_notification(self):
+        if self.pending_notifications:
+            return self.pending_notifications.pop(0)
+        return None
+
+
+class TelegramHtmlFlowTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.paths = build_paths(Path.cwd() / ".test_state" / "telegram_html_flow" / str(uuid.uuid4()))
+        self.recorder = FakeRecorder()
+
+    def test_reasoning_update_sends_independent_html_message(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification("item/updated", {"threadId": "thread-1", "item": {"type": "reasoning", "text": "Checking logs"}})
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        self.assertEqual(
+            telegram.message_details,
+            [(22, "<b>Thinking</b>\n\nChecking logs", None, "HTML", True)],
+        )
+
+    def test_final_reply_includes_collapsed_thinking_block(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.pending_output_text = "# Title\n**done**"
+        session.thinking_history_text = "Checking repo\n__tele_cli_command__:git status --short"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        flush_buffer(session.session_id, auth, telegram, self.recorder, store, mark_agent=True)
+
+        self.assertEqual(
+            telegram.messages,
+            [
+                (
+                    22,
+                    "<b>Thinking</b>\n<blockquote expandable><b>Thinking</b>\n\nChecking repo\n\n<b>Running</b>\n\n"
+                    '<pre><code class="language-bash">git status --short</code></pre></blockquote>\n\n<b>Title</b>\n<b>done</b>',
+                )
+            ],
+        )
+
+    def test_final_reply_falls_back_to_escaped_html(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.pending_output_text = "# Title\n**done**"
+        store.save_session(session)
+
+        class FailingTelegram(FakeTelegramClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.parse_modes: list[str | None] = []
+
+            def send_message(
+                self,
+                chat_id: int,
+                text: str,
+                topic_id: int | None = None,
+                parse_mode: str | None = None,
+                disable_notification: bool = False,
+            ) -> dict:
+                self.parse_modes.append(parse_mode)
+                if parse_mode == "HTML" and text == "<b>Title</b>\n<b>done</b>":
+                    raise TelegramError("can't parse entities")
+                return super().send_message(
+                    chat_id,
+                    text,
+                    topic_id=topic_id,
+                    parse_mode=parse_mode,
+                    disable_notification=disable_notification,
+                )
+
+        telegram = FailingTelegram()
+        flush_buffer(session.session_id, auth, telegram, self.recorder, store, mark_agent=True)
+
+        self.assertEqual(telegram.parse_modes, ["HTML", "HTML"])
+        self.assertEqual(telegram.messages, [(22, "# Title\n**done**")])
+
+
+if __name__ == "__main__":
+    unittest.main()

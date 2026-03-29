@@ -105,12 +105,15 @@ class TelegramClient:
         text: str,
         topic_id: int | None = None,
         parse_mode: str | None = None,
+        disable_notification: bool = False,
     ) -> dict:
         params = {"chat_id": chat_id, "text": text}
         if topic_id is not None:
             params["message_thread_id"] = topic_id
         if parse_mode:
             params["parse_mode"] = parse_mode
+        if disable_notification:
+            params["disable_notification"] = "true"
         return self._request("sendMessage", params=params)
 
     def edit_message_text(
@@ -153,6 +156,7 @@ class TelegramClient:
         topic_id: int | None = None,
         caption: str | None = None,
         parse_mode: str | None = None,
+        disable_notification: bool = False,
     ) -> dict:
         path = Path(photo_path).expanduser().resolve()
         params: dict[str, object] = {"chat_id": chat_id}
@@ -162,6 +166,8 @@ class TelegramClient:
             params["caption"] = caption
         if parse_mode:
             params["parse_mode"] = parse_mode
+        if disable_notification:
+            params["disable_notification"] = "true"
         return self._multipart_request("sendPhoto", params=params, file_field="photo", file_path=path)
 
     def send_document(
@@ -172,6 +178,7 @@ class TelegramClient:
         topic_id: int | None = None,
         caption: str | None = None,
         parse_mode: str | None = None,
+        disable_notification: bool = False,
     ) -> dict:
         path = Path(document_path).expanduser().resolve()
         params: dict[str, object] = {"chat_id": chat_id}
@@ -181,6 +188,8 @@ class TelegramClient:
             params["caption"] = caption
         if parse_mode:
             params["parse_mode"] = parse_mode
+        if disable_notification:
+            params["disable_notification"] = "true"
         return self._multipart_request("sendDocument", params=params, file_field="document", file_path=path)
 
     def get_file(self, file_id: str) -> dict:

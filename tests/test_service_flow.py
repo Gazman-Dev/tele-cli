@@ -34,7 +34,7 @@ from runtime.service import (
     replay_login_callback,
 )
 from runtime.session_store import SessionStore
-from runtime.telegram_markdown import escape_telegram_markdown_v2, to_telegram_markdown_v2
+from runtime.telegram_html import escape_telegram_html, render_final_telegram_html, render_telegram_progress_html, to_telegram_html
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 from tests.fakes.fake_telegram import FakeTelegramClient
 
@@ -1873,7 +1873,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.streaming_output_text, "")
         self.assertEqual(updated.last_delivered_output_text, "Hello world!")
 
-    def test_partial_stream_uses_safe_markdown_v2(self) -> None:
+    def test_partial_stream_is_buffered_until_final_reply(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -1892,21 +1892,7 @@ class ServiceFlowTests(unittest.TestCase):
                 self.method = method
                 self.params = params
 
-        class StreamingTelegram(FakeTelegramClient):
-            def __init__(self):
-                super().__init__()
-                self.message_calls: list[tuple[int, str, int | None, str | None]] = []
-                self.edit_calls: list[tuple[int, int, str, str | None]] = []
-
-            def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode: str | None = None) -> dict:
-                self.message_calls.append((chat_id, text, topic_id, parse_mode))
-                return super().send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
-
-            def edit_message_text(self, chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> dict:
-                self.edit_calls.append((chat_id, message_id, text, parse_mode))
-                return super().edit_message_text(chat_id, message_id, text, parse_mode=parse_mode)
-
-        telegram = StreamingTelegram()
+        telegram = FakeTelegramClient()
         codex = FakeCodex()
         codex.pending_notifications.extend(
             [
@@ -1919,12 +1905,11 @@ class ServiceFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        self.assertEqual(telegram.message_calls[0][3], "MarkdownV2")
-        self.assertEqual(telegram.message_calls[0][1], "Hello *world*")
-        self.assertEqual(telegram.edit_calls[-1][3], "MarkdownV2")
-        self.assertEqual(telegram.edit_calls[-1][2], "Hello *world \\- ok\\!*")
+        self.assertEqual(telegram.messages, [])
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_delivered_output_text, "Hello *world - ok!")
 
-    def test_private_thinking_updates_use_send_message_draft(self) -> None:
+    def test_thinking_updates_send_independent_html_message(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -1943,24 +1928,7 @@ class ServiceFlowTests(unittest.TestCase):
                 self.method = method
                 self.params = params
 
-        class DraftTelegram(FakeTelegramClient):
-            def __init__(self):
-                super().__init__()
-                self.drafts: list[tuple[int, int, str, int | None, str | None]] = []
-
-            def send_message_draft(
-                self,
-                chat_id: int,
-                draft_id: int,
-                text: str,
-                *,
-                topic_id: int | None = None,
-                parse_mode: str | None = None,
-            ) -> bool:
-                self.drafts.append((chat_id, draft_id, text, topic_id, parse_mode))
-                return True
-
-        telegram = DraftTelegram()
+        telegram = FakeTelegramClient()
         codex = FakeCodex()
         codex.pending_notifications.append(
             Notification(
@@ -1971,13 +1939,12 @@ class ServiceFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        self.assertEqual(len(telegram.drafts), 1)
-        self.assertEqual(telegram.drafts[0][0], 22)
-        self.assertIn("Thinking", telegram.drafts[0][2])
-        self.assertIn("Checking recent release notes", telegram.drafts[0][2])
-        self.assertEqual(telegram.drafts[0][4], "MarkdownV2")
+        self.assertEqual(
+            telegram.message_details,
+            [(22, "<b>Thinking</b>\n\nChecking recent release notes...", None, "HTML", True)],
+        )
 
-    def test_private_partial_answer_updates_use_send_message_draft(self) -> None:
+    def test_partial_answer_updates_do_not_send_intermediate_messages(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -1996,24 +1963,7 @@ class ServiceFlowTests(unittest.TestCase):
                 self.method = method
                 self.params = params
 
-        class DraftTelegram(FakeTelegramClient):
-            def __init__(self):
-                super().__init__()
-                self.drafts: list[tuple[int, int, str, int | None, str | None]] = []
-
-            def send_message_draft(
-                self,
-                chat_id: int,
-                draft_id: int,
-                text: str,
-                *,
-                topic_id: int | None = None,
-                parse_mode: str | None = None,
-            ) -> bool:
-                self.drafts.append((chat_id, draft_id, text, topic_id, parse_mode))
-                return True
-
-        telegram = DraftTelegram()
+        telegram = FakeTelegramClient()
         codex = FakeCodex()
         codex.pending_notifications.extend(
             [
@@ -2026,12 +1976,10 @@ class ServiceFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        self.assertEqual(len(telegram.drafts), 2)
-        self.assertEqual(telegram.drafts[0][1], telegram.drafts[1][1])
-        self.assertEqual(telegram.drafts[0][2], "Hello")
-        self.assertEqual(telegram.drafts[1][2], "Hello world")
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(telegram.edits, [])
 
-    def test_final_reply_uses_telegram_markdownv2(self) -> None:
+    def test_final_reply_uses_telegram_html(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -2050,7 +1998,7 @@ class ServiceFlowTests(unittest.TestCase):
                 self.method = method
                 self.params = params
 
-        class MarkdownRecordingTelegram(FakeTelegramClient):
+        class HtmlRecordingTelegram(FakeTelegramClient):
             def __init__(self):
                 super().__init__()
                 self.message_calls: list[tuple[int, str, int | None, str | None]] = []
@@ -2059,7 +2007,7 @@ class ServiceFlowTests(unittest.TestCase):
                 self.message_calls.append((chat_id, text, topic_id, parse_mode))
                 return super().send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
 
-        telegram = MarkdownRecordingTelegram()
+        telegram = HtmlRecordingTelegram()
         codex = FakeCodex()
         codex.pending_notifications.append(
             Notification("turn/completed", {"turnId": "turn-1", "outputText": "# Title\n**bold**"})
@@ -2068,10 +2016,10 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         self.assertEqual(len(telegram.message_calls), 1)
-        self.assertEqual(telegram.message_calls[0][3], "MarkdownV2")
-        self.assertEqual(telegram.messages, [(22, "# Title\n**bold**")])
+        self.assertEqual(telegram.message_calls[0][3], "HTML")
+        self.assertEqual(telegram.messages, [(22, "<b>Title</b>\n<b>bold</b>")])
 
-    def test_final_reply_falls_back_to_plain_text_when_markdown_send_fails(self) -> None:
+    def test_final_reply_falls_back_to_escaped_html_when_html_send_fails(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -2097,7 +2045,7 @@ class ServiceFlowTests(unittest.TestCase):
 
             def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode: str | None = None) -> dict:
                 self.parse_modes.append(parse_mode)
-                if parse_mode == "MarkdownV2" and text == "# Title\n**bold**":
+                if parse_mode == "HTML" and text == "<b>Title</b>\n<b>bold</b>":
                     raise TelegramError("can't parse entities")
                 return super().send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
 
@@ -2109,10 +2057,10 @@ class ServiceFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        self.assertEqual(telegram.parse_modes, ["MarkdownV2", "MarkdownV2"])
-        self.assertEqual(telegram.messages, [(22, "*Title*\n*bold*")])
+        self.assertEqual(telegram.parse_modes, ["HTML", "HTML"])
+        self.assertEqual(telegram.messages, [(22, "# Title\n**bold**")])
 
-    def test_final_reply_falls_back_to_plain_text_when_markdown_edit_fails(self) -> None:
+    def test_final_reply_does_not_edit_existing_stream_message(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -2124,21 +2072,8 @@ class ServiceFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
-        session.streaming_message_id = 7
         store.save_session(session)
-
-        class FallbackEditTelegram(FakeTelegramClient):
-            def __init__(self):
-                super().__init__()
-                self.parse_modes: list[str | None] = []
-
-            def edit_message_text(self, chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> dict:
-                self.parse_modes.append(parse_mode)
-                if parse_mode == "MarkdownV2" and text == "# Title\n**bold**":
-                    raise TelegramError("can't parse entities")
-                return super().edit_message_text(chat_id, message_id, text, parse_mode=parse_mode)
-
-        telegram = FallbackEditTelegram()
+        telegram = FakeTelegramClient()
         session.pending_output_text = "# Title\n**bold**"
         store.save_session(session)
 
@@ -2151,10 +2086,10 @@ class ServiceFlowTests(unittest.TestCase):
             mark_agent=True,
         )
 
-        self.assertEqual(telegram.parse_modes, ["MarkdownV2", "MarkdownV2"])
-        self.assertEqual(telegram.edits, [(22, 7, "*Title*\n*bold*")])
+        self.assertEqual(telegram.edits, [])
+        self.assertEqual(telegram.messages, [(22, "<b>Title</b>\n<b>bold</b>")])
 
-    def test_final_reply_passes_through_existing_telegram_markdownv2(self) -> None:
+    def test_final_reply_passes_through_existing_telegram_html(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,

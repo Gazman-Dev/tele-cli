@@ -33,26 +33,18 @@ from .approval_store import ApprovalStore
 from .codex_cli_config import read_codex_cli_preferences, write_codex_cli_preferences
 from .control import ServiceConflictChoices, isatty, prepare_service_lock, reset_auth, start_codex_session
 from .instructions import ensure_instruction_files
-from .performance import PerformanceTracker, edit_telegram_message, send_telegram_message
-from .performance import send_telegram_message_draft
+from .performance import PerformanceTracker, send_telegram_message
 from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
 from .sleep import has_pending_sleep_work, run_sleep, should_run_sleep
-from .telegram_markdown import (
-    code_block_telegram_markdown_v2,
-    escape_telegram_markdown_v2,
-    normalize_existing_telegram_markdown_v2,
-    normalize_telegram_markdown_source,
-    safe_stream_markdown_v2,
-    to_telegram_markdown_v2,
-)
+from .telegram_html import escape_telegram_html, render_final_telegram_html, render_telegram_progress_html, to_telegram_html
 from .telegram_update_store import TelegramUpdateStore
 
 
 LOCAL_AUTH_CALLBACK_RE = re.compile(r"https?://(?:localhost|127\.0\.0\.1):1455/auth/callback\?[^\s]+", re.IGNORECASE)
 TELEGRAM_TEXT_LIMIT = 4000
-TELEGRAM_MARKDOWN_MODE = "MarkdownV2"
+TELEGRAM_PARSE_MODE = "HTML"
 _AGENT_MESSAGE_PHASES: dict[str, str] = {}
 _AGENT_MESSAGE_TEXTS: dict[str, str] = {}
 COMMENTARY_STREAM_MIN_INTERVAL_SECONDS = 1.0
@@ -483,6 +475,8 @@ def reset_session_after_request_failure(
     session.streaming_output_text = ""
     session.streaming_phase = ""
     session.thinking_message_text = ""
+    session.thinking_history_text = ""
+    session.last_thinking_sent_text = ""
     session.status = "ACTIVE"
     if "threadId" in error_text or "thread id" in error_text.lower():
         session.thread_id = None
@@ -904,42 +898,7 @@ def ensure_thinking_message(
 
 
 def render_thinking_message(text: str | None) -> str:
-    body = (text or "").strip()
-    if not body:
-        return "Thinking"
-    command = _decode_command_activity(body)
-    if command:
-        return f"Running\n\n```bash\n{command}\n```"
-    if body == "Thinking":
-        return body
-    return f"Thinking\n\n{body}"
-
-
-def supports_telegram_message_draft(telegram: TelegramClient, chat_id: int | None) -> bool:
-    return bool(chat_id and chat_id > 0 and hasattr(telegram, "send_message_draft"))
-
-
-def draft_id_for_session(session) -> int:
-    seed = session.active_turn_id or session.session_id
-    value = 0
-    for char in str(seed):
-        value = (value * 131 + ord(char)) % 2147483647
-    return value or 1
-
-
-def render_stream_draft_text(*, answer_text: str | None, thinking_text: str | None) -> str:
-    answer = (answer_text or "").strip()
-    thinking = (thinking_text or "").strip()
-    thinking_title = "Thinking"
-    command = _decode_command_activity(thinking)
-    if command:
-        thinking_title = "Running"
-        thinking = f"```bash\n{command}\n```"
-    if answer and thinking:
-        return f"{answer}\n\n---\n\n{thinking_title}\n\n{thinking}"
-    if answer:
-        return answer
-    return render_thinking_message(thinking_text)
+    return render_telegram_progress_html(text)
 
 
 def extract_thinking_body(text: str | None) -> str:
@@ -963,81 +922,42 @@ def set_visible_thinking_message(
     min_interval_seconds: float = DEFAULT_THINKING_STREAM_MIN_INTERVAL_SECONDS,
 ) -> None:
     ensure_thinking_message(auth, telegram, session, text=text, performance=performance)
-    answer_text = ""
-    if session.streaming_phase == "answer":
-        answer_text = (session.streaming_output_text or session.pending_output_text).strip()
-    if answer_text:
-        session.streaming_phase = "answer"
-    else:
-        session.streaming_phase = "commentary"
     target_chat_id = session.transport_chat_id or auth.telegram_chat_id
     if not session.attached or not target_chat_id:
         return
-    rendered = render_stream_draft_text(
-        answer_text=answer_text,
-        thinking_text=session.thinking_message_text,
-    )
-    if supports_telegram_message_draft(telegram, target_chat_id):
-        if len(rendered) <= TELEGRAM_TEXT_LIMIT:
-            try:
-                send_telegram_message_draft(
-                    telegram,
-                    target_chat_id,
-                    draft_id_for_session(session),
-                    safe_stream_markdown_v2(rendered),
-                    topic_id=session.transport_topic_id,
-                    parse_mode=TELEGRAM_MARKDOWN_MODE,
-                    performance=performance,
-                    category="thinking_output",
-                    session_id=session.session_id,
-                    thread_id=session.thread_id,
-                    turn_id=session.active_turn_id or session.last_completed_turn_id,
-                )
-                session_store.mark_agent_message(session)
-                session_store.save_session(session)
-                return
-            except TelegramError:
-                pass
+    rendered = render_telegram_progress_html(session.thinking_message_text)
+    if not rendered.strip():
+        return
     now = datetime.now(timezone.utc)
-    if session.streaming_message_id is not None:
-        last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
-        if last_sent_at is not None and (now - last_sent_at).total_seconds() < min_interval_seconds:
-            session_store.save_session(session)
-            return
-        try:
-            edit_telegram_message(
-                telegram,
-                target_chat_id,
-                session.streaming_message_id,
-                safe_stream_markdown_v2(rendered),
-                parse_mode=TELEGRAM_MARKDOWN_MODE,
-                performance=performance,
-                category="thinking_output",
-                session_id=session.session_id,
-                thread_id=session.thread_id,
-                turn_id=session.active_turn_id or session.last_completed_turn_id,
-            )
-        except TelegramError:
-            session.streaming_message_id = None
-            session_store.save_session(session)
-            return
-    else:
-        try:
-            session.streaming_message_id = send_telegram_message(
-                telegram,
-                target_chat_id,
-                safe_stream_markdown_v2(rendered),
-                topic_id=session.transport_topic_id,
-                parse_mode=TELEGRAM_MARKDOWN_MODE,
-                performance=performance,
-                category="thinking_output",
-                session_id=session.session_id,
-                thread_id=session.thread_id,
-                turn_id=session.active_turn_id or session.last_completed_turn_id,
-            )
-        except TelegramError:
-            session_store.save_session(session)
-            return
+    last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
+    if last_sent_at is not None and (now - last_sent_at).total_seconds() < min_interval_seconds:
+        session_store.save_session(session)
+        return
+    if session.last_thinking_sent_text.strip() == session.thinking_message_text.strip():
+        return
+    history_lines = [line for line in session.thinking_history_text.split("\n") if line.strip()]
+    current_text = session.thinking_message_text.strip()
+    if current_text and (not history_lines or history_lines[-1] != current_text):
+        history_lines.append(current_text)
+        session.thinking_history_text = "\n".join(history_lines)
+    try:
+        send_telegram_message(
+            telegram,
+            target_chat_id,
+            rendered,
+            topic_id=session.transport_topic_id,
+            parse_mode=TELEGRAM_PARSE_MODE,
+            disable_notification=True,
+            performance=performance,
+            category="thinking_output",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id or session.last_completed_turn_id,
+        )
+    except TelegramError:
+        session_store.save_session(session)
+        return
+    session.last_thinking_sent_text = current_text
     session_store.mark_agent_message(session)
     session_store.save_session(session)
 
@@ -1052,6 +972,8 @@ def clear_thinking_message(
 ) -> None:
     session.thinking_message_id = None
     session.thinking_message_text = ""
+    session.last_thinking_sent_text = ""
+    session.thinking_history_text = ""
     session_store.save_session(session)
 
 
@@ -1076,7 +998,7 @@ def maybe_refresh_thinking_message(
             continue
         if is_stale_active_turn(session):
             continue
-        if session.pending_output_text.strip() or session.streaming_output_text.strip():
+        if not session.thinking_message_text.strip():
             continue
         set_visible_thinking_message(
             auth,
@@ -1084,7 +1006,7 @@ def maybe_refresh_thinking_message(
             recorder,
             session_store,
             session,
-            text=session.thinking_message_text or default_thinking_text(session),
+            text=session.thinking_message_text,
             performance=performance,
         )
 
@@ -1286,6 +1208,8 @@ def flush_buffer(
             session.streaming_output_text = ""
             session.streaming_phase = ""
             session.thinking_message_text = ""
+            session.thinking_history_text = ""
+            session.last_thinking_sent_text = ""
             session_store.save_session(session)
         session_store.consume_pending_output(session)
         return
@@ -1299,136 +1223,58 @@ def flush_buffer(
         "thread_id": session.thread_id,
         "turn_id": session.active_turn_id or session.last_completed_turn_id,
     }
-    parse_mode = TELEGRAM_MARKDOWN_MODE if (mark_agent or stream_format) else None
-    if not mark_agent and stream_format and supports_telegram_message_draft(telegram, target_chat_id) and len(plain_chunks) == 1:
-        draft_source = render_stream_draft_text(
-            answer_text=text,
-            thinking_text=session.thinking_message_text if session.streaming_phase != "commentary" else None,
-        )
-        if len(draft_source) <= TELEGRAM_TEXT_LIMIT:
-            send_telegram_message_draft(
-                telegram,
-                target_chat_id,
-                draft_id_for_session(session),
-                safe_stream_markdown_v2(draft_source),
-                topic_id=session.transport_topic_id,
-                parse_mode=TELEGRAM_MARKDOWN_MODE,
-                **context,
-            )
-            recorder.record("assistant", text)
-            session.streaming_output_text = text
-            session_store.mark_delivered_output(session, text)
-            session_store.mark_agent_message(session)
-            session_store.consume_pending_output(session)
-            return
-    def _deliver(chunks: list[str], *, parse_mode_value: str | None) -> None:
-        if session.streaming_message_id is not None:
-            edit_telegram_message(
-                telegram,
-                target_chat_id,
-                session.streaming_message_id,
-                chunks[0],
-                parse_mode=parse_mode_value,
-                **context,
-            )
-        else:
-            message_id = send_telegram_message(
-                telegram,
-                target_chat_id,
-                chunks[0],
-                topic_id=session.transport_topic_id,
-                parse_mode=parse_mode_value,
-                **context,
-            )
-            if not mark_agent:
-                session.streaming_message_id = message_id
-                session_store.save_session(session)
-        for chunk in chunks[1:]:
-            send_telegram_message(
-                telegram,
-                target_chat_id,
-                chunk,
-                topic_id=session.transport_topic_id,
-                parse_mode=parse_mode_value,
-                **context,
-            )
-
-    if mark_agent:
-        raw_chunks = [normalize_existing_telegram_markdown_v2(chunk) for chunk in plain_chunks]
-        normalized_source_chunks = [normalize_telegram_markdown_source(chunk) for chunk in plain_chunks]
-        formatted_chunks = [to_telegram_markdown_v2(chunk) for chunk in normalized_source_chunks]
-        escaped_chunks = [escape_telegram_markdown_v2(chunk) for chunk in normalized_source_chunks]
-        emergency_chunks = [code_block_telegram_markdown_v2(chunk) for chunk in normalized_source_chunks]
-        attempts = [
-            ("raw_markdown", raw_chunks),
-            ("formatted_markdown", formatted_chunks),
-            ("escaped_markdown", escaped_chunks),
-            ("code_block_markdown", emergency_chunks),
-        ]
-        rich_text = "\n\n---chunk---\n\n".join(formatted_chunks)
-        escaped_text = "\n\n---chunk---\n\n".join(escaped_chunks)
-        emergency_text = "\n\n---chunk---\n\n".join(emergency_chunks)
-        delivered = False
-        for stage, attempt_chunks in attempts:
-            try:
-                _deliver(attempt_chunks, parse_mode_value=TELEGRAM_MARKDOWN_MODE)
-                delivered = True
-                break
-            except TelegramError as exc:
-                append_telegram_format_failure_log(
-                    session_store.paths,
-                    session_id=session.session_id,
-                    thread_id=session.thread_id,
-                    turn_id=session.active_turn_id or session.last_completed_turn_id,
-                    stage=stage,
-                    error=str(exc),
-                    raw_text=text,
-                    rich_text=rich_text,
-                    escaped_text=escaped_text,
-                    emergency_text=emergency_text,
-                )
-        if not delivered:
-            raise TelegramError("All Telegram MarkdownV2 delivery attempts failed.")
-        session.streaming_message_id = None
+    if not mark_agent:
+        recorder.record("assistant", text)
+        session.streaming_output_text = text
+        session_store.mark_delivered_output(session, text)
+        session_store.mark_agent_message(session)
+        session_store.consume_pending_output(session)
         session_store.save_session(session)
-    else:
-        stream_chunks = [safe_stream_markdown_v2(chunk) for chunk in plain_chunks] if stream_format else plain_chunks
+        return
+
+    final_html = render_final_telegram_html(
+        answer_text=text,
+        thinking_history_text=session.thinking_history_text,
+    )
+    formatted_chunks = split_telegram_text(final_html)
+    escaped_chunks = split_telegram_text(escape_telegram_html(text))
+    delivered = False
+    for stage, attempt_chunks in (("formatted_html", formatted_chunks), ("escaped_html", escaped_chunks)):
         try:
-            _deliver(stream_chunks, parse_mode_value=parse_mode)
-        except TelegramError:
-            if session.streaming_message_id is not None:
-                try:
-                    edit_telegram_message(
-                        telegram,
-                        target_chat_id,
-                        session.streaming_message_id,
-                        "Reply continues below.",
-                        **context,
-                    )
-                except TelegramError:
-                    pass
-            for chunk in plain_chunks:
+            for chunk in attempt_chunks:
                 send_telegram_message(
                     telegram,
                     target_chat_id,
                     chunk,
                     topic_id=session.transport_topic_id,
+                    parse_mode=TELEGRAM_PARSE_MODE,
                     **context,
                 )
-            session.streaming_message_id = None
-            session_store.save_session(session)
+            delivered = True
+            break
+        except TelegramError as exc:
+            append_telegram_format_failure_log(
+                session_store.paths,
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                turn_id=session.active_turn_id or session.last_completed_turn_id,
+                stage=stage,
+                error=str(exc),
+                raw_text=text,
+                rich_text=final_html,
+                escaped_text=escape_telegram_html(text),
+                emergency_text=None,
+            )
+    if not delivered:
+        raise TelegramError("All Telegram HTML delivery attempts failed.")
     recorder.record("assistant", text)
-    session.streaming_output_text = text
-    session.thinking_message_text = ""
+    session.streaming_message_id = None
+    session.streaming_output_text = ""
+    session.streaming_phase = ""
+    session.last_thinking_sent_text = ""
     session_store.mark_delivered_output(session, text)
     session_store.mark_agent_message(session)
-    if mark_agent:
-        clear_thinking_message(auth, telegram, session_store, session, performance=performance)
-        session.streaming_message_id = None
-        session.streaming_output_text = ""
-        session.streaming_phase = ""
-        session.thinking_message_text = ""
-        session_store.save_session(session)
+    clear_thinking_message(auth, telegram, session_store, session, performance=performance)
     session_store.consume_pending_output(session)
     pruned = session_store.prune_detached_sessions()
     if pruned:
@@ -1789,6 +1635,8 @@ def handle_authorized_message(
         session.streaming_output_text = ""
         session.streaming_phase = ""
         session.thinking_message_text = ""
+        session.thinking_history_text = ""
+        session.last_thinking_sent_text = ""
         session.status = "ACTIVE"
         session_store.save_session(session)
         if prior is not None:
@@ -2550,6 +2398,8 @@ def drain_codex_notifications(
                 session.streaming_output_text = ""
                 session.streaming_phase = ""
                 session.thinking_message_text = ""
+                session.thinking_history_text = ""
+                session.last_thinking_sent_text = ""
                 session_store.save_session(session)
                 continue
             flush_buffer(

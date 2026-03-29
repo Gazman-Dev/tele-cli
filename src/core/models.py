@@ -151,6 +151,8 @@ class SessionRecord:
     streaming_output_text: str = ""
     streaming_phase: str = ""
     thinking_message_text: str = ""
+    thinking_history_text: str = ""
+    last_thinking_sent_text: str = ""
     pending_output_text: str = ""
     queued_user_input_text: str = ""
     pending_output_updated_at: Optional[str] = None

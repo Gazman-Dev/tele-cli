@@ -170,6 +170,7 @@ def send_telegram_message(
     *,
     topic_id: int | None = None,
     parse_mode: str | None = None,
+    disable_notification: bool = False,
     allow_plain_fallback: bool = False,
     plain_fallback_text: str | None = None,
     fallback_parse_mode: str | None = None,
@@ -184,13 +185,23 @@ def send_telegram_message(
             topic_id=topic_id,
             text_chars=len(text),
             parse_mode=parse_mode,
+            disable_notification=disable_notification,
             **context,
         )
     try:
         try:
-            result = telegram.send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
+            result = telegram.send_message(
+                chat_id,
+                text,
+                topic_id=topic_id,
+                parse_mode=parse_mode,
+                disable_notification=disable_notification,
+            )
         except TypeError:
-            result = telegram.send_message(chat_id, text)
+            try:
+                result = telegram.send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
+            except TypeError:
+                result = telegram.send_message(chat_id, text)
     except Exception as exc:
         if allow_plain_fallback and parse_mode:
             fallback_text = plain_fallback_text if plain_fallback_text is not None else text
@@ -202,6 +213,7 @@ def send_telegram_message(
                 text_chars=len(fallback_text),
                 parse_mode=parse_mode,
                 fallback_parse_mode=fallback_parse_mode,
+                disable_notification=disable_notification,
                 error=str(exc),
                 **context,
             )
@@ -222,6 +234,7 @@ def send_telegram_message(
                 topic_id=topic_id,
                 text_chars=len(text),
                 parse_mode=parse_mode,
+                disable_notification=disable_notification,
                 duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
                 error=str(exc),
                 **context,
@@ -234,6 +247,7 @@ def send_telegram_message(
             topic_id=topic_id,
             text_chars=len(text),
             parse_mode=parse_mode,
+            disable_notification=disable_notification,
             duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
             **context,
         )
