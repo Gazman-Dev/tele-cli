@@ -101,6 +101,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
+        session.last_user_message_at = "2026-03-29T00:00:00+00:00"
         store.save_session(session)
         telegram = FakeTelegramClient()
         codex = FakeCodex()
@@ -128,6 +129,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
+        session.last_user_message_at = "2026-03-29T00:00:00+00:00"
         store.save_session(session)
         telegram = FakeTelegramClient()
         codex = FakeCodex()
