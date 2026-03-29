@@ -363,6 +363,17 @@ def _clear_streaming_messages(telegram: TelegramClient | None, chat_id: int | No
     _set_streaming_message_ids(session, [])
 
 
+def _build_final_rendered_chunks(*, answer_html: str, thinking_html: str) -> list[str]:
+    answer_chunks = _split_telegram_html_text(answer_html)
+    if not thinking_html:
+        return answer_chunks
+    if not answer_chunks:
+        return [thinking_html]
+    if len(thinking_html) + 2 + len(answer_chunks[0]) <= TELEGRAM_TEXT_LIMIT:
+        return [f"{thinking_html}\n\n{answer_chunks[0]}"] + answer_chunks[1:]
+    return [thinking_html] + answer_chunks
+
+
 def start_telegram_polling_thread(
     *,
     paths: AppPaths,
@@ -1532,11 +1543,12 @@ def flush_buffer(
     thinking_html = render_collapsed_thinking_html(_thinking_history_entries(session))
     final_html = answer_html if not thinking_html else f"{thinking_html}\n\n{answer_html}"
     rendered_attempts = [
-        ("formatted_html", _split_telegram_html_text(final_html)),
+        ("formatted_html", _build_final_rendered_chunks(answer_html=answer_html, thinking_html=thinking_html)),
         (
             "escaped_html",
-            _split_telegram_html_text(
-                escape_telegram_html(text) if not thinking_html else f"{thinking_html}\n\n{escape_telegram_html(text)}"
+            _build_final_rendered_chunks(
+                answer_html=escape_telegram_html(text),
+                thinking_html=thinking_html,
             ),
         ),
     ]

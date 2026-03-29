@@ -199,7 +199,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
                 (
                     22,
                     1,
-                    "<blockquote expandable>Checking repo\n\n<pre><code class=\"language-bash\">git status --short</code></pre></blockquote>\n\n<b>Title</b>\n<b>done</b>",
+                    "<blockquote expandable>Checking repo\n\ngit status --short</blockquote>\n\n<b>Title</b>\n<b>done</b>",
                 )
             ],
         )
@@ -306,6 +306,37 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         refreshed = store.get_or_create_telegram_session(auth)
         self.assertEqual(refreshed.streaming_message_ids, [])
         self.assertIsNone(refreshed.streaming_message_id)
+
+    def test_collapsed_thinking_strips_code_blocks_and_stays_single_block(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.streaming_message_ids = [1]
+        session.pending_output_text = "answer text " * 40
+        session.thinking_history_order = ["commentary:msg-1", "command:cmd-1"]
+        session.thinking_history_by_source = {
+            "commentary:msg-1": "Checking [job.ts](/tmp/job.ts#L123)",
+            "command:cmd-1": "__tele_cli_command__:git status --short",
+        }
+        session.thinking_history_text = "Checking [job.ts](/tmp/job.ts#L123)\n__tele_cli_command__:git status --short"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        original_limit = service_module.TELEGRAM_TEXT_LIMIT
+        try:
+            service_module.TELEGRAM_TEXT_LIMIT = 80
+            flush_buffer(session.session_id, auth, telegram, self.recorder, store, mark_agent=True)
+        finally:
+            service_module.TELEGRAM_TEXT_LIMIT = original_limit
+
+        rendered_texts = [text for _, _, text in telegram.edits] + [text for _, text in telegram.messages]
+        combined = "\n".join(rendered_texts)
+        self.assertEqual(combined.count("<blockquote expandable>"), 1)
+        self.assertNotIn("<pre><code", combined)
 
 
 if __name__ == "__main__":

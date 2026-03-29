@@ -134,17 +134,40 @@ def render_telegram_progress_html(text: str | None) -> str:
     return to_telegram_html(body)
 
 
-def render_collapsed_thinking_html(thinking_history: str | list[str] | None) -> str:
+def _strip_disallowed_collapsed_html(text: str) -> str:
+    stripped = re.sub(r"<pre><code[^>]*>(.*?)</code></pre>", r"\1", text, flags=re.DOTALL | re.IGNORECASE)
+    stripped = re.sub(r"</?code[^>]*>", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r"</?(?:u|ins|s|strike|del|tg-spoiler|tg-emoji|tg-time)[^>]*>", "", stripped, flags=re.IGNORECASE)
+    return stripped
+
+
+def _truncate_collapsed_html(text: str, max_chars: int) -> str:
+    normalized = text.strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    truncated = normalized[: max_chars - 1].rstrip()
+    split_at = truncated.rfind("\n\n")
+    if split_at > max_chars // 2:
+        truncated = truncated[:split_at].rstrip()
+    return f"{truncated}…"
+
+
+def render_collapsed_thinking_html(
+    thinking_history: str | list[str] | None,
+    *,
+    max_chars: int = 1200,
+) -> str:
     if isinstance(thinking_history, list):
         thinking_entries = [entry.strip() for entry in thinking_history if isinstance(entry, str) and entry.strip()]
     else:
         thinking_entries = [line.strip() for line in (thinking_history or "").split("\n") if line.strip()]
     if not thinking_entries:
         return ""
-    rendered_entries = [render_telegram_progress_html(entry) for entry in thinking_entries]
+    rendered_entries = [_strip_disallowed_collapsed_html(render_telegram_progress_html(entry)) for entry in thinking_entries]
     thinking_body = "\n\n".join(entry for entry in rendered_entries if entry.strip())
     if not thinking_body:
         return ""
+    thinking_body = _truncate_collapsed_html(thinking_body, max_chars=max_chars)
     return f"<blockquote expandable>{thinking_body}</blockquote>"
 
 
