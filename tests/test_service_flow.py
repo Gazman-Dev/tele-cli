@@ -383,6 +383,63 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(started_codex.sent_topics, [77])
         self.assertEqual(telegram.messages, [])
 
+    def test_regular_update_resets_topic_session_after_thread_id_request_failure(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth, topic_id=77)
+        session.thread_id = "thread-stale"
+        session.active_turn_id = "turn-stale"
+        session.streaming_message_id = 9
+        session.streaming_output_text = "partial"
+        session.thinking_message_text = "Thinking"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+
+        class BrokenCodex:
+            def send(self, text: str, topic_id: int | None = None, chat_id: int | None = None, user_id: int | None = None):
+                raise RuntimeError("{'code': -32600, 'message': 'Invalid request: missing field `threadId`'}")
+
+        telegram = FakeTelegramClient()
+        update = {
+            "update_id": 14,
+            "message": {"chat": {"id": 22}, "from": {"id": 11}, "message_thread_id": 77, "text": "retry"},
+        }
+
+        with patch("runtime.service.save_json"):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=BrokenCodex(),
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIsInstance(returned, BrokenCodex)
+        refreshed = store.get_current_telegram_session(auth, 77)
+        self.assertIsNotNone(refreshed)
+        assert refreshed is not None
+        self.assertIsNone(refreshed.thread_id)
+        self.assertIsNone(refreshed.active_turn_id)
+        self.assertEqual(refreshed.streaming_output_text, "")
+        self.assertEqual(refreshed.thinking_message_text, "")
+        self.assertEqual(refreshed.status, "ACTIVE")
+        self.assertEqual(
+            telegram.messages,
+            [(22, "Codex request failed: {'code': -32600, 'message': 'Invalid request: missing field `threadId`'}", 77)],
+        )
+
     def test_regular_update_is_blocked_while_session_is_recovering(self) -> None:
         auth = AuthState(
             bot_token="token",

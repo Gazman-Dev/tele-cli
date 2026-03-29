@@ -462,6 +462,33 @@ def restart_codex_runtime(
     return restarted
 
 
+def reset_session_after_request_failure(
+    session_store: SessionStore | None,
+    auth: AuthState,
+    *,
+    topic_id: int | None,
+    error_text: str,
+) -> None:
+    if session_store is None:
+        return
+    session = session_store.get_current_telegram_session(auth, topic_id)
+    if session is None:
+        return
+    session.active_turn_id = None
+    session.pending_output_text = ""
+    session.pending_output_updated_at = None
+    session.streaming_message_id = None
+    session.thinking_message_id = None
+    session.streaming_output_text = ""
+    session.streaming_phase = ""
+    session.thinking_message_text = ""
+    session.status = "ACTIVE"
+    if "threadId" in error_text or "thread id" in error_text.lower():
+        session.thread_id = None
+        session.last_completed_turn_id = None
+    session_store.save_session(session)
+
+
 def extract_update_topic_id(update: dict) -> int | None:
     message = update.get("message") or {}
     topic_id = message.get("message_thread_id")
@@ -1982,6 +2009,7 @@ def handle_authorized_message(
                 send_result = codex.send(text)
                 recovered_from_stale_turn = bool(send_result)
             except Exception as exc:
+                reset_session_after_request_failure(session_store, auth, topic_id=topic_id, error_text=str(exc))
                 if performance is not None and session_id is not None:
                     performance.mark_turn_failed(session_id, error=str(exc))
                 send_telegram_message(
@@ -1994,6 +2022,7 @@ def handle_authorized_message(
                 )
                 return
         except Exception as exc:
+            reset_session_after_request_failure(session_store, auth, topic_id=topic_id, error_text=str(exc))
             if performance is not None and session_id is not None:
                 performance.mark_turn_failed(session_id, error=str(exc))
             send_telegram_message(
@@ -2006,6 +2035,7 @@ def handle_authorized_message(
             )
             return
     except Exception as exc:
+        reset_session_after_request_failure(session_store, auth, topic_id=topic_id, error_text=str(exc))
         if performance is not None and session_id is not None:
             performance.mark_turn_failed(session_id, error=str(exc))
         send_telegram_message(
