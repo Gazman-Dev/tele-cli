@@ -801,24 +801,7 @@ def maybe_stream_partial_output(
     now: datetime | None = None,
     min_interval_seconds: float = 0.6,
 ) -> None:
-    combined = f"{session.streaming_output_text}{session.pending_output_text}".strip()
-    if not combined:
-        return
-    if session.streaming_output_text:
-        last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
-        now = now or datetime.now(timezone.utc)
-        if last_sent_at is not None and (now - last_sent_at).total_seconds() < min_interval_seconds:
-            return
-    flush_buffer(
-        session.session_id,
-        auth,
-        telegram,
-        recorder,
-        session_store,
-        mark_agent=False,
-        stream_format=True,
-        performance=performance,
-    )
+    return
 
 
 def replace_pending_output(session_store: SessionStore, session, text: str) -> None:
@@ -935,6 +918,28 @@ def _thinking_history_entries(session) -> list[str]:
     return [line for line in session.thinking_history_text.split("\n") if line.strip()]
 
 
+def _current_live_thinking_entries(session) -> list[str]:
+    ordered: list[str] = []
+    for source_key in session.thinking_history_order:
+        text = session.thinking_live_texts.get(source_key, "").strip()
+        if text:
+            ordered.append(text)
+    for source_key, text in session.thinking_live_texts.items():
+        normalized = text.strip()
+        if normalized and source_key not in session.thinking_history_order:
+            ordered.append(normalized)
+    return ordered
+
+
+def _render_live_thinking_html(session) -> str:
+    entries = _current_live_thinking_entries(session)
+    if not entries:
+        return ""
+    rendered_entries = [render_telegram_progress_html(entry) for entry in entries]
+    rendered_entries = [entry.strip() for entry in rendered_entries if entry.strip()]
+    return "\n\n".join(rendered_entries)
+
+
 def _record_thinking_history(session, source_key: str, text: str) -> None:
     normalized = text.strip()
     if not normalized:
@@ -1019,22 +1024,22 @@ def set_visible_thinking_message(
     if not _is_meaningful_live_thinking_text(current_text):
         session_store.save_session(session)
         return
-    rendered = render_telegram_progress_html(current_text)
-    if not rendered.strip():
-        session_store.save_session(session)
-        return
     effective_source = source_key or f"misc:{uuid.uuid4()}"
     _record_thinking_history(session, effective_source, current_text)
     previous_text = session.thinking_sent_texts.get(effective_source, "").strip()
     if previous_text == current_text:
         session_store.save_session(session)
         return
-    message_id = session.thinking_live_message_ids.get(effective_source)
     throttle_key = f"{session.session_id}:{effective_source}"
     now_monotonic = time.monotonic()
     last_sent_at = _THINKING_SOURCE_LAST_SENT_AT.get(throttle_key)
     if last_sent_at is not None and (now_monotonic - last_sent_at) < min_interval_seconds:
         session.thinking_live_texts[effective_source] = current_text
+        session_store.save_session(session)
+        return
+    session.thinking_live_texts[effective_source] = current_text
+    rendered = _render_live_thinking_html(session)
+    if not rendered.strip():
         session_store.save_session(session)
         return
     context = {
@@ -1045,11 +1050,11 @@ def set_visible_thinking_message(
     }
     _THINKING_SOURCE_LAST_SENT_AT[throttle_key] = now_monotonic
     try:
-        if isinstance(message_id, int):
+        if isinstance(session.streaming_message_id, int):
             edit_telegram_message(
                 telegram,
                 target_chat_id,
-                message_id,
+                session.streaming_message_id,
                 rendered,
                 parse_mode=TELEGRAM_PARSE_MODE,
                 performance=performance,
@@ -1067,16 +1072,13 @@ def set_visible_thinking_message(
                 **context,
             )
             if isinstance(message_id, int):
-                session.thinking_live_message_ids[effective_source] = message_id
-                if message_id not in session.thinking_message_ids:
-                    session.thinking_message_ids.append(message_id)
-        session.thinking_message_id = message_id if isinstance(message_id, int) else session.thinking_message_id
+                session.streaming_message_id = message_id
     except TelegramError:
         session_store.save_session(session)
         return
-    session.thinking_live_texts[effective_source] = current_text
     session.thinking_sent_texts[effective_source] = current_text
     session.last_thinking_sent_text = current_text
+    session.thinking_message_text = rendered
     session_store.mark_agent_message(session)
     session_store.save_session(session)
 
@@ -1089,13 +1091,6 @@ def clear_thinking_message(
     *,
     performance: PerformanceTracker | None = None,
 ) -> None:
-    target_chat_id = session.transport_chat_id or auth.telegram_chat_id
-    if target_chat_id:
-        for message_id in list(session.thinking_message_ids):
-            try:
-                telegram.delete_message(target_chat_id, message_id)
-            except TelegramError:
-                pass
     prefix = f"{session.session_id}:"
     for key in [key for key in _THINKING_SOURCE_LAST_SENT_AT if key.startswith(prefix)]:
         _THINKING_SOURCE_LAST_SENT_AT.pop(key, None)
@@ -1370,48 +1365,39 @@ def flush_buffer(
         "turn_id": session.active_turn_id or session.last_completed_turn_id,
     }
     if not mark_agent:
-        recorder.record("assistant", text)
-        session.streaming_output_text = text
-        session_store.mark_delivered_output(session, text)
-        session_store.mark_agent_message(session)
-        session_store.consume_pending_output(session)
         session_store.save_session(session)
         return
 
-    thinking_html = render_collapsed_thinking_html(_thinking_history_entries(session))
     answer_html = text.strip() if looks_like_telegram_html(text) else to_telegram_html(text)
-    thinking_sent = False
-    if thinking_html:
-        try:
-            for chunk in split_telegram_text(thinking_html):
-                send_telegram_message(
-                    telegram,
-                    target_chat_id,
-                    chunk,
-                    topic_id=session.transport_topic_id,
-                    parse_mode=TELEGRAM_PARSE_MODE,
-                    disable_notification=True,
-                    **context,
-                )
-            thinking_sent = True
-        except TelegramError:
-            thinking_sent = False
-    if not thinking_html or thinking_sent:
-        clear_thinking_message(auth, telegram, session_store, session, performance=performance)
-    formatted_chunks = split_telegram_text(answer_html)
-    escaped_chunks = split_telegram_text(escape_telegram_html(text))
+    thinking_html = render_collapsed_thinking_html(_thinking_history_entries(session))
+    final_html = answer_html if not thinking_html else f"{thinking_html}\n\n{answer_html}"
+    rendered_attempts = [
+        ("formatted_html", final_html),
+        ("escaped_html", escape_telegram_html(text) if not thinking_html else f"{thinking_html}\n\n{escape_telegram_html(text)}"),
+    ]
     delivered = False
-    for stage, attempt_chunks in (("formatted_html", formatted_chunks), ("escaped_html", escaped_chunks)):
+    for stage, rendered_text in rendered_attempts:
         try:
-            for chunk in attempt_chunks:
-                send_telegram_message(
+            if isinstance(session.streaming_message_id, int):
+                edit_telegram_message(
                     telegram,
                     target_chat_id,
-                    chunk,
+                    session.streaming_message_id,
+                    rendered_text,
+                    parse_mode=TELEGRAM_PARSE_MODE,
+                    **context,
+                )
+            else:
+                message_id = send_telegram_message(
+                    telegram,
+                    target_chat_id,
+                    rendered_text,
                     topic_id=session.transport_topic_id,
                     parse_mode=TELEGRAM_PARSE_MODE,
                     **context,
                 )
+                if isinstance(message_id, int):
+                    session.streaming_message_id = message_id
             delivered = True
             break
         except TelegramError as exc:
@@ -1423,30 +1409,23 @@ def flush_buffer(
                 stage=stage,
                 error=str(exc),
                 raw_text=text,
-                rich_text=answer_html,
-                escaped_text=escape_telegram_html(text),
+                rich_text=final_html,
+                escaped_text=rendered_attempts[-1][1],
                 emergency_text=None,
             )
     if not delivered:
         raise TelegramError("All Telegram HTML delivery attempts failed.")
-    if thinking_html and not thinking_sent:
-        clear_thinking_message(auth, telegram, session_store, session, performance=performance)
+    clear_thinking_message(auth, telegram, session_store, session, performance=performance)
     recorder.record("assistant", text)
-    session.streaming_message_id = None
     session.streaming_output_text = ""
     session.streaming_phase = ""
     session.last_thinking_sent_text = ""
-    session.thinking_message_ids = []
-    session.thinking_live_message_ids = {}
-    session.thinking_live_texts = {}
-    session.thinking_sent_texts = {}
     session_store.mark_delivered_output(session, text)
     session_store.mark_agent_message(session)
     session.thinking_history_text = ""
     session.thinking_history_order = []
     session.thinking_history_by_source = {}
     session.thinking_message_text = ""
-    session.thinking_message_id = None
     session_store.save_session(session)
     session_store.consume_pending_output(session)
     pruned = session_store.prune_detached_sessions()

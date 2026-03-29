@@ -122,18 +122,16 @@ def _thinking_title_and_body(text: str | None) -> tuple[str, str]:
 
 def render_telegram_progress_html(text: str | None) -> str:
     title, body = _thinking_title_and_body(text)
-    if not body:
-        return f"<b>{title}</b>"
-    if body == title:
-        return f"<b>{title}</b>"
+    if not body or body == title:
+        return ""
     if title == "Running":
         command, _, output = body.partition("\n\n")
         command_html = escape_telegram_html(command)
-        rendered = f"<b>{title}</b>\n\n<pre><code class=\"language-bash\">{command_html}</code></pre>"
+        rendered = f"<pre><code class=\"language-bash\">{command_html}</code></pre>"
         if output.strip():
             rendered = f"{rendered}\n\n{to_telegram_html(output)}"
         return rendered
-    return f"<b>{title}</b>\n\n{to_telegram_html(body)}"
+    return to_telegram_html(body)
 
 
 def render_collapsed_thinking_html(thinking_history: str | list[str] | None) -> str:
@@ -143,16 +141,11 @@ def render_collapsed_thinking_html(thinking_history: str | list[str] | None) -> 
         thinking_entries = [line.strip() for line in (thinking_history or "").split("\n") if line.strip()]
     if not thinking_entries:
         return ""
-    normalized_entries: list[str] = []
-    for entry in thinking_entries:
-        if entry.startswith(_COMMAND_ACTIVITY_PREFIX):
-            normalized_entries.append(f"Running\n\n{entry[len(_COMMAND_ACTIVITY_PREFIX):].strip()}")
-        else:
-            normalized_entries.append(f"Thinking\n\n{entry}")
-    thinking_body = escape_telegram_html("\n\n".join(entry for entry in normalized_entries if entry.strip()))
+    rendered_entries = [render_telegram_progress_html(entry) for entry in thinking_entries]
+    thinking_body = "\n\n".join(entry for entry in rendered_entries if entry.strip())
     if not thinking_body:
         return ""
-    return f"<b>Thinking</b>\n<blockquote expandable>{thinking_body}</blockquote>"
+    return f"<blockquote expandable>{thinking_body}</blockquote>"
 
 
 def render_final_telegram_html(*, answer_text: str, thinking_history_text: str | None) -> str:
