@@ -62,6 +62,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         refreshed = store.get_or_create_telegram_session(auth)
         self.assertEqual(refreshed.thinking_message_id, 1)
         self.assertEqual(refreshed.thinking_message_ids, [1])
+        self.assertEqual(refreshed.thinking_live_message_ids, {"reasoning:current": 1})
 
     def test_short_token_delta_does_not_send_live_thinking_message(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
@@ -90,7 +91,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         self.assertEqual(refreshed.thinking_message_text, "I")
         self.assertIsNone(refreshed.thinking_message_id)
 
-    def test_second_thinking_update_sends_another_message(self) -> None:
+    def test_second_thinking_update_edits_existing_message_for_same_source(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
         store = SessionStore(self.paths)
         session = store.get_or_create_telegram_session(auth)
@@ -109,15 +110,48 @@ class TelegramHtmlFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
+        self.assertEqual(telegram.messages, [(22, "<b>Thinking</b>\n\nChecking logs")])
+        self.assertEqual(telegram.edits, [(22, 1, "<b>Thinking</b>\n\nChecking logs and config")])
+        refreshed = store.get_or_create_telegram_session(auth)
+        self.assertEqual(refreshed.thinking_message_ids, [1])
+
+    def test_interleaved_commentary_and_command_keep_separate_live_messages(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification(
+                    "item/started",
+                    {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "msg-1", "type": "agentMessage", "phase": "commentary", "text": ""}},
+                ),
+                Notification("item/agentMessage/delta", {"threadId": "thread-1", "turnId": "turn-1", "itemId": "msg-1", "delta": "Checking repo state"}),
+                Notification(
+                    "item/started",
+                    {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "cmd-1", "type": "commandExecution", "command": "git status --short"}},
+                ),
+                Notification("item/agentMessage/delta", {"threadId": "thread-1", "turnId": "turn-1", "itemId": "msg-1", "delta": " and package config"}),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
         self.assertEqual(
             telegram.messages,
             [
-                (22, "<b>Thinking</b>\n\nChecking logs"),
-                (22, "<b>Thinking</b>\n\nChecking logs and config"),
+                (22, "<b>Thinking</b>\n\nChecking repo state"),
+                (22, '<b>Running</b>\n\n<pre><code class="language-bash">git status --short</code></pre>'),
             ],
         )
+        self.assertEqual(telegram.edits, [(22, 1, "<b>Thinking</b>\n\nChecking repo state and package config")])
         refreshed = store.get_or_create_telegram_session(auth)
-        self.assertEqual(refreshed.thinking_message_ids, [1, 2])
+        self.assertEqual(set(refreshed.thinking_live_message_ids.keys()), {"commentary:msg-1", "command:cmd-1"})
 
     def test_final_reply_includes_collapsed_thinking_block(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
@@ -129,6 +163,12 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         session.pending_output_text = "# Title\n**done**"
         session.thinking_message_id = 2
         session.thinking_message_ids = [1, 2]
+        session.thinking_live_message_ids = {"commentary:msg-1": 1, "command:cmd-1": 2}
+        session.thinking_history_order = ["commentary:msg-1", "command:cmd-1"]
+        session.thinking_history_by_source = {
+            "commentary:msg-1": "Checking repo",
+            "command:cmd-1": "__tele_cli_command__:git status --short",
+        }
         session.thinking_history_text = "Checking repo\n__tele_cli_command__:git status --short"
         store.save_session(session)
         telegram = FakeTelegramClient()
@@ -149,6 +189,7 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         )
         refreshed = store.get_or_create_telegram_session(auth)
         self.assertEqual(refreshed.thinking_message_ids, [])
+        self.assertEqual(refreshed.thinking_live_message_ids, {})
 
     def test_final_reply_falls_back_to_escaped_html(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")

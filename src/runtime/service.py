@@ -480,6 +480,10 @@ def reset_session_after_request_failure(
     session.streaming_message_id = None
     session.thinking_message_id = None
     session.thinking_message_ids = []
+    session.thinking_live_message_ids = {}
+    session.thinking_live_texts = {}
+    session.thinking_history_order = []
+    session.thinking_history_by_source = {}
     session.streaming_output_text = ""
     session.streaming_phase = ""
     session.thinking_message_text = ""
@@ -918,6 +922,65 @@ def extract_thinking_body(text: str | None) -> str:
     return value
 
 
+def _thinking_history_entries(session) -> list[str]:
+    ordered: list[str] = []
+    for source_key in session.thinking_history_order:
+        text = session.thinking_history_by_source.get(source_key, "").strip()
+        if text:
+            ordered.append(text)
+    if ordered:
+        return ordered
+    return [line for line in session.thinking_history_text.split("\n") if line.strip()]
+
+
+def _record_thinking_history(session, source_key: str, text: str) -> None:
+    normalized = text.strip()
+    if not normalized:
+        return
+    if source_key not in session.thinking_history_order:
+        session.thinking_history_order.append(source_key)
+    session.thinking_history_by_source[source_key] = normalized
+    session.thinking_history_text = "\n".join(_thinking_history_entries(session))
+
+
+def derive_thinking_source_key(
+    method: str,
+    params: dict,
+    *,
+    agent_message_phase: str | None = None,
+    activity_text: str | None = None,
+    status_text: str | None = None,
+    thinking_text: str | None = None,
+) -> str | None:
+    item = params.get("item") if isinstance(params.get("item"), dict) else {}
+    item_type = str(item.get("type") or "")
+    item_id = params.get("itemId") or item.get("id")
+    turn_id = params.get("turnId") or params.get("turn_id") or ""
+    if agent_message_phase == "commentary":
+        identifier = item_id or turn_id or "current"
+        return f"commentary:{identifier}"
+    if method.startswith("item/reasoning") or item_type.lower() in {"reasoning", "thinking", "thought", "reasoningsummary"}:
+        identifier = item_id or turn_id or "current"
+        return f"reasoning:{identifier}"
+    if activity_text:
+        if method == "item/commandExecution/outputDelta":
+            identifier = item_id or turn_id or "current"
+            return f"command-output:{identifier}"
+        if item_type == "commandExecution":
+            identifier = item_id or turn_id or "current"
+            return f"command:{identifier}"
+        if item_type:
+            identifier = item_id or turn_id or "current"
+            return f"activity:{item_type}:{identifier}"
+        return f"activity:{method}:{turn_id or 'current'}"
+    if thinking_text:
+        identifier = item_id or turn_id or "current"
+        return f"thinking:{identifier}"
+    if status_text:
+        return f"status:{status_text.lower()}"
+    return None
+
+
 def _is_meaningful_live_thinking_text(text: str | None) -> bool:
     body = (text or "").strip()
     if not body:
@@ -941,6 +1004,7 @@ def set_visible_thinking_message(
     session,
     *,
     text: str | None = None,
+    source_key: str | None = None,
     performance: PerformanceTracker | None = None,
     min_interval_seconds: float = DEFAULT_THINKING_STREAM_MIN_INTERVAL_SECONDS,
 ) -> None:
@@ -957,34 +1021,50 @@ def set_visible_thinking_message(
     if not rendered.strip():
         session_store.save_session(session)
         return
-    if session.last_thinking_sent_text.strip() == current_text:
+    effective_source = source_key or f"misc:{uuid.uuid4()}"
+    _record_thinking_history(session, effective_source, current_text)
+    previous_text = session.thinking_live_texts.get(effective_source, "").strip()
+    if previous_text == current_text:
         session_store.save_session(session)
         return
-    history_lines = [line for line in session.thinking_history_text.split("\n") if line.strip()]
-    if current_text and (not history_lines or history_lines[-1] != current_text):
-        history_lines.append(current_text)
-        session.thinking_history_text = "\n".join(history_lines)
+    message_id = session.thinking_live_message_ids.get(effective_source)
+    context = {
+        "category": "thinking_output",
+        "session_id": session.session_id,
+        "thread_id": session.thread_id,
+        "turn_id": session.active_turn_id or session.last_completed_turn_id,
+    }
     try:
-        message_id = send_telegram_message(
-            telegram,
-            target_chat_id,
-            rendered,
-            topic_id=session.transport_topic_id,
-            parse_mode=TELEGRAM_PARSE_MODE,
-            disable_notification=True,
-            performance=performance,
-            category="thinking_output",
-            session_id=session.session_id,
-            thread_id=session.thread_id,
-            turn_id=session.active_turn_id or session.last_completed_turn_id,
-        )
-        session.thinking_message_id = message_id
         if isinstance(message_id, int):
-            session.thinking_message_ids.append(message_id)
+            edit_telegram_message(
+                telegram,
+                target_chat_id,
+                message_id,
+                rendered,
+                parse_mode=TELEGRAM_PARSE_MODE,
+                performance=performance,
+                **context,
+            )
+        else:
+            message_id = send_telegram_message(
+                telegram,
+                target_chat_id,
+                rendered,
+                topic_id=session.transport_topic_id,
+                parse_mode=TELEGRAM_PARSE_MODE,
+                disable_notification=True,
+                performance=performance,
+                **context,
+            )
+            if isinstance(message_id, int):
+                session.thinking_live_message_ids[effective_source] = message_id
+                if message_id not in session.thinking_message_ids:
+                    session.thinking_message_ids.append(message_id)
+        session.thinking_message_id = message_id if isinstance(message_id, int) else session.thinking_message_id
     except TelegramError:
-        session.thinking_message_id = None
         session_store.save_session(session)
         return
+    session.thinking_live_texts[effective_source] = current_text
     session.last_thinking_sent_text = current_text
     session_store.mark_agent_message(session)
     session_store.save_session(session)
@@ -1007,6 +1087,8 @@ def clear_thinking_message(
                 pass
     session.thinking_message_id = None
     session.thinking_message_ids = []
+    session.thinking_live_message_ids = {}
+    session.thinking_live_texts = {}
     session.thinking_message_text = ""
     session.last_thinking_sent_text = ""
     session_store.save_session(session)
@@ -1052,11 +1134,13 @@ def append_thinking_delta(
     session,
     delta: str,
     *,
+    source_key: str | None = None,
     performance: PerformanceTracker | None = None,
 ) -> None:
     if not delta:
         return
-    existing_text = session.thinking_message_text or extract_thinking_body(session.streaming_output_text)
+    effective_source = source_key or "thinking:current"
+    existing_text = session.thinking_live_texts.get(effective_source, "") or session.thinking_message_text or extract_thinking_body(session.streaming_output_text)
     if existing_text:
         separator = ""
         if (
@@ -1067,6 +1151,7 @@ def append_thinking_delta(
         next_text = f"{existing_text}{separator}{delta}"
     else:
         next_text = delta
+    session.thinking_live_texts[effective_source] = next_text.strip() or next_text
     ensure_thinking_message(auth, telegram, session, text=next_text.strip() or next_text, performance=performance)
 
 
@@ -1241,10 +1326,14 @@ def flush_buffer(
             session.streaming_message_id = None
             session.thinking_message_id = None
             session.thinking_message_ids = []
+            session.thinking_live_message_ids = {}
+            session.thinking_live_texts = {}
             session.streaming_output_text = ""
             session.streaming_phase = ""
             session.thinking_message_text = ""
             session.thinking_history_text = ""
+            session.thinking_history_order = []
+            session.thinking_history_by_source = {}
             session.last_thinking_sent_text = ""
             session_store.save_session(session)
         session_store.consume_pending_output(session)
@@ -1269,7 +1358,7 @@ def flush_buffer(
         return
 
     clear_thinking_message(auth, telegram, session_store, session, performance=performance)
-    thinking_html = render_collapsed_thinking_html(session.thinking_history_text)
+    thinking_html = render_collapsed_thinking_html(_thinking_history_entries(session))
     answer_html = text.strip() if looks_like_telegram_html(text) else to_telegram_html(text)
     if thinking_html:
         for chunk in split_telegram_text(thinking_html):
@@ -1319,9 +1408,13 @@ def flush_buffer(
     session.streaming_phase = ""
     session.last_thinking_sent_text = ""
     session.thinking_message_ids = []
+    session.thinking_live_message_ids = {}
+    session.thinking_live_texts = {}
     session_store.mark_delivered_output(session, text)
     session_store.mark_agent_message(session)
     session.thinking_history_text = ""
+    session.thinking_history_order = []
+    session.thinking_history_by_source = {}
     session.thinking_message_text = ""
     session.thinking_message_id = None
     session_store.save_session(session)
@@ -1683,10 +1776,14 @@ def handle_authorized_message(
         session.streaming_message_id = None
         session.thinking_message_id = None
         session.thinking_message_ids = []
+        session.thinking_live_message_ids = {}
+        session.thinking_live_texts = {}
         session.streaming_output_text = ""
         session.streaming_phase = ""
         session.thinking_message_text = ""
         session.thinking_history_text = ""
+        session.thinking_history_order = []
+        session.thinking_history_by_source = {}
         session.last_thinking_sent_text = ""
         session.status = "ACTIVE"
         session_store.save_session(session)
@@ -2263,7 +2360,20 @@ def drain_codex_notifications(
         session = resolve_notification_session(session_store, auth, params)
         thinking_delta = extract_thinking_delta(method, params)
         if session is not None and thinking_delta is not None:
-            append_thinking_delta(auth, telegram, session, thinking_delta, performance=performance)
+            thinking_source_key = derive_thinking_source_key(
+                method,
+                params,
+                agent_message_phase=agent_message_phase,
+                thinking_text=thinking_delta,
+            )
+            append_thinking_delta(
+                auth,
+                telegram,
+                session,
+                thinking_delta,
+                source_key=thinking_source_key,
+                performance=performance,
+            )
             session_store.save_session(session)
             set_visible_thinking_message(
                 auth,
@@ -2272,6 +2382,7 @@ def drain_codex_notifications(
                 session_store,
                 session,
                 text=session.thinking_message_text,
+                source_key=thinking_source_key,
                 performance=performance,
             )
             continue
@@ -2290,6 +2401,11 @@ def drain_codex_notifications(
             if session is not None and commentary_text:
                 if performance is not None:
                     performance.mark_reply_started(session, trigger=method)
+                commentary_source_key = derive_thinking_source_key(
+                    method,
+                    params,
+                    agent_message_phase=agent_message_phase,
+                )
                 set_visible_thinking_message(
                     auth,
                     telegram,
@@ -2297,6 +2413,7 @@ def drain_codex_notifications(
                     session_store,
                     session,
                     text=commentary_text,
+                    source_key=commentary_source_key,
                     performance=performance,
                     min_interval_seconds=COMMENTARY_STREAM_MIN_INTERVAL_SECONDS,
                 )
@@ -2341,6 +2458,11 @@ def drain_codex_notifications(
                             performance=performance,
                         )
             elif session is not None and thinking_text:
+                thinking_source_key = derive_thinking_source_key(
+                    method,
+                    params,
+                    thinking_text=thinking_text,
+                )
                 set_visible_thinking_message(
                     auth,
                     telegram,
@@ -2348,9 +2470,15 @@ def drain_codex_notifications(
                     session_store,
                     session,
                     text=thinking_text,
+                    source_key=thinking_source_key,
                     performance=performance,
                 )
             elif session is not None and activity_text:
+                activity_source_key = derive_thinking_source_key(
+                    method,
+                    params,
+                    activity_text=activity_text,
+                )
                 set_visible_thinking_message(
                     auth,
                     telegram,
@@ -2358,12 +2486,18 @@ def drain_codex_notifications(
                     session_store,
                     session,
                     text=activity_text,
+                    source_key=activity_source_key,
                     performance=performance,
                 )
             continue
         if session is not None:
             status_text = extract_event_driven_status(method, params)
             if status_text:
+                status_source_key = derive_thinking_source_key(
+                    method,
+                    params,
+                    status_text=status_text,
+                )
                 set_visible_thinking_message(
                     auth,
                     telegram,
@@ -2371,6 +2505,7 @@ def drain_codex_notifications(
                     session_store,
                     session,
                     text=status_text,
+                    source_key=status_source_key,
                     performance=performance,
                 )
         if method in {"account/updated", "account/ready", "login/completed"}:
@@ -2450,8 +2585,12 @@ def drain_codex_notifications(
                 session.streaming_phase = ""
                 session.thinking_message_text = ""
                 session.thinking_history_text = ""
+                session.thinking_history_order = []
+                session.thinking_history_by_source = {}
                 session.last_thinking_sent_text = ""
                 session.thinking_message_ids = []
+                session.thinking_live_message_ids = {}
+                session.thinking_live_texts = {}
                 session_store.save_session(session)
                 continue
             flush_buffer(

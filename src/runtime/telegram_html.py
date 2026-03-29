@@ -6,6 +6,7 @@ import re
 
 _PLACEHOLDER_PREFIX = "\u0000tele_cli_html_"
 _ALLOWED_HTML_TAG_RE = re.compile(r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|blockquote|tg-spoiler|tg-emoji|tg-time)\b", re.IGNORECASE)
+_COMMAND_ACTIVITY_PREFIX = "__tele_cli_command__:"
 
 
 def escape_telegram_html(text: str) -> str:
@@ -115,8 +116,8 @@ def _thinking_title_and_body(text: str | None) -> tuple[str, str]:
     body = (text or "").strip()
     if not body:
         return "Thinking", ""
-    if body.startswith("__tele_cli_command__:"):
-        return "Running", body.split(":", 1)[1].strip()
+    if body.startswith(_COMMAND_ACTIVITY_PREFIX):
+        return "Running", body[len(_COMMAND_ACTIVITY_PREFIX) :].strip()
     return "Thinking", body
 
 
@@ -127,16 +128,23 @@ def render_telegram_progress_html(text: str | None) -> str:
     if body == title:
         return f"<b>{title}</b>"
     if title == "Running":
-        command_html = escape_telegram_html(body)
-        return f"<b>{title}</b>\n\n<pre><code class=\"language-bash\">{command_html}</code></pre>"
+        command, _, output = body.partition("\n\n")
+        command_html = escape_telegram_html(command)
+        rendered = f"<b>{title}</b>\n\n<pre><code class=\"language-bash\">{command_html}</code></pre>"
+        if output.strip():
+            rendered = f"{rendered}\n\n{to_telegram_html(output)}"
+        return rendered
     return f"<b>{title}</b>\n\n{to_telegram_html(body)}"
 
 
-def render_collapsed_thinking_html(thinking_history_text: str | None) -> str:
-    thinking_lines = [line.strip() for line in (thinking_history_text or "").split("\n") if line.strip()]
-    if not thinking_lines:
+def render_collapsed_thinking_html(thinking_history: str | list[str] | None) -> str:
+    if isinstance(thinking_history, list):
+        thinking_entries = [entry.strip() for entry in thinking_history if isinstance(entry, str) and entry.strip()]
+    else:
+        thinking_entries = [line.strip() for line in (thinking_history or "").split("\n") if line.strip()]
+    if not thinking_entries:
         return ""
-    rendered_entries = [render_telegram_progress_html(line) for line in thinking_lines]
+    rendered_entries = [render_telegram_progress_html(entry) for entry in thinking_entries]
     thinking_body = "\n\n".join(entry for entry in rendered_entries if entry.strip())
     if not thinking_body:
         return ""
