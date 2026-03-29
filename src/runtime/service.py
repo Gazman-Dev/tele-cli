@@ -916,21 +916,27 @@ def set_visible_thinking_message(
     min_interval_seconds: float = DEFAULT_THINKING_STREAM_MIN_INTERVAL_SECONDS,
 ) -> None:
     ensure_thinking_message(auth, telegram, session, text=text, performance=performance)
-    session.streaming_phase = "commentary"
+    answer_text = ""
+    if session.streaming_phase == "answer":
+        answer_text = (session.streaming_output_text or session.pending_output_text).strip()
+    if answer_text:
+        session.streaming_phase = "answer"
+    else:
+        session.streaming_phase = "commentary"
     target_chat_id = session.transport_chat_id or auth.telegram_chat_id
     if not session.attached or not target_chat_id:
         return
+    rendered = render_stream_draft_text(
+        answer_text=answer_text,
+        thinking_text=session.thinking_message_text,
+    )
     if supports_telegram_message_draft(telegram, target_chat_id):
-        draft_text = render_stream_draft_text(
-            answer_text=session.streaming_output_text,
-            thinking_text=session.thinking_message_text,
-        )
-        if len(draft_text) <= TELEGRAM_TEXT_LIMIT:
+        if len(rendered) <= TELEGRAM_TEXT_LIMIT:
             send_telegram_message_draft(
                 telegram,
                 target_chat_id,
                 draft_id_for_session(session),
-                safe_stream_markdown_v2(draft_text),
+                safe_stream_markdown_v2(rendered),
                 topic_id=session.transport_topic_id,
                 parse_mode=TELEGRAM_MARKDOWN_MODE,
                 performance=performance,
@@ -942,9 +948,8 @@ def set_visible_thinking_message(
             session_store.mark_agent_message(session)
             session_store.save_session(session)
             return
-    rendered = render_thinking_message(session.thinking_message_text)
     now = datetime.now(timezone.utc)
-    if session.thinking_message_id is not None:
+    if session.streaming_message_id is not None:
         last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
         if last_sent_at is not None and (now - last_sent_at).total_seconds() < min_interval_seconds:
             session_store.save_session(session)
@@ -952,7 +957,7 @@ def set_visible_thinking_message(
         edit_telegram_message(
             telegram,
             target_chat_id,
-            session.thinking_message_id,
+            session.streaming_message_id,
             safe_stream_markdown_v2(rendered),
             parse_mode=TELEGRAM_MARKDOWN_MODE,
             performance=performance,
@@ -962,7 +967,7 @@ def set_visible_thinking_message(
             turn_id=session.active_turn_id or session.last_completed_turn_id,
         )
     else:
-        session.thinking_message_id = send_telegram_message(
+        session.streaming_message_id = send_telegram_message(
             telegram,
             target_chat_id,
             safe_stream_markdown_v2(rendered),
@@ -986,12 +991,6 @@ def clear_thinking_message(
     *,
     performance: PerformanceTracker | None = None,
 ) -> None:
-    target_chat_id = session.transport_chat_id or auth.telegram_chat_id
-    if target_chat_id and session.thinking_message_id is not None and hasattr(telegram, "delete_message"):
-        try:
-            telegram.delete_message(target_chat_id, session.thinking_message_id)
-        except Exception:
-            pass
     session.thinking_message_id = None
     session.thinking_message_text = ""
     session_store.save_session(session)
@@ -2338,9 +2337,6 @@ def drain_codex_notifications(
             elif session is not None and text:
                 if session.streaming_phase == "commentary":
                     session.streaming_phase = "answer"
-                    if session.streaming_message_id is None and session.thinking_message_id is not None:
-                        session.streaming_message_id = session.thinking_message_id
-                        session.thinking_message_id = None
                     replace_pending_output(session_store, session, text)
                     session.streaming_output_text = ""
                     session_store.save_session(session)
