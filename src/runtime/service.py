@@ -479,6 +479,7 @@ def reset_session_after_request_failure(
     session.pending_output_updated_at = None
     session.streaming_message_id = None
     session.thinking_message_id = None
+    session.thinking_message_ids = []
     session.streaming_output_text = ""
     session.streaming_phase = ""
     session.thinking_message_text = ""
@@ -956,15 +957,6 @@ def set_visible_thinking_message(
     if not rendered.strip():
         session_store.save_session(session)
         return
-    now = datetime.now(timezone.utc)
-    last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
-    if (
-        session.thinking_message_id is None
-        and last_sent_at is not None
-        and (now - last_sent_at).total_seconds() < min_interval_seconds
-    ):
-        session_store.save_session(session)
-        return
     if session.last_thinking_sent_text.strip() == current_text:
         session_store.save_session(session)
         return
@@ -973,33 +965,22 @@ def set_visible_thinking_message(
         history_lines.append(current_text)
         session.thinking_history_text = "\n".join(history_lines)
     try:
-        if session.thinking_message_id is not None:
-            edit_telegram_message(
-                telegram,
-                target_chat_id,
-                session.thinking_message_id,
-                rendered,
-                parse_mode=TELEGRAM_PARSE_MODE,
-                performance=performance,
-                category="thinking_output",
-                session_id=session.session_id,
-                thread_id=session.thread_id,
-                turn_id=session.active_turn_id or session.last_completed_turn_id,
-            )
-        else:
-            session.thinking_message_id = send_telegram_message(
-                telegram,
-                target_chat_id,
-                rendered,
-                topic_id=session.transport_topic_id,
-                parse_mode=TELEGRAM_PARSE_MODE,
-                disable_notification=True,
-                performance=performance,
-                category="thinking_output",
-                session_id=session.session_id,
-                thread_id=session.thread_id,
-                turn_id=session.active_turn_id or session.last_completed_turn_id,
-            )
+        message_id = send_telegram_message(
+            telegram,
+            target_chat_id,
+            rendered,
+            topic_id=session.transport_topic_id,
+            parse_mode=TELEGRAM_PARSE_MODE,
+            disable_notification=True,
+            performance=performance,
+            category="thinking_output",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id or session.last_completed_turn_id,
+        )
+        session.thinking_message_id = message_id
+        if isinstance(message_id, int):
+            session.thinking_message_ids.append(message_id)
     except TelegramError:
         session.thinking_message_id = None
         session_store.save_session(session)
@@ -1018,12 +999,14 @@ def clear_thinking_message(
     performance: PerformanceTracker | None = None,
 ) -> None:
     target_chat_id = session.transport_chat_id or auth.telegram_chat_id
-    if session.thinking_message_id is not None and target_chat_id:
-        try:
-            telegram.delete_message(target_chat_id, session.thinking_message_id)
-        except TelegramError:
-            pass
+    if target_chat_id:
+        for message_id in list(session.thinking_message_ids):
+            try:
+                telegram.delete_message(target_chat_id, message_id)
+            except TelegramError:
+                pass
     session.thinking_message_id = None
+    session.thinking_message_ids = []
     session.thinking_message_text = ""
     session.last_thinking_sent_text = ""
     session_store.save_session(session)
@@ -1257,6 +1240,7 @@ def flush_buffer(
         if mark_agent:
             session.streaming_message_id = None
             session.thinking_message_id = None
+            session.thinking_message_ids = []
             session.streaming_output_text = ""
             session.streaming_phase = ""
             session.thinking_message_text = ""
@@ -1334,6 +1318,7 @@ def flush_buffer(
     session.streaming_output_text = ""
     session.streaming_phase = ""
     session.last_thinking_sent_text = ""
+    session.thinking_message_ids = []
     session_store.mark_delivered_output(session, text)
     session_store.mark_agent_message(session)
     session.thinking_history_text = ""
@@ -1697,6 +1682,7 @@ def handle_authorized_message(
         session.last_delivered_output_text = ""
         session.streaming_message_id = None
         session.thinking_message_id = None
+        session.thinking_message_ids = []
         session.streaming_output_text = ""
         session.streaming_phase = ""
         session.thinking_message_text = ""
@@ -2465,6 +2451,7 @@ def drain_codex_notifications(
                 session.thinking_message_text = ""
                 session.thinking_history_text = ""
                 session.last_thinking_sent_text = ""
+                session.thinking_message_ids = []
                 session_store.save_session(session)
                 continue
             flush_buffer(
