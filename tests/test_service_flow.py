@@ -1860,6 +1860,59 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [(22, "Final answer from Codex")])
         self.assertEqual(self.recorder.records, [("assistant", "Final answer from Codex")])
 
+    def test_late_notifications_for_completed_turn_are_ignored(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.last_completed_turn_id = "turn-1"
+        session.last_delivered_output_text = "Final answer from Codex"
+        session.status = "ACTIVE"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification(
+                    "item/commandExecution/outputDelta",
+                    {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "itemId": "cmd-1",
+                        "delta": 'rg -n "Emulator is connected but Android has not finished booting" -S /tmp 2>/dev/null',
+                    },
+                ),
+                Notification(
+                    "item/completed",
+                    {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "item": {"type": "commandExecution", "id": "cmd-1", "command": "rg -n foo"},
+                    },
+                ),
+            ]
+        )
+
+        drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_delivered_output_text, "Final answer from Codex")
+        self.assertEqual(updated.thinking_message_text, "")
+        self.assertEqual(updated.thinking_history_by_source, {})
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(telegram.edits, [])
+
     def test_completed_turn_does_not_duplicate_matching_pending_full_answer(self) -> None:
         auth = AuthState(
             bot_token="token",
@@ -3020,7 +3073,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Thinking\n\nChecking docs\nComparing schemas")])
+        self.assertEqual(telegram.messages, [(22, "Checking docs\nComparing schemas")])
         self.assertEqual(updated.thinking_message_text, "Checking docs\nComparing schemas")
 
     def test_drain_codex_notifications_streams_short_item_agent_message_delta(self) -> None:
@@ -3186,7 +3239,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.edits, [])
+        self.assertEqual(telegram.edits, [(22, 1, "Checking repo")])
         self.assertEqual(telegram.messages, [])
         self.assertEqual(telegram.deletes, [])
         self.assertIsNone(updated.thinking_message_id)

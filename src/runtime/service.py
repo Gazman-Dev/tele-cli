@@ -1512,22 +1512,44 @@ def update_codex_auth_state(
     return next_state
 
 
+def _session_accepts_turn_notification(session, turn_id: str | None) -> bool:
+    if not turn_id:
+        return True
+    if session.active_turn_id == turn_id:
+        return True
+    if session.last_completed_turn_id == turn_id:
+        return False
+    return True
+
+
 def resolve_notification_session(
     session_store: SessionStore,
     auth: AuthState,
     params: dict,
 ):
+    turn_id = params.get("turnId")
+    normalized_turn_id = str(turn_id) if turn_id else None
     thread_id = params.get("threadId")
     if thread_id:
         session = session_store.find_by_thread_id(str(thread_id))
-        if session is not None and session_store.is_recoverable(session):
+        if (
+            session is not None
+            and session_store.is_recoverable(session)
+            and _session_accepts_turn_notification(session, normalized_turn_id)
+        ):
             return session
         return None
-    turn_id = params.get("turnId")
-    if turn_id:
-        session = session_store.find_by_turn_id(str(turn_id))
-        if session is not None and session_store.is_recoverable(session):
+    if normalized_turn_id:
+        session = session_store.find_by_turn_id(normalized_turn_id)
+        if (
+            session is not None
+            and session_store.is_recoverable(session)
+            and _session_accepts_turn_notification(session, normalized_turn_id)
+        ):
             return session
+        completed = session_store.find_by_completed_turn_id(normalized_turn_id)
+        if completed is not None:
+            return None
     active = session_store.get_active_telegram_session(auth)
     if active is None:
         return None
