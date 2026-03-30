@@ -34,8 +34,13 @@ from runtime.service import (
     replay_login_callback,
 )
 from runtime.session_store import SessionStore
-from runtime.telegram_html import escape_telegram_html, render_final_telegram_html, render_telegram_progress_html, to_telegram_html
-from runtime.telegram_markdown import normalize_telegram_markdown_source
+from runtime.telegram_html import (
+    escape_telegram_html,
+    normalize_legacy_telegram_text,
+    render_final_telegram_html,
+    render_telegram_progress_html,
+    to_telegram_html,
+)
 from storage.runtime_state_store import load_codex_server_state, save_codex_server_state
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 from tests.fakes.fake_telegram import FakeTelegramClient
@@ -2531,10 +2536,10 @@ class ServiceFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        self.assertEqual(telegram.messages, [(22, to_telegram_html(normalize_telegram_markdown_source(text)))])
+        self.assertEqual(telegram.messages, [(22, to_telegram_html(normalize_legacy_telegram_text(text)))])
         self.assertNotIn("telegram.format_failure", load_event_types(self.paths))
 
-    def test_final_reply_normalizes_mixed_existing_telegram_markdownv2(self) -> None:
+    def test_final_reply_normalizes_legacy_telegram_escapes(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -2560,8 +2565,6 @@ class ServiceFlowTests(unittest.TestCase):
 
             def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode: str | None = None) -> dict:
                 self.parse_modes.append(parse_mode)
-                if parse_mode == "MarkdownV2" and text.startswith("I’m *Tele Cli* —"):
-                    raise TelegramError("can't parse entities")
                 return super().send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
 
         telegram = MixedTelegram()
@@ -2578,9 +2581,9 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         self.assertEqual(telegram.parse_modes, ["HTML"])
-        self.assertEqual(telegram.messages, [(22, to_telegram_html(normalize_telegram_markdown_source(text)))])
+        self.assertEqual(telegram.messages, [(22, to_telegram_html(normalize_legacy_telegram_text(text)))])
 
-    def test_final_reply_uses_markdown_code_block_emergency_fallback_and_logs_failure(self) -> None:
+    def test_final_reply_uses_html_fallback_and_logs_failure(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -2606,8 +2609,6 @@ class ServiceFlowTests(unittest.TestCase):
 
             def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode: str | None = None) -> dict:
                 self.parse_modes.append(parse_mode)
-                if parse_mode == "MarkdownV2" and not text.startswith("```"):
-                    raise TelegramError("can't parse entities")
                 return super().send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
 
         telegram = EmergencyFallbackTelegram()
@@ -2622,7 +2623,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.parse_modes, ["HTML"])
         self.assertEqual(
             telegram.messages,
-            [(22, to_telegram_html(normalize_telegram_markdown_source("I’m *Tele Cli* - assistant.")))],
+            [(22, to_telegram_html(normalize_legacy_telegram_text("I’m *Tele Cli* - assistant.")))],
         )
 
     def test_turn_completed_does_not_duplicate_item_completed_agent_message(self) -> None:

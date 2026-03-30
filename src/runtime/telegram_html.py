@@ -6,10 +6,24 @@ import re
 
 _ALLOWED_HTML_TAG_RE = re.compile(r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|blockquote|tg-spoiler|tg-emoji|tg-time)\b", re.IGNORECASE)
 _COMMAND_ACTIVITY_PREFIX = "__tele_cli_command__:"
+_LEGACY_DASH_VARIANTS = (
+    "â€”",
+    "â€“",
+    "â€‘",
+    "âˆ’",
+)
 
 
 def escape_telegram_html(text: str) -> str:
     return html.escape(text, quote=False)
+
+
+def normalize_legacy_telegram_text(text: str) -> str:
+    normalized = text
+    for variant in _LEGACY_DASH_VARIANTS:
+        normalized = normalized.replace(variant, "-")
+    normalized = re.sub(r"\\([_*\[\]()~`>#+\-=|{}.!])", r"\1", normalized)
+    return normalized.replace("\\\\", "\\")
 
 
 def looks_like_telegram_html(text: str) -> bool:

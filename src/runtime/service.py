@@ -53,11 +53,11 @@ from .sleep import has_pending_sleep_work, run_sleep, should_run_sleep
 from .telegram_html import (
     escape_telegram_html,
     looks_like_telegram_html,
+    normalize_legacy_telegram_text,
     render_collapsed_thinking_html,
     render_telegram_progress_html,
     to_telegram_html,
 )
-from .telegram_markdown import normalize_telegram_markdown_source
 from .telegram_update_store import TelegramUpdateStore
 
 
@@ -1887,7 +1887,7 @@ def flush_buffer(
         "turn_id": session.active_turn_id or session.last_completed_turn_id,
     }
     if not mark_agent:
-        normalized_text = normalize_telegram_markdown_source(text)
+        normalized_text = normalize_legacy_telegram_text(text)
         try:
             if stream_format and _thinking_history_entries(session):
                 answer_html = (
@@ -1928,7 +1928,7 @@ def flush_buffer(
         recorder.record("assistant", text)
         return
 
-    normalized_text = normalize_telegram_markdown_source(text)
+    normalized_text = normalize_legacy_telegram_text(text)
     answer_html = normalized_text.strip() if looks_like_telegram_html(normalized_text) else to_telegram_html(normalized_text)
     thinking_html = render_collapsed_thinking_html(_thinking_history_entries(session))
     final_html = answer_html if not thinking_html else f"{thinking_html}\n\n{answer_html}"
