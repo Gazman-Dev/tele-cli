@@ -167,7 +167,13 @@ class SqliteMigrationTests(unittest.TestCase):
                     debug_state="RUNNING",
                 ).to_dict(),
             )
-            save_json(paths.root / "codex_server.json", CodexServerState(transport="stdio://", initialized=True).to_dict())
+            save_json(
+                paths.root / "codex_server.json",
+                {
+                    "version": 1,
+                    "payload": CodexServerState(transport="stdio://", initialized=True).to_dict(),
+                },
+            )
 
             StorageManager(paths)
 

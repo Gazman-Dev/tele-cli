@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import fields
 import hashlib
 import json
 import sqlite3
@@ -286,8 +287,11 @@ def _import_legacy_update_rows(connection: sqlite3.Connection, data: dict) -> in
 
 
 def _import_legacy_app_state(connection: sqlite3.Connection, data: dict, *, key: str) -> bool:
-    factory = RuntimeState.from_dict if key == "runtime" else CodexServerState.from_dict
-    value = factory(data).to_dict()
+    model = RuntimeState if key == "runtime" else CodexServerState
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
+    allowed_keys = {field.name for field in fields(model)}
+    normalized = {name: value for name, value in payload.items() if name in allowed_keys}
+    value = model.from_dict(normalized).to_dict()
     connection.execute(
         """
         INSERT INTO app_state(state_key, value_json, updated_at)
