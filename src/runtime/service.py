@@ -650,13 +650,17 @@ def reset_session_after_request_failure(
     telegram: TelegramClient | None = None,
     topic_id: int | None,
     error_text: str,
+    clear_messages: bool = True,
 ) -> None:
     if session_store is None:
         return
     session = session_store.get_current_telegram_session(auth, topic_id)
     if session is None:
         return
-    _clear_streaming_messages(telegram, session.transport_chat_id or auth.telegram_chat_id, session)
+    if clear_messages:
+        _clear_streaming_messages(telegram, session.transport_chat_id or auth.telegram_chat_id, session)
+    else:
+        _set_streaming_message_ids(session, [])
     session.active_turn_id = None
     session.pending_output_text = ""
     session.pending_output_updated_at = None
@@ -679,6 +683,70 @@ def reset_session_after_request_failure(
         session.thread_id = None
         session.last_completed_turn_id = None
     session_store.save_session(session)
+
+
+def _render_codex_error_html(error_text: str) -> str:
+    return (
+        "<pre><code>"
+        f"{escape_telegram_html(f'Codex request failed: {error_text}')}"
+        "</code></pre>"
+    )
+
+
+def publish_codex_request_error(
+    session_store: SessionStore | None,
+    auth: AuthState,
+    telegram: TelegramClient,
+    *,
+    topic_id: int | None,
+    error_text: str,
+    performance: PerformanceTracker | None = None,
+) -> None:
+    session = session_store.get_current_telegram_session(auth, topic_id) if session_store is not None else None
+    target_chat_id = None
+    if session is not None:
+        target_chat_id = session.transport_chat_id or auth.telegram_chat_id
+    else:
+        target_chat_id = auth.telegram_chat_id
+    if not target_chat_id:
+        return
+
+    error_html = _render_codex_error_html(error_text)
+    live_html = ""
+    if session is not None:
+        live_html = _render_live_thinking_html(session).strip()
+    rendered_html = error_html if not live_html else f"{live_html}\n\n{error_html}"
+    rendered_chunks = _split_telegram_html_text(rendered_html)
+    context = {
+        "performance": performance,
+        "category": "error",
+        "session_id": session.session_id if session is not None else None,
+        "thread_id": session.thread_id if session is not None else None,
+        "turn_id": session.active_turn_id if session is not None else None,
+    }
+    if session is not None and _streaming_message_ids(session):
+        _sync_telegram_message_chunks(
+            telegram,
+            target_chat_id,
+            session=session,
+            rendered_chunks=rendered_chunks,
+            topic_id=session.transport_topic_id,
+            parse_mode=TELEGRAM_PARSE_MODE,
+            disable_notification=False,
+            performance=performance,
+            context=context,
+        )
+    else:
+        for chunk in rendered_chunks:
+            send_telegram_message(
+                telegram,
+                target_chat_id,
+                chunk,
+                topic_id=session.transport_topic_id if session is not None else topic_id,
+                parse_mode=TELEGRAM_PARSE_MODE,
+                performance=performance,
+                category="error",
+            )
 
 
 def extract_update_topic_id(update: dict) -> int | None:
@@ -2198,20 +2266,21 @@ def handle_authorized_message(
     recovered_from_stale_turn = False
     if session_store is not None:
         tracked_session = session_store.get_or_create_telegram_session(auth, topic_id)
-        _clear_streaming_messages(telegram, tracked_session.transport_chat_id or auth.telegram_chat_id, tracked_session)
-        tracked_session.pending_output_text = ""
-        tracked_session.pending_output_updated_at = None
-        tracked_session.streaming_output_text = ""
-        tracked_session.streaming_phase = ""
-        tracked_session.thinking_message_text = ""
-        tracked_session.thinking_history_text = ""
-        tracked_session.thinking_history_order = []
-        tracked_session.thinking_history_by_source = {}
-        tracked_session.thinking_live_texts = {}
-        tracked_session.thinking_sent_texts = {}
-        tracked_session.thinking_message_ids = []
-        tracked_session.thinking_live_message_ids = {}
-        tracked_session.last_thinking_sent_text = ""
+        if not tracked_session.active_turn_id:
+            _clear_streaming_messages(telegram, tracked_session.transport_chat_id or auth.telegram_chat_id, tracked_session)
+            tracked_session.pending_output_text = ""
+            tracked_session.pending_output_updated_at = None
+            tracked_session.streaming_output_text = ""
+            tracked_session.streaming_phase = ""
+            tracked_session.thinking_message_text = ""
+            tracked_session.thinking_history_text = ""
+            tracked_session.thinking_history_order = []
+            tracked_session.thinking_history_by_source = {}
+            tracked_session.thinking_live_texts = {}
+            tracked_session.thinking_sent_texts = {}
+            tracked_session.thinking_message_ids = []
+            tracked_session.thinking_live_message_ids = {}
+            tracked_session.last_thinking_sent_text = ""
         session_store.save_session(tracked_session)
         session_id = tracked_session.session_id
         if performance is not None:
@@ -2228,43 +2297,64 @@ def handle_authorized_message(
                 send_result = codex.send(text)
                 recovered_from_stale_turn = bool(send_result)
             except Exception as exc:
-                reset_session_after_request_failure(session_store, auth, telegram=telegram, topic_id=topic_id, error_text=str(exc))
+                publish_codex_request_error(
+                    session_store,
+                    auth,
+                    telegram,
+                    topic_id=topic_id,
+                    error_text=str(exc),
+                    performance=performance,
+                )
+                reset_session_after_request_failure(
+                    session_store,
+                    auth,
+                    telegram=telegram,
+                    topic_id=topic_id,
+                    error_text=str(exc),
+                    clear_messages=False,
+                )
                 if performance is not None and session_id is not None:
                     performance.mark_turn_failed(session_id, error=str(exc))
-                send_telegram_message(
-                    telegram,
-                    auth.telegram_chat_id,
-                    f"Codex request failed: {exc}",
-                    topic_id=topic_id,
-                    performance=performance,
-                    category="error",
-                )
                 return
         except Exception as exc:
-            reset_session_after_request_failure(session_store, auth, telegram=telegram, topic_id=topic_id, error_text=str(exc))
+            publish_codex_request_error(
+                session_store,
+                auth,
+                telegram,
+                topic_id=topic_id,
+                error_text=str(exc),
+                performance=performance,
+            )
+            reset_session_after_request_failure(
+                session_store,
+                auth,
+                telegram=telegram,
+                topic_id=topic_id,
+                error_text=str(exc),
+                clear_messages=False,
+            )
             if performance is not None and session_id is not None:
                 performance.mark_turn_failed(session_id, error=str(exc))
-            send_telegram_message(
-                telegram,
-                auth.telegram_chat_id,
-                f"Codex request failed: {exc}",
-                topic_id=topic_id,
-                performance=performance,
-                category="error",
-            )
             return
     except Exception as exc:
-        reset_session_after_request_failure(session_store, auth, telegram=telegram, topic_id=topic_id, error_text=str(exc))
+        publish_codex_request_error(
+            session_store,
+            auth,
+            telegram,
+            topic_id=topic_id,
+            error_text=str(exc),
+            performance=performance,
+        )
+        reset_session_after_request_failure(
+            session_store,
+            auth,
+            telegram=telegram,
+            topic_id=topic_id,
+            error_text=str(exc),
+            clear_messages=False,
+        )
         if performance is not None and session_id is not None:
             performance.mark_turn_failed(session_id, error=str(exc))
-        send_telegram_message(
-            telegram,
-            auth.telegram_chat_id,
-            f"Codex request failed: {exc}",
-            topic_id=topic_id,
-            performance=performance,
-            category="error",
-        )
         return
     if recovered_from_stale_turn:
         send_telegram_message(

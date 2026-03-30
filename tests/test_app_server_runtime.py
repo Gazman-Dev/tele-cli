@@ -326,6 +326,57 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertIn("---", second_input)
         self.assertIn("again", second_input)
 
+    def test_send_recovers_when_active_turn_has_no_thread_id(self) -> None:
+        transport = InMemoryJsonRpcTransport()
+        server = FakeAppServer(transport)
+        server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+        server.on("getAccount", lambda payload: {"status": "ready"})
+        server.on("thread/start", lambda payload: {"threadId": "thread-2"})
+        turn_counter = {"count": 0}
+
+        def handle_turn_start(payload):
+            turn_counter["count"] += 1
+            return {"turnId": f"turn-{turn_counter['count']}"}
+
+        server.on("turn/start", handle_turn_start)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            from runtime.session_store import SessionStore
+
+            store = SessionStore(paths)
+            broken = store.get_or_create_telegram_session(auth)
+            broken.thread_id = None
+            broken.active_turn_id = "turn-broken"
+            broken.status = "RUNNING_TURN"
+            store.save_session(broken)
+
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            session = bootstrap_app_server_session(
+                paths=paths,
+                auth=auth,
+                runtime=runtime,
+                runtime_state=runtime_state,
+                transport=transport,
+                config=Config(state_dir=str(paths.root)),
+            )
+
+            recovered = session.send("again")
+            self.assertTrue(recovered)
+
+        turn_starts = [payload for payload in server.received if payload["method"] == "turn/start"]
+        self.assertEqual(len(turn_starts), 1)
+        self.assertIn("System: recovered from error, the previous message got interrupted.", turn_starts[0]["params"]["input"][0]["text"])
+
     def test_send_starts_new_thread_when_resume_rejects_stale_thread(self) -> None:
         transport = InMemoryJsonRpcTransport()
         server = FakeAppServer(transport)

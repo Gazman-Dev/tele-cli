@@ -179,13 +179,25 @@ class AppServerSession:
                 recovered_from_error = True
             else:
                 if not thread_id:
-                    raise RuntimeError("Cannot steer active app-server turn without a valid thread id.")
-                self._steer_active_turn(thread_id, session.active_turn_id, text)
-                session.status = "RUNNING_TURN"
-                self.session_store.save_session(session)
-                if self.performance is not None:
-                    self.performance.mark_turn_registered(session)
-                return False
+                    session.active_turn_id = None
+                    session.pending_output_text = ""
+                    session.pending_output_updated_at = None
+                    session.streaming_message_id = None
+                    session.streaming_message_ids = []
+                    session.thinking_message_id = None
+                    session.streaming_output_text = ""
+                    session.streaming_phase = ""
+                    session.thinking_message_text = ""
+                    session.status = "ACTIVE"
+                    self.session_store.save_session(session)
+                    recovered_from_error = True
+                else:
+                    self._steer_active_turn(thread_id, session.active_turn_id, text)
+                    session.status = "RUNNING_TURN"
+                    self.session_store.save_session(session)
+                    if self.performance is not None:
+                        self.performance.mark_turn_registered(session)
+                    return False
         turn_input = self._build_turn_input(session, text, recovered_from_error=recovered_from_error)
         if thread_id:
             if thread_id not in self._resumed_threads:
