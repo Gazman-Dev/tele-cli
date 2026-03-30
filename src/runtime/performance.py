@@ -183,6 +183,7 @@ def send_telegram_message(
     allow_plain_fallback: bool = False,
     plain_fallback_text: str | None = None,
     fallback_parse_mode: str | None = None,
+    allow_paused_return: bool = False,
     performance: PerformanceTracker | None = None,
     **context: Any,
 ) -> int | None:
@@ -202,6 +203,7 @@ def send_telegram_message(
         result = manager.enqueue_and_wait(
             op_type="send_message",
             payload={"text": text, "parse_mode": parse_mode},
+            allow_paused_return=allow_paused_return,
             chat_id=chat_id,
             topic_id=topic_id,
             session_id=context.get("session_id"),
@@ -233,6 +235,7 @@ def send_telegram_message(
                 topic_id=topic_id,
                 parse_mode=fallback_parse_mode,
                 allow_plain_fallback=False,
+                allow_paused_return=allow_paused_return,
                 performance=performance,
                 **context,
             )
@@ -277,6 +280,7 @@ def edit_telegram_message(
     allow_plain_fallback: bool = False,
     plain_fallback_text: str | None = None,
     fallback_parse_mode: str | None = None,
+    allow_paused_return: bool = False,
     performance: PerformanceTracker | None = None,
     **context: Any,
 ) -> None:
@@ -295,6 +299,7 @@ def edit_telegram_message(
         manager.enqueue_and_wait(
             op_type="edit_message",
             payload={"message_id": message_id, "text": text, "parse_mode": parse_mode},
+            allow_paused_return=allow_paused_return,
             chat_id=chat_id,
             session_id=context.get("session_id"),
             trace_id=context.get("trace_id"),
@@ -324,6 +329,7 @@ def edit_telegram_message(
                 fallback_text,
                 parse_mode=fallback_parse_mode,
                 allow_plain_fallback=False,
+                allow_paused_return=allow_paused_return,
                 performance=performance,
                 **context,
             )
@@ -357,6 +363,7 @@ def delete_telegram_message(
     chat_id: int,
     message_id: int,
     *,
+    allow_paused_return: bool = False,
     performance: PerformanceTracker | None = None,
     **context: Any,
 ) -> None:
@@ -367,6 +374,7 @@ def delete_telegram_message(
     manager.enqueue_and_wait(
         op_type="delete_message",
         payload={"message_id": message_id},
+        allow_paused_return=allow_paused_return,
         chat_id=chat_id,
         session_id=context.get("session_id"),
         trace_id=context.get("trace_id"),
@@ -389,6 +397,7 @@ def send_telegram_typing(
     chat_id: int,
     *,
     topic_id: int | None = None,
+    allow_paused_return: bool = False,
     performance: PerformanceTracker | None = None,
     **context: Any,
 ) -> None:
@@ -396,6 +405,7 @@ def send_telegram_typing(
     manager.enqueue_and_wait(
         op_type="typing",
         payload={},
+        allow_paused_return=allow_paused_return,
         chat_id=chat_id,
         topic_id=topic_id,
         session_id=context.get("session_id"),

@@ -33,7 +33,7 @@ from storage.runtime_state_store import (
     save_runtime_state,
 )
 from storage.telegram_groups import sync_message_chunks, upsert_message_group
-from storage.telegram_queue import install_delivery_manager, uninstall_delivery_manager
+from storage.telegram_queue import active_delivery_manager, install_delivery_manager, uninstall_delivery_manager
 from .app_server_runtime import default_transport_factory, derive_codex_state, is_stale_active_turn, make_app_server_start_fn
 from .approval_store import ApprovalStore
 from .codex_cli_config import read_codex_cli_preferences, write_codex_cli_preferences
@@ -391,17 +391,24 @@ def _sync_telegram_message_chunks(
     context.setdefault("message_group_id", message_group_id)
     existing_ids = _streaming_message_ids(session)
     kept_ids: list[int] = []
+    delivery_manager = active_delivery_manager()
+    allow_paused_return = delivery_manager.is_paused() if delivery_manager is not None else False
 
     for index, chunk in enumerate(rendered_chunks):
-        if index < len(existing_ids):
-            message_id = existing_ids[index]
+        dedupe_key = _message_chunk_dedupe_key(message_group_id, index)
+        message_id = existing_ids[index] if index < len(existing_ids) else None
+        if not isinstance(message_id, int) and delivery_manager is not None:
+            message_id = delivery_manager.latest_message_id_for_dedupe(dedupe_key)
+        if isinstance(message_id, int):
             edit_telegram_message(
                 telegram,
                 chat_id,
                 message_id,
                 chunk,
                 parse_mode=parse_mode,
+                allow_paused_return=allow_paused_return,
                 performance=performance,
+                dedupe_key=dedupe_key,
                 **context,
             )
             kept_ids.append(message_id)
@@ -413,7 +420,9 @@ def _sync_telegram_message_chunks(
             topic_id=topic_id,
             parse_mode=parse_mode,
             disable_notification=disable_notification,
+            allow_paused_return=allow_paused_return,
             performance=performance,
+            dedupe_key=dedupe_key,
             **context,
         )
         if isinstance(message_id, int):
@@ -421,7 +430,15 @@ def _sync_telegram_message_chunks(
 
     for message_id in existing_ids[len(rendered_chunks) :]:
         try:
-            delete_telegram_message(telegram, chat_id, message_id, performance=performance, **context)
+            delete_telegram_message(
+                telegram,
+                chat_id,
+                message_id,
+                allow_paused_return=allow_paused_return,
+                performance=performance,
+                dedupe_key=f"{message_group_id}:delete:{message_id}",
+                **context,
+            )
         except TelegramError:
             pass
 
@@ -450,8 +467,8 @@ def _clear_streaming_messages(telegram: TelegramClient | None, chat_id: int | No
         return
     for message_id in _streaming_message_ids(session):
         try:
-            delete_telegram_message(telegram, chat_id, message_id)
-        except TelegramError:
+            delete_telegram_message(telegram, chat_id, message_id, allow_paused_return=True)
+        except Exception:
             pass
     _set_streaming_message_ids(session, [])
 
@@ -480,6 +497,10 @@ def _message_group_id_for_session(session, context: dict | None) -> str:
     logical_role = _logical_role_from_context(context)
     trace_token = getattr(session, "current_trace_id", None) or session.active_turn_id or session.last_completed_turn_id or "session"
     return f"{session.session_id}:{logical_role}:{trace_token}"
+
+
+def _message_chunk_dedupe_key(message_group_id: str, chunk_index: int) -> str:
+    return f"{message_group_id}:chunk:{chunk_index}"
 
 
 def start_telegram_polling_thread(
@@ -1551,7 +1572,7 @@ def set_visible_thinking_message(
             performance=performance,
             context=context,
         )
-    except TelegramError:
+    except Exception:
         session_store.save_session(session)
         return
     session.thinking_sent_texts[effective_source] = current_text
@@ -1913,7 +1934,7 @@ def flush_buffer(
                 performance=performance,
                 context=context,
             )
-        except TelegramError:
+        except Exception:
             session_store.save_session(session)
             return
         session.streaming_output_text = text
@@ -1959,7 +1980,7 @@ def flush_buffer(
             )
             delivered = True
             break
-        except TelegramError as exc:
+        except Exception as exc:
             append_telegram_format_failure_log(
                 session_store.paths,
                 session_id=session.session_id,
@@ -2167,6 +2188,7 @@ def maybe_send_typing_indicator(
             telegram,
             target_chat_id,
             topic_id=current.transport_topic_id,
+            allow_paused_return=True,
             performance=performance,
             session_id=current.session_id,
             trace_id=getattr(current, "current_trace_id", None),

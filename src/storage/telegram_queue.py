@@ -19,6 +19,9 @@ from .payloads import QUEUE_PAYLOAD_LIMIT_BYTES, json_dumps, json_loads
 
 
 _ACTIVE_MANAGER: "TelegramDeliveryManager | None" = None
+_RATE_LIMIT_STATE_KEY = "telegram_delivery_backoff"
+_MAX_RATE_LIMIT_BACKOFF_SECONDS = 3600
+_INITIAL_RATE_LIMIT_BACKOFF_SECONDS = 2
 
 
 def install_delivery_manager(paths: AppPaths, telegram: TelegramClient, *, run_id: str) -> None:
@@ -63,9 +66,16 @@ class TelegramDeliveryManager:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
-    def enqueue_and_wait(self, *, op_type: str, payload: dict[str, Any], **metadata: Any) -> Any:
+    def enqueue_and_wait(
+        self,
+        *,
+        op_type: str,
+        payload: dict[str, Any],
+        allow_paused_return: bool = False,
+        **metadata: Any,
+    ) -> Any:
         queue_id = self.enqueue(op_type=op_type, payload=payload, **metadata)
-        return self._wait_for_completion(queue_id)
+        return self._wait_for_completion(queue_id, allow_paused_return=allow_paused_return)
 
     def enqueue(
         self,
@@ -87,6 +97,7 @@ class TelegramDeliveryManager:
         artifact_ref: dict[str, object] | None = None
         try:
             with self.storage.transaction() as connection:
+                paused_until = self._load_paused_until(connection)
                 if len(payload_json.encode("utf-8")) > QUEUE_PAYLOAD_LIMIT_BYTES:
                     artifact_ref = self.artifacts.write_text(
                         kind="telegram_queue_payload",
@@ -114,7 +125,7 @@ class TelegramDeliveryManager:
                     (
                         queue_id,
                         utc_now(),
-                        utc_now(),
+                        paused_until or utc_now(),
                         op_type,
                         chat_id,
                         topic_id,
@@ -146,12 +157,16 @@ class TelegramDeliveryManager:
         self._wake_event.set()
         return queue_id
 
-    def _wait_for_completion(self, target_queue_id: str) -> Any:
-        deadline = time.monotonic() + 60.0
+    def _wait_for_completion(self, target_queue_id: str, *, allow_paused_return: bool = False) -> Any:
+        deadline = time.monotonic() + float(_MAX_RATE_LIMIT_BACKOFF_SECONDS)
         while True:
             with self.storage.read_connection() as connection:
                 row = connection.execute(
-                    "SELECT status, last_error, telegram_message_id, op_type FROM telegram_outbound_queue WHERE queue_id = ?",
+                    """
+                    SELECT status, last_error, telegram_message_id, op_type, available_at
+                    FROM telegram_outbound_queue
+                    WHERE queue_id = ?
+                    """,
                     (target_queue_id,),
                 ).fetchone()
             if row is None:
@@ -162,6 +177,10 @@ class TelegramDeliveryManager:
                 return None
             if row["status"] == "failed":
                 raise RuntimeError(str(row["last_error"] or "Telegram queue operation failed."))
+            if allow_paused_return and row["status"] == "queued":
+                available_at = self._parse_timestamp(row["available_at"])
+                if available_at is not None and available_at > datetime.now(timezone.utc):
+                    return {"queue_id": target_queue_id, "status": "queued"}
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Timed out waiting for Telegram queue item {target_queue_id}.")
             self._wake_event.wait(0.05)
@@ -231,9 +250,12 @@ class TelegramDeliveryManager:
                 attempt_count = int(current["attempt_count"]) if current is not None else 0
                 next_attempt = attempt_count + 1
                 error_text = str(exc)
-                if retry_after is not None and next_attempt <= 6:
+                if retry_after is not None:
+                    pause_until, backoff_seconds = self._advance_global_pause(
+                        connection,
+                        retry_after=retry_after,
+                    )
                     final_status = "queued"
-                    next_available = (datetime.now(timezone.utc) + timedelta(seconds=max(int(retry_after), 1))).isoformat()
                     connection.execute(
                         """
                         UPDATE telegram_outbound_queue
@@ -245,7 +267,18 @@ class TelegramDeliveryManager:
                             claimed_at = NULL
                         WHERE queue_id = ?
                         """,
-                        (next_attempt, error_text, next_available, row["queue_id"]),
+                        (next_attempt, error_text, pause_until, row["queue_id"]),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE telegram_outbound_queue
+                        SET available_at = CASE
+                            WHEN available_at < ? THEN ?
+                            ELSE available_at
+                        END
+                        WHERE status = 'queued'
+                        """,
+                        (pause_until, pause_until),
                     )
                 else:
                     final_status = "failed"
@@ -279,6 +312,7 @@ class TelegramDeliveryManager:
                     """,
                     (utc_now(), message_id, row["queue_id"]),
                 )
+                self._clear_global_pause(connection)
             self.traces.log_event(
                 source="telegram_outbound",
                 event_type=self._api_event_type(row["op_type"], success=True),
@@ -289,6 +323,27 @@ class TelegramDeliveryManager:
                 message_group_id=row["message_group_id"],
                 telegram_message_id=message_id if message_id is not None else row["telegram_message_id"],
                 payload={"queue_id": row["queue_id"], "op_type": row["op_type"]},
+            )
+        if final_status == "queued" and error_text is not None:
+            with self.storage.read_connection() as connection:
+                paused_until = self._load_paused_until(connection)
+                backoff_seconds = self._load_backoff_seconds(connection)
+            self.traces.log_event(
+                source="telegram_outbound",
+                event_type="telegram.queue.rate_limited",
+                trace_id=row["trace_id"],
+                session_id=row["session_id"],
+                chat_id=row["chat_id"],
+                topic_id=row["topic_id"],
+                message_group_id=row["message_group_id"],
+                telegram_message_id=row["telegram_message_id"],
+                payload={
+                    "queue_id": row["queue_id"],
+                    "op_type": row["op_type"],
+                    "error": error_text,
+                    "pause_until": paused_until,
+                    "backoff_seconds": backoff_seconds,
+                },
             )
         if final_status != "completed":
             self.traces.log_event(
@@ -319,6 +374,33 @@ class TelegramDeliveryManager:
             "result": result,
             "error": error_text,
         }
+
+    def is_paused(self) -> bool:
+        with self.storage.read_connection() as connection:
+            paused_until = self._load_paused_until(connection)
+        until = self._parse_timestamp(paused_until)
+        return until is not None and until > datetime.now(timezone.utc)
+
+    def latest_message_id_for_dedupe(self, dedupe_key: str) -> int | None:
+        if not dedupe_key:
+            return None
+        with self.storage.read_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT telegram_message_id
+                FROM telegram_outbound_queue
+                WHERE dedupe_key = ?
+                  AND status = 'completed'
+                  AND telegram_message_id IS NOT NULL
+                ORDER BY completed_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (dedupe_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        message_id = row["telegram_message_id"]
+        return int(message_id) if isinstance(message_id, int) else None
 
     @staticmethod
     def _api_event_type(op_type: str, *, success: bool) -> str:
@@ -399,3 +481,84 @@ class TelegramDeliveryManager:
                 except TypeError:
                     continue
             raise
+
+    @staticmethod
+    def _parse_timestamp(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _load_rate_limit_state(self, connection: sqlite3.Connection) -> dict[str, Any]:
+        row = connection.execute(
+            "SELECT value_json FROM app_state WHERE state_key = ?",
+            (_RATE_LIMIT_STATE_KEY,),
+        ).fetchone()
+        if row is None:
+            return {}
+        return json_loads(row["value_json"], {})
+
+    def _load_paused_until(self, connection: sqlite3.Connection) -> str | None:
+        state = self._load_rate_limit_state(connection)
+        paused_until = state.get("paused_until")
+        return str(paused_until) if isinstance(paused_until, str) and paused_until else None
+
+    def _load_backoff_seconds(self, connection: sqlite3.Connection) -> int:
+        state = self._load_rate_limit_state(connection)
+        raw = state.get("backoff_seconds")
+        return int(raw) if isinstance(raw, (int, float)) and raw > 0 else 0
+
+    def _save_rate_limit_state(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        paused_until: str | None,
+        backoff_seconds: int,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO app_state(state_key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(state_key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                _RATE_LIMIT_STATE_KEY,
+                json_dumps(
+                    {
+                        "paused_until": paused_until,
+                        "backoff_seconds": backoff_seconds,
+                    }
+                ),
+                utc_now(),
+            ),
+        )
+
+    def _advance_global_pause(self, connection: sqlite3.Connection, *, retry_after: float | None) -> tuple[str, int]:
+        current_backoff = self._load_backoff_seconds(connection)
+        next_backoff = (
+            _INITIAL_RATE_LIMIT_BACKOFF_SECONDS
+            if current_backoff < _INITIAL_RATE_LIMIT_BACKOFF_SECONDS
+            else min(current_backoff * 2, _MAX_RATE_LIMIT_BACKOFF_SECONDS)
+        )
+        if retry_after is not None:
+            next_backoff = max(next_backoff, max(int(retry_after), 1))
+        next_backoff = min(next_backoff, _MAX_RATE_LIMIT_BACKOFF_SECONDS)
+        paused_until = (datetime.now(timezone.utc) + timedelta(seconds=next_backoff)).isoformat()
+        self._save_rate_limit_state(
+            connection,
+            paused_until=paused_until,
+            backoff_seconds=next_backoff,
+        )
+        return paused_until, next_backoff
+
+    def _clear_global_pause(self, connection: sqlite3.Connection) -> None:
+        if not self._load_rate_limit_state(connection):
+            return
+        self._save_rate_limit_state(connection, paused_until=None, backoff_seconds=0)
