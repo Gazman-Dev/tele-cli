@@ -2282,7 +2282,7 @@ class ServiceFlowTests(unittest.TestCase):
 
         updated = store.get_or_create_telegram_session(auth)
         self.assertEqual(telegram.messages, [(22, "Hello")])
-        self.assertEqual(telegram.edits, [(22, 1, "Hello world"), (22, 1, "Hello world!")])
+        self.assertEqual(telegram.edits, [(22, 1, "Hello world!")])
         self.assertEqual(updated.streaming_message_id, None)
         self.assertEqual(updated.streaming_output_text, "")
         self.assertEqual(updated.last_delivered_output_text, "Hello world!")

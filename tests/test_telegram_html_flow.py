@@ -272,6 +272,33 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         self.assertIsNone(refreshed.streaming_message_id)
         self.assertEqual(refreshed.thinking_live_texts, {})
 
+    def test_final_reply_reformats_streamed_text_even_when_text_matches_last_delivery(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.pending_output_text = "Final answer"
+        session.last_delivered_output_text = "Final answer"
+        session.streaming_message_id = 1
+        session.streaming_message_ids = [1]
+        session.thinking_history_order = ["commentary:msg-1"]
+        session.thinking_history_by_source = {"commentary:msg-1": "Checking repo"}
+        session.thinking_history_text = "Checking repo"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        flush_buffer(session.session_id, auth, telegram, self.recorder, store, mark_agent=True)
+
+        self.assertEqual(
+            telegram.edits,
+            [(22, 1, "<blockquote expandable>Checking repo</blockquote>\n\nFinal answer")],
+        )
+        refreshed = store.get_or_create_telegram_session(auth)
+        self.assertEqual(refreshed.thinking_history_text, "")
+        self.assertIsNone(refreshed.streaming_message_id)
+
     def test_final_reply_falls_back_to_escaped_html(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
         store = SessionStore(self.paths)
@@ -342,6 +369,39 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         refreshed = store.get_or_create_telegram_session(auth)
         self.assertEqual(refreshed.streaming_message_ids, [1, 2])
         self.assertEqual(refreshed.streaming_message_id, 1)
+
+    def test_partial_answer_updates_are_throttled_and_locally_merged(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 1
+        session.streaming_message_ids = [1]
+        session.last_agent_message_at = "2026-03-29T00:00:00+00:00"
+        session.pending_output_text = "I am currently running"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        maybe_refresh_thinking_message(self.paths, auth, telegram, store, recorder=self.recorder)
+        flush_buffer_called = False
+        with patch("runtime.service.flush_buffer") as flush_mock:
+            service_module.maybe_stream_partial_output(
+                auth,
+                telegram,
+                self.recorder,
+                store,
+                session,
+                now=service_module.parse_utc_timestamp("2026-03-29T00:00:00.300000+00:00"),
+                min_interval_seconds=0.6,
+            )
+            flush_buffer_called = flush_mock.called
+
+        self.assertFalse(flush_buffer_called)
+        refreshed = store.get_or_create_telegram_session(auth)
+        self.assertEqual(refreshed.pending_output_text, "I am currently running")
+        self.assertEqual(telegram.edits, [])
 
     def test_final_reply_uses_multiple_telegram_messages_when_over_limit(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")

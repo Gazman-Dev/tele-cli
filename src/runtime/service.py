@@ -1262,12 +1262,19 @@ def maybe_stream_partial_output(
     now: datetime | None = None,
     min_interval_seconds: float = 0.6,
 ) -> None:
-    if not _streaming_message_ids(session):
-        session_store.save_session(session)
-        return
     if not session.pending_output_text.strip():
         session_store.save_session(session)
         return
+    if _streaming_message_ids(session):
+        effective_now = now or datetime.now(timezone.utc)
+        last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
+        if (
+            last_sent_at is not None
+            and min_interval_seconds > 0
+            and (effective_now - last_sent_at).total_seconds() < min_interval_seconds
+        ):
+            session_store.save_session(session)
+            return
     flush_buffer(
         session.session_id,
         auth,
@@ -1849,7 +1856,8 @@ def flush_buffer(
             append_recovery_event(session_store.paths, f"detached_sessions_pruned count={pruned}")
         return
     if text == session.last_delivered_output_text:
-        if mark_agent:
+        should_finalize_existing_delivery = mark_agent and bool(_streaming_message_ids(session))
+        if mark_agent and not should_finalize_existing_delivery:
             session.streaming_message_id = None
             session.streaming_message_ids = []
             session.thinking_message_id = None
@@ -1865,8 +1873,9 @@ def flush_buffer(
             session.thinking_history_by_source = {}
             session.last_thinking_sent_text = ""
             session_store.save_session(session)
-        session_store.consume_pending_output(session)
-        return
+        if not should_finalize_existing_delivery:
+            session_store.consume_pending_output(session)
+            return
     if not text.strip():
         return
     context = {
@@ -3325,14 +3334,12 @@ def drain_codex_notifications(
                             payload={"trigger": method},
                         )
                     session_store.append_pending_output(session, text)
-                flush_buffer(
-                    session.session_id,
+                maybe_stream_partial_output(
                     auth,
                     telegram,
                     recorder,
                     session_store,
-                    mark_agent=False,
-                    stream_format=True,
+                    session,
                     performance=performance,
                 )
             continue
