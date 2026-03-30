@@ -6,12 +6,13 @@ from typing import Optional
 from app_meta import APP_VERSION
 from core.json_store import load_json, save_json
 from core.locks import LockFile
-from core.logging_utils import append_recovery_log
 from core.models import AuthState, Config, RuntimeState
-from core.paths import AppPaths
+from core.paths import AppPaths, build_paths
 from core.process import describe_process, make_lock_metadata, process_exists, read_process_command, safe_kill
 from core.prompts import ask_choice
+from storage.diagnostics import log_recovery_event
 from integrations.telegram import TelegramClient
+from storage.runtime_state_store import save_runtime_state
 from .codex_runtime import CodexSession
 from .runtime import ServiceRuntime
 
@@ -53,7 +54,7 @@ def start_codex_session(
     runtime_state.codex_pid = codex.start()
     metadata.child_codex_pid = runtime_state.codex_pid
     app_lock.write(metadata)
-    save_json(app_lock.path.parent / "runtime.json", runtime_state.to_dict())
+    save_runtime_state(build_paths(app_lock.path.parent), runtime_state)
     return codex
 
 
@@ -116,10 +117,10 @@ def handle_service_conflict(paths: AppPaths, app_lock: LockFile, choices: Servic
         print("Another app instance appears to be running.")
         print(describe_process(metadata))
         if not isatty():
-            append_recovery_log(paths.recovery_log, f"service conflict -> exit pid={metadata.pid}")
+            log_recovery_event(paths, f"service conflict -> exit pid={metadata.pid}")
             raise SystemExit(1)
         choice = selected or ask_choice("Resolve live app conflict", ["kill", "ignore", "exit"], default="exit")
-        append_recovery_log(paths.recovery_log, f"service conflict -> {choice} pid={metadata.pid}")
+        log_recovery_event(paths, f"service conflict -> {choice} pid={metadata.pid}")
         if choice == "kill":
             safe_kill(metadata.pid)
             if metadata.child_codex_pid and is_owned_codex(metadata.child_codex_pid, metadata.cwd):
@@ -133,10 +134,10 @@ def handle_service_conflict(paths: AppPaths, app_lock: LockFile, choices: Servic
         print("A live process owns the runtime lock, but ownership could not be verified.")
         print(describe_process(metadata))
         if not isatty():
-            append_recovery_log(paths.recovery_log, f"unknown live service conflict -> exit pid={metadata.pid}")
+            log_recovery_event(paths, f"unknown live service conflict -> exit pid={metadata.pid}")
             raise SystemExit(1)
         choice = selected or ask_choice("Resolve unknown live app conflict", ["ignore", "exit"], default="exit")
-        append_recovery_log(paths.recovery_log, f"unknown live service conflict -> {choice} pid={metadata.pid}")
+        log_recovery_event(paths, f"unknown live service conflict -> {choice} pid={metadata.pid}")
         if choice == "exit":
             raise SystemExit(1)
         return
@@ -144,7 +145,7 @@ def handle_service_conflict(paths: AppPaths, app_lock: LockFile, choices: Servic
     print("A stale app lock was found.")
     print(describe_process(metadata))
     if not isatty():
-        append_recovery_log(paths.recovery_log, f"stale service lock -> heal pid={metadata.pid}")
+        log_recovery_event(paths, f"stale service lock -> heal pid={metadata.pid}")
         if metadata.child_codex_pid and process_exists(metadata.child_codex_pid) and is_owned_codex(
             metadata.child_codex_pid, metadata.cwd
         ):
@@ -152,7 +153,7 @@ def handle_service_conflict(paths: AppPaths, app_lock: LockFile, choices: Servic
         app_lock.clear()
         return
     choice = selected or ask_choice("Resolve stale app lock", ["heal", "ignore", "exit"], default="heal")
-    append_recovery_log(paths.recovery_log, f"stale service lock -> {choice} pid={metadata.pid}")
+    log_recovery_event(paths, f"stale service lock -> {choice} pid={metadata.pid}")
     if choice == "heal":
         if metadata.child_codex_pid and process_exists(metadata.child_codex_pid):
             print("A Codex process from a previous run may still be active.")
@@ -161,10 +162,7 @@ def handle_service_conflict(paths: AppPaths, app_lock: LockFile, choices: Servic
                 ["kill", "ignore", "exit"],
                 default="ignore",
             )
-            append_recovery_log(
-                paths.recovery_log,
-                f"orphan codex -> {orphan_choice} pid={metadata.child_codex_pid}",
-            )
+            log_recovery_event(paths, f"orphan codex -> {orphan_choice} pid={metadata.child_codex_pid}")
             if orphan_choice == "kill" and is_owned_codex(metadata.child_codex_pid, metadata.cwd):
                 safe_kill(metadata.child_codex_pid)
             elif orphan_choice == "exit":

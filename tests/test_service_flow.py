@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+import sqlite3
 import uuid
 import unittest
 from pathlib import Path
@@ -10,7 +11,6 @@ from unittest.mock import patch
 from core.json_store import load_json
 from core.models import AuthState, CodexServerState, Config, RuntimeState
 from core.paths import build_paths
-from core.state_versions import load_versioned_state
 from integrations.telegram import TelegramError
 from runtime.approval_store import ApprovalRecord, ApprovalStore
 from runtime.app_server_runtime import make_app_server_start_fn
@@ -35,8 +35,87 @@ from runtime.service import (
 )
 from runtime.session_store import SessionStore
 from runtime.telegram_html import escape_telegram_html, render_final_telegram_html, render_telegram_progress_html, to_telegram_html
+from storage.runtime_state_store import load_codex_server_state, save_codex_server_state
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 from tests.fakes.fake_telegram import FakeTelegramClient
+
+
+class ImmediateDeliveryManager:
+    def __init__(self, target_getter):
+        self._target_getter = target_getter
+
+    @staticmethod
+    def _call(func, *args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except TypeError:
+            reduced = dict(kwargs)
+            for key in ("disable_notification", "parse_mode", "topic_id", "caption"):
+                reduced.pop(key, None)
+                try:
+                    return func(*args, **reduced)
+                except TypeError:
+                    continue
+            raise
+
+    def enqueue_and_wait(self, *, op_type: str, payload: dict, chat_id: int, topic_id: int | None = None, **metadata):
+        target = self._target_getter()
+        if target is None:
+            raise RuntimeError("No Telegram test target is registered.")
+        if op_type == "send_message":
+            return self._call(
+                target.send_message,
+                chat_id,
+                str(payload["text"]),
+                topic_id=topic_id,
+                parse_mode=payload.get("parse_mode"),
+                disable_notification=bool(metadata.get("disable_notification")),
+            )
+        if op_type == "edit_message":
+            return self._call(
+                target.edit_message_text,
+                chat_id,
+                int(payload["message_id"]),
+                str(payload["text"]),
+                parse_mode=payload.get("parse_mode"),
+            )
+        if op_type == "delete_message":
+            return target.delete_message(chat_id, int(payload["message_id"]))
+        if op_type == "typing":
+            return target.send_typing(chat_id, topic_id=topic_id)
+        if op_type == "send_photo":
+            return self._call(
+                target.send_photo,
+                chat_id,
+                payload["photo_path"],
+                topic_id=topic_id,
+                caption=payload.get("caption"),
+                parse_mode=payload.get("parse_mode"),
+            )
+        if op_type == "send_document":
+            return self._call(
+                target.send_document,
+                chat_id,
+                payload["document_path"],
+                topic_id=topic_id,
+                caption=payload.get("caption"),
+                parse_mode=payload.get("parse_mode"),
+            )
+        raise RuntimeError(f"Unsupported op_type {op_type!r} in test delivery manager.")
+
+
+def load_event_types(paths) -> list[str]:
+    with sqlite3.connect(paths.database) as connection:
+        rows = connection.execute("SELECT event_type FROM events ORDER BY event_id").fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def load_recovery_messages(paths) -> list[str]:
+    with sqlite3.connect(paths.database) as connection:
+        rows = connection.execute(
+            "SELECT payload_json FROM events WHERE source = 'service' AND event_type = 'service.recovery' ORDER BY event_id"
+        ).fetchall()
+    return [json.loads(str(row[0])).get("message", "") for row in rows]
 
 
 class FakeRecorder:
@@ -118,6 +197,24 @@ class ServiceFlowTests(unittest.TestCase):
         self.recorder = FakeRecorder()
         self.metadata = object()
         self.app_lock = object()
+        self._telegram_target = None
+        self._delivery_manager = ImmediateDeliveryManager(lambda: self._telegram_target)
+        original_init = FakeTelegramClient.__init__
+
+        def registered_init(instance, *args, **kwargs):
+            original_init(instance, *args, **kwargs)
+            self._telegram_target = instance
+
+        self._patches = [
+            patch("runtime.performance.active_delivery_manager", return_value=self._delivery_manager),
+            patch.object(FakeTelegramClient, "__init__", registered_init),
+        ]
+        for active_patch in self._patches:
+            active_patch.start()
+
+    def tearDown(self) -> None:
+        for active_patch in reversed(getattr(self, "_patches", [])):
+            active_patch.stop()
 
     def test_status_update_is_handled_without_starting_codex(self) -> None:
         auth = AuthState(
@@ -1039,9 +1136,9 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(active.status, "ACTIVE")
         self.assertTrue(active.attached)
         self.assertEqual(telegram.messages, [(22, f"Started new session {active.session_id}.")])
-        recovery_log = self.paths.recovery_log.read_text(encoding="utf-8")
-        self.assertIn("session_detached_on_new", recovery_log)
-        self.assertIn("session_attached_on_new", recovery_log)
+        recovery_messages = load_recovery_messages(self.paths)
+        self.assertTrue(any("session_detached_on_new" in message for message in recovery_messages))
+        self.assertTrue(any("session_attached_on_new" in message for message in recovery_messages))
 
     def test_stop_command_interrupts_active_turn(self) -> None:
         auth = AuthState(
@@ -1611,9 +1708,7 @@ class ServiceFlowTests(unittest.TestCase):
             login_type="chatgpt",
             login_url="https://example.test/login",
         )
-        from core.json_store import save_json
-
-        save_json(self.paths.codex_server, persisted.to_dict())
+        save_codex_server_state(self.paths, persisted)
         self.runtime_state.codex_state = "AUTH_REQUIRED"
 
         telegram = FakeTelegramClient()
@@ -1632,7 +1727,7 @@ class ServiceFlowTests(unittest.TestCase):
             self.runtime_state,
         )
 
-        updated = load_versioned_state(self.paths.codex_server, CodexServerState.from_dict)
+        updated = load_codex_server_state(self.paths)
         self.assertIsNotNone(updated)
         assert updated is not None
         self.assertFalse(updated.auth_required)
@@ -1737,14 +1832,14 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         sessions = store.list_telegram_sessions(auth)
-        self.assertFalse(any(session.session_id == original.session_id for session in sessions))
+        detached = next(session for session in sessions if session.session_id == original.session_id)
+        self.assertFalse(detached.attached)
+        self.assertEqual(detached.last_completed_turn_id, "turn-old")
         current = next(session for session in sessions if session.session_id == active.session_id)
         self.assertEqual(current.status, "ACTIVE")
         self.assertEqual(telegram.messages, [])
         self.assertEqual(self.recorder.records, [])
-        recovery_log = self.paths.recovery_log.read_text(encoding="utf-8")
-        self.assertIn("hidden_session_output_consumed", recovery_log)
-        self.assertIn("detached_sessions_pruned count=1", recovery_log)
+        self.assertTrue(any("hidden_session_output_consumed" in message for message in load_recovery_messages(self.paths)))
 
     def test_old_thread_delta_does_not_attach_to_new_active_session(self) -> None:
         auth = AuthState(
@@ -2092,9 +2187,7 @@ class ServiceFlowTests(unittest.TestCase):
         codex.pending_notifications.extend(
             [
                 Notification("assistant/message.delta", {"threadId": "thread-1", "text": "Hello *world"}),
-                Notification("assistant/message.partial", {"threadId": "thread-1"}),
                 Notification("assistant/message.delta", {"threadId": "thread-1", "text": " - ok!"}),
-                Notification("assistant/message.partial", {"threadId": "thread-1"}),
             ]
         )
 
@@ -2102,7 +2195,8 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(telegram.messages, [])
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(updated.last_delivered_output_text, "Hello *world - ok!")
+        self.assertEqual(updated.pending_output_text, "Hello *world - ok!")
+        self.assertEqual(updated.last_delivered_output_text, "")
 
     def test_thinking_updates_send_independent_html_message(self) -> None:
         auth = AuthState(
@@ -2136,7 +2230,7 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(
             telegram.message_details,
-            [(22, "<b>Thinking</b>\n\nChecking recent release notes...", None, "HTML", True)],
+            [(22, "Checking recent release notes...", None, "HTML", True)],
         )
 
     def test_partial_answer_updates_do_not_send_intermediate_messages(self) -> None:
@@ -2163,9 +2257,7 @@ class ServiceFlowTests(unittest.TestCase):
         codex.pending_notifications.extend(
             [
                 Notification("assistant/message.delta", {"threadId": "thread-1", "text": "Hello"}),
-                Notification("assistant/message.partial", {"threadId": "thread-1"}),
                 Notification("assistant/message.delta", {"threadId": "thread-1", "text": " world"}),
-                Notification("assistant/message.partial", {"threadId": "thread-1"}),
             ]
         )
 
@@ -2173,6 +2265,8 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(telegram.messages, [])
         self.assertEqual(telegram.edits, [])
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.pending_output_text, "Hello world")
 
     def test_final_reply_uses_telegram_html(self) -> None:
         auth = AuthState(
@@ -2312,8 +2406,8 @@ class ServiceFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        self.assertEqual(telegram.messages, [(22, text)])
-        self.assertFalse((self.paths.root / "telegram_format_failures.log").exists())
+        self.assertEqual(telegram.messages, [(22, to_telegram_html(text))])
+        self.assertNotIn("telegram.format_failure", load_event_types(self.paths))
 
     def test_final_reply_normalizes_mixed_existing_telegram_markdownv2(self) -> None:
         auth = AuthState(
@@ -2358,11 +2452,8 @@ class ServiceFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        self.assertEqual(telegram.parse_modes, ["MarkdownV2"])
-        self.assertEqual(
-            telegram.messages,
-            [(22, "I’m *Tele Cli* \\- your Telegram\\-first personal assistant running on your own device.\n\n\\- one\n\\- two")],
-        )
+        self.assertEqual(telegram.parse_modes, ["HTML"])
+        self.assertEqual(telegram.messages, [(22, to_telegram_html(text))])
 
     def test_final_reply_uses_markdown_code_block_emergency_fallback_and_logs_failure(self) -> None:
         auth = AuthState(
@@ -2402,14 +2493,9 @@ class ServiceFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        failure_log = self.paths.root / "telegram_format_failures.log"
-        self.assertTrue(failure_log.exists())
-        log_text = failure_log.read_text(encoding="utf-8")
-        self.assertIn("\"stage\": \"raw_markdown\"", log_text)
-        self.assertIn("\"stage\": \"formatted_markdown\"", log_text)
-        self.assertIn("\"stage\": \"escaped_markdown\"", log_text)
-        self.assertEqual(telegram.parse_modes, ["MarkdownV2", "MarkdownV2", "MarkdownV2", "MarkdownV2"])
-        self.assertTrue(telegram.messages[0][1].startswith("```\n"))
+        self.assertNotIn("telegram.format_failure", load_event_types(self.paths))
+        self.assertEqual(telegram.parse_modes, ["HTML"])
+        self.assertEqual(telegram.messages, [(22, to_telegram_html("I’m *Tele Cli* - assistant."))])
 
     def test_turn_completed_does_not_duplicate_item_completed_agent_message(self) -> None:
         auth = AuthState(
@@ -2854,7 +2940,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Thinking\n\nChecking recent release notes\\.\\.\\.")])
+        self.assertEqual(telegram.messages, [(22, "Checking recent release notes...")])
         self.assertEqual(updated.thinking_message_text, "Checking recent release notes...")
         self.assertEqual(updated.streaming_output_text, "")
 
@@ -2893,8 +2979,8 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Running\n\n```bash\ngit status --short\n```")])
-        self.assertEqual(updated.thinking_message_text, "__tele_cli_command__:git status --short")
+        self.assertEqual(telegram.messages, [(22, '<pre><code class="language-bash">git status --short</code></pre>')])
+        self.assertEqual(updated.thinking_message_text, '<pre><code class="language-bash">git status --short</code></pre>')
 
     def test_extract_activity_text_from_search_tool(self) -> None:
         text = extract_activity_text(
@@ -3034,7 +3120,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.messages, [(22, "Thinking\n\nChecking")])
+        self.assertEqual(telegram.messages, [(22, "Checking release notes")])
         self.assertEqual(telegram.edits, [])
         self.assertEqual(updated.thinking_message_text, "Checking release notes")
 
@@ -3165,7 +3251,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.streaming_message_id, 1)
         self.assertEqual(updated.streaming_phase, "commentary")
         self.assertEqual(updated.thinking_message_text, "I am using a skill.")
-        self.assertEqual(telegram.edits, [(22, 1, "Thinking\n\nI am using a skill\\.")])
+        self.assertEqual(telegram.edits, [(22, 1, "I am using a skill.")])
 
     def test_drain_codex_notifications_replaces_commentary_with_final_answer(self) -> None:
         auth = AuthState(
@@ -3239,11 +3325,12 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(telegram.edits, [(22, 1, "Checking repo")])
+        self.assertEqual(telegram.edits, [])
         self.assertEqual(telegram.messages, [])
-        self.assertEqual(telegram.deletes, [])
+        self.assertEqual(telegram.deletes, [(22, 1)])
         self.assertIsNone(updated.thinking_message_id)
         self.assertIsNone(updated.streaming_message_id)
+        self.assertEqual(updated.last_delivered_output_text, "Final answer")
 
     def test_commentary_stream_keeps_only_latest_pending_update_until_min_interval(self) -> None:
         auth = AuthState(
@@ -3373,7 +3460,13 @@ class ServiceFlowTests(unittest.TestCase):
         updated = store.get_or_create_telegram_session(auth, topic_id=120)
         self.assertEqual(updated.last_delivered_output_text, "Final answer")
         self.assertEqual(updated.streaming_message_id, None)
-        self.assertEqual(telegram.messages, [(-1001, "Final answer", 120)])
+        self.assertEqual(
+            telegram.edits,
+            [
+                (-1001, 7, "Checking repo"),
+                (-1001, 7, "<blockquote expandable>Checking repo</blockquote>\n\nFinal answer"),
+            ],
+        )
 
     def test_drain_codex_notifications_respects_max_notifications_budget(self) -> None:
         auth = AuthState(
@@ -3450,7 +3543,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.thinking_message_text, "")
         self.assertEqual(updated.streaming_output_text, "Collecting release notes and grouping changes by date.")
         self.assertEqual(updated.pending_output_text, "")
-        self.assertEqual(telegram.edits, [(22, 1, "Collecting release notes and grouping changes by date\\.")])
+        self.assertEqual(telegram.edits, [(22, 1, "Collecting release notes and grouping changes by date.")])
 
     def test_extract_assistant_text_reads_structured_text_object(self) -> None:
         text = extract_assistant_text(
@@ -3546,6 +3639,7 @@ class ServiceFlowTests(unittest.TestCase):
         )
         store = SessionStore(self.paths)
         session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
         store.save_session(session)
@@ -3575,6 +3669,7 @@ class ServiceFlowTests(unittest.TestCase):
         session = store.get_or_create_telegram_session(auth)
         session.transport_chat_id = 44
         session.transport_topic_id = 77
+        session.thread_id = "thread-1"
         session.active_turn_id = "turn-1"
         session.status = "RUNNING_TURN"
         store.save_session(session)

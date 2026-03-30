@@ -12,6 +12,21 @@ from runtime.control import classify_service_conflict, handle_service_conflict
 from runtime.service import build_status_message, handle_authorized_message
 
 
+class ImmediateDeliveryManager:
+    def __init__(self, target_getter):
+        self._target_getter = target_getter
+
+    def enqueue_and_wait(self, *, op_type: str, payload: dict, chat_id: int, topic_id: int | None = None, **metadata):
+        target = self._target_getter()
+        if target is None:
+            raise RuntimeError("No Telegram test target is registered.")
+        if op_type == "send_message":
+            return target.send_message(chat_id, str(payload["text"]))
+        if op_type == "edit_message":
+            return target.edit_message_text(chat_id, int(payload["message_id"]), str(payload["text"]))
+        raise RuntimeError(f"Unsupported op_type {op_type!r} in test delivery manager.")
+
+
 class FakeLockFile:
     def __init__(self, inspection: LockInspection):
         self._inspection = inspection
@@ -58,6 +73,26 @@ class FakeCodex:
 
 
 class ServiceLifecycleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._telegram_target = None
+        self._delivery_manager = ImmediateDeliveryManager(lambda: self._telegram_target)
+        original_init = FakeTelegram.__init__
+
+        def registered_init(instance, *args, **kwargs):
+            original_init(instance, *args, **kwargs)
+            self._telegram_target = instance
+
+        self._patches = [
+            patch("runtime.performance.active_delivery_manager", return_value=self._delivery_manager),
+            patch.object(FakeTelegram, "__init__", registered_init),
+        ]
+        for active_patch in self._patches:
+            active_patch.start()
+
+    def tearDown(self) -> None:
+        for active_patch in reversed(getattr(self, "_patches", [])):
+            active_patch.stop()
+
     def test_classify_service_conflict_recognizes_live_unknown(self) -> None:
         inspection = LockInspection(
             exists=True,
@@ -95,7 +130,7 @@ class ServiceLifecycleTests(unittest.TestCase):
         )
         with (
             patch("runtime.control.isatty", return_value=False),
-            patch("runtime.control.append_recovery_log"),
+            patch("runtime.control.log_recovery_event"),
         ):
             with self.assertRaises(SystemExit):
                 handle_service_conflict(paths, lock)
@@ -121,7 +156,7 @@ class ServiceLifecycleTests(unittest.TestCase):
         )
         with (
             patch("runtime.control.isatty", return_value=False),
-            patch("runtime.control.append_recovery_log"),
+            patch("runtime.control.log_recovery_event"),
         ):
             handle_service_conflict(paths, lock)
         self.assertTrue(lock.cleared)

@@ -165,6 +165,7 @@ class SessionRecord:
     pending_output_updated_at: Optional[str] = None
     last_completed_turn_id: Optional[str] = None
     last_delivered_output_text: str = ""
+    current_trace_id: Optional[str] = None
     status: str = "ACTIVE"
     instructions_dirty: bool = True
     last_seen_generation: int = 0

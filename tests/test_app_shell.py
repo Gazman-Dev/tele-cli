@@ -10,6 +10,7 @@ from core.json_store import save_json
 from core.models import AuthState, CodexServerState, Config, LockMetadata, RuntimeState, SetupState
 from core.paths import build_paths
 from demo_ui.state import DemoExit
+from storage.runtime_state_store import save_codex_server_state, save_runtime_state
 
 
 class FakeUi:
@@ -262,8 +263,8 @@ class AppShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
-            save_json(
-                paths.codex_server,
+            save_codex_server_state(
+                paths,
                 CodexServerState(
                     transport="stdio://",
                     initialized=True,
@@ -271,7 +272,7 @@ class AppShellTests(unittest.TestCase):
                     login_type="chatgpt",
                     login_url="https://example.test/login",
                     capabilities={"threads": True},
-                ).to_dict(),
+                ),
             )
 
             items = DefaultAppShellBackend().build_menu_items(paths)
@@ -295,8 +296,8 @@ class AppShellTests(unittest.TestCase):
                     cwd=str(paths.root),
                 ).to_dict(),
             )
-            save_json(
-                paths.runtime,
+            save_runtime_state(
+                paths,
                 RuntimeState(
                     session_id="1",
                     service_state="RUNNING",
@@ -304,7 +305,7 @@ class AppShellTests(unittest.TestCase):
                     telegram_state="RUNNING",
                     recorder_state="RUNNING",
                     debug_state="IDLE",
-                ).to_dict(),
+                ),
             )
 
             with patch("app_shell.LockFile.inspect") as inspect:
@@ -346,8 +347,8 @@ class AppShellTests(unittest.TestCase):
                     paired_at="now",
                 ).to_dict(),
             )
-            save_json(
-                paths.runtime,
+            save_runtime_state(
+                paths,
                 RuntimeState(
                     session_id="1",
                     service_state="RUNNING",
@@ -355,10 +356,10 @@ class AppShellTests(unittest.TestCase):
                     telegram_state="RUNNING",
                     recorder_state="RUNNING",
                     debug_state="RUNNING",
-                ).to_dict(),
+                ),
             )
-            save_json(
-                paths.codex_server,
+            save_codex_server_state(
+                paths,
                 CodexServerState(
                     transport="stdio://",
                     initialized=True,
@@ -367,7 +368,7 @@ class AppShellTests(unittest.TestCase):
                     login_type="chatgpt",
                     login_url="https://example.test/login",
                     capabilities={"threads": True},
-                ).to_dict(),
+                ),
             )
 
             with patch("app_shell.LockFile.inspect") as inspect:
@@ -410,8 +411,8 @@ class AppShellTests(unittest.TestCase):
                     paired_at="now",
                 ).to_dict(),
             )
-            save_json(
-                paths.runtime,
+            save_runtime_state(
+                paths,
                 RuntimeState(
                     session_id="1",
                     service_state="RUNNING",
@@ -419,7 +420,7 @@ class AppShellTests(unittest.TestCase):
                     telegram_state="RUNNING",
                     recorder_state="RUNNING",
                     debug_state="RUNNING",
-                ).to_dict(),
+                ),
             )
 
             status = DefaultAppShellBackend().build_status(paths)

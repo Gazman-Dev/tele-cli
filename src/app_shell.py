@@ -10,12 +10,10 @@ from contextlib import redirect_stdout
 from typing import Protocol
 
 from core.json_store import load_json, save_json
-from core.logging_utils import append_recovery_log
 from core.locks import LockFile
-from core.models import AuthState, CodexServerState, Config, RuntimeState, SetupState
+from core.models import AuthState, Config, SetupState
 from core.paths import AppPaths
 from core.process import describe_process
-from core.state_versions import load_versioned_state
 from demo_ui.state import Colors, DemoExit, MenuItem
 from demo_ui.ui import TerminalUI
 from integrations.telegram import (
@@ -28,6 +26,8 @@ from integrations.telegram import (
 )
 from local_chat import run_local_chat
 from runtime.service import reset_auth
+from storage.diagnostics import log_recovery_event
+from storage.runtime_state_store import load_codex_server_state, load_runtime_state
 from setup.admin import run_uninstall, run_update
 from setup.host_service import build_service_registration, current_service_manager
 from setup.recovery import (
@@ -132,8 +132,8 @@ class DefaultAppShellBackend:
     def build_status(self, paths: AppPaths) -> AppShellStatus:
         setup = load_json(paths.setup_lock, SetupState.from_dict)
         auth = load_json(paths.auth, AuthState.from_dict)
-        runtime = load_json(paths.runtime, RuntimeState.from_dict)
-        codex_server = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+        runtime = load_runtime_state(paths)
+        codex_server = load_codex_server_state(paths)
         config = load_json(paths.config, Config.from_dict)
         inspection = LockFile(paths.app_lock).inspect()
 
@@ -202,7 +202,7 @@ class DefaultAppShellBackend:
             MenuItem("Run setup", "setup"),
         ]
         auth = load_json(paths.auth, AuthState.from_dict)
-        codex_server = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+        codex_server = load_codex_server_state(paths)
         if auth and has_pending_pairing(auth):
             items.append(MenuItem("Complete Telegram pairing", "complete-pairing"))
         if codex_server and codex_server.auth_required:
@@ -349,10 +349,7 @@ class DefaultAppShellBackend:
         bot = TelegramClient(auth.bot_token)
         assert auth.telegram_chat_id is not None
         bot.send_message(auth.telegram_chat_id, "Pairing complete. Tele Cli is now authorized for this chat.")
-        append_recovery_log(
-            paths.recovery_log,
-            f"telegram paired chat_id={auth.telegram_chat_id} user_id={auth.telegram_user_id}",
-        )
+        log_recovery_event(paths, f"telegram paired chat_id={auth.telegram_chat_id} user_id={auth.telegram_user_id}")
         return True, None
 
     def get_duplicate_service_registrations(self, paths: AppPaths) -> list[str]:

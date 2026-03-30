@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +38,24 @@ class ApprovalStoreTests(unittest.TestCase):
             stale = store.stale()
             self.assertEqual(len(stale), 1)
             self.assertEqual(stale[0].request_id, 7)
+
+    def test_large_approval_params_spill_to_artifact_and_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = ApprovalStore(paths)
+            large_params = {"tool": "shell", "output": "x" * 9000}
+            store.add(ApprovalRecord(request_id=99, method="approval/request", params=large_params))
+
+            pending = store.get_pending(99)
+
+            self.assertIsNotNone(pending)
+            assert pending is not None
+            self.assertEqual(pending.params, large_params)
+
+            with sqlite3.connect(paths.database) as connection:
+                row = connection.execute("SELECT params_json FROM approvals WHERE request_id = 99").fetchone()
+
+            self.assertIn('"storage":"artifact"', row[0])
 
 
 if __name__ == "__main__":

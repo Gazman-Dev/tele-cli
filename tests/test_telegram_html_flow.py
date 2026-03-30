@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from core.models import AuthState
 from core.paths import build_paths
@@ -38,10 +39,74 @@ class FakeCodex:
         return None
 
 
+class ImmediateDeliveryManager:
+    def __init__(self, target_getter):
+        self._target_getter = target_getter
+
+    @staticmethod
+    def _call(func, *args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except TypeError:
+            reduced = dict(kwargs)
+            for key in ("disable_notification", "parse_mode", "topic_id", "caption"):
+                reduced.pop(key, None)
+                try:
+                    return func(*args, **reduced)
+                except TypeError:
+                    continue
+            raise
+
+    def enqueue_and_wait(self, *, op_type: str, payload: dict, chat_id: int, topic_id: int | None = None, **metadata):
+        target = self._target_getter()
+        if target is None:
+            raise RuntimeError("No Telegram test target is registered.")
+        if op_type == "send_message":
+            return self._call(
+                target.send_message,
+                chat_id,
+                str(payload["text"]),
+                topic_id=topic_id,
+                parse_mode=payload.get("parse_mode"),
+                disable_notification=bool(metadata.get("disable_notification")),
+            )
+        if op_type == "edit_message":
+            return self._call(
+                target.edit_message_text,
+                chat_id,
+                int(payload["message_id"]),
+                str(payload["text"]),
+                parse_mode=payload.get("parse_mode"),
+            )
+        if op_type == "delete_message":
+            return target.delete_message(chat_id, int(payload["message_id"]))
+        if op_type == "typing":
+            return target.send_typing(chat_id, topic_id=topic_id)
+        raise RuntimeError(f"Unsupported op_type {op_type!r} in test delivery manager.")
+
+
 class TelegramHtmlFlowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.paths = build_paths(Path.cwd() / ".test_state" / "telegram_html_flow" / str(uuid.uuid4()))
         self.recorder = FakeRecorder()
+        self._telegram_target = None
+        self._delivery_manager = ImmediateDeliveryManager(lambda: self._telegram_target)
+        original_init = FakeTelegramClient.__init__
+
+        def registered_init(instance, *args, **kwargs):
+            original_init(instance, *args, **kwargs)
+            self._telegram_target = instance
+
+        self._patches = [
+            patch("runtime.performance.active_delivery_manager", return_value=self._delivery_manager),
+            patch.object(FakeTelegramClient, "__init__", registered_init),
+        ]
+        for active_patch in self._patches:
+            active_patch.start()
+
+    def tearDown(self) -> None:
+        for active_patch in reversed(getattr(self, "_patches", [])):
+            active_patch.stop()
 
     def test_reasoning_update_sends_single_live_html_message(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")

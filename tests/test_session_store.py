@@ -206,8 +206,8 @@ class SessionStoreTests(unittest.TestCase):
             replacement = store.create_new_local_session("main")
             sessions = store.list_local_sessions("main")
 
-            archived = next(session for session in sessions if session.session_id == original.session_id)
-            self.assertFalse(archived.attached)
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0].session_id, replacement.session_id)
             self.assertEqual(replacement.transport_channel, "main")
 
 

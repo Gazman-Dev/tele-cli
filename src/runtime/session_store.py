@@ -7,9 +7,10 @@ from pathlib import Path
 
 from core.models import AuthState, SessionRecord, utc_now
 from core.paths import AppPaths
-from core.state_versions import load_versioned_state, save_versioned_state
+from storage.db import StorageManager
+from storage.payloads import json_dumps, json_loads
 
-from .instructions import session_short_memory_path
+from .instructions import session_short_memory_path, session_short_memory_relpath
 
 _SESSION_STORE_LOCK = threading.RLock()
 
@@ -29,21 +30,220 @@ class SessionStoreState:
 class SessionStore:
     def __init__(self, paths: AppPaths):
         self.paths = paths
+        self.storage = StorageManager(paths)
 
     @staticmethod
     def _stabilize_session(updated_session: SessionRecord, existing_session: SessionRecord | None = None) -> SessionRecord:
         stabilized = SessionRecord.from_dict(updated_session.to_dict())
         if stabilized.active_turn_id and not stabilized.thread_id and existing_session and existing_session.thread_id:
             stabilized.thread_id = existing_session.thread_id
+        if stabilized.active_turn_id and not stabilized.thread_id:
+            stabilized.active_turn_id = None
+            if stabilized.status == "RUNNING_TURN":
+                stabilized.status = "ACTIVE"
         return stabilized
+
+    @staticmethod
+    def _row_to_session(row) -> SessionRecord:
+        payload = {
+            "session_id": row["session_id"],
+            "transport": row["transport"],
+            "transport_user_id": row["transport_user_id"],
+            "transport_chat_id": row["transport_chat_id"],
+            "transport_topic_id": row["transport_topic_id"],
+            "transport_channel": row["transport_channel"],
+            "attached": bool(row["attached"]),
+            "thread_id": row["thread_id"],
+            "active_turn_id": row["active_turn_id"],
+            "streaming_message_id": row["streaming_message_id"],
+            "streaming_message_ids": json_loads(row["streaming_message_ids_json"], []),
+            "thinking_message_id": row["thinking_message_id"],
+            "thinking_message_ids": json_loads(row["thinking_message_ids_json"], []),
+            "thinking_live_message_ids": json_loads(row["thinking_live_message_ids_json"], {}),
+            "thinking_live_texts": json_loads(row["thinking_live_texts_json"], {}),
+            "thinking_sent_texts": json_loads(row["thinking_sent_texts_json"], {}),
+            "thinking_history_order": json_loads(row["thinking_history_order_json"], []),
+            "thinking_history_by_source": json_loads(row["thinking_history_by_source_json"], {}),
+            "streaming_output_text": row["streaming_output_text"],
+            "streaming_phase": row["streaming_phase"],
+            "thinking_message_text": row["thinking_message_text"],
+            "thinking_history_text": row["thinking_history_text"],
+            "last_thinking_sent_text": row["last_thinking_sent_text"],
+            "pending_output_text": row["pending_output_text"],
+            "queued_user_input_text": row["queued_user_input_text"],
+            "pending_output_updated_at": row["pending_output_updated_at"],
+            "last_completed_turn_id": row["last_completed_turn_id"],
+            "last_delivered_output_text": row["last_delivered_output_text"],
+            "status": row["status"],
+            "instructions_dirty": bool(row["instructions_dirty"]),
+            "last_seen_generation": int(row["last_seen_generation"]),
+            "created_at": row["created_at"],
+            "last_user_message_at": row["last_user_message_at"],
+            "last_agent_message_at": row["last_agent_message_at"],
+            "current_trace_id": row["current_trace_id"],
+        }
+        return SessionRecord.from_dict(payload)
+
+    @staticmethod
+    def _session_values(session: SessionRecord) -> tuple[object, ...]:
+        return (
+            session.session_id,
+            session.transport,
+            session.transport_user_id,
+            session.transport_chat_id,
+            session.transport_topic_id,
+            session.transport_channel,
+            1 if session.attached else 0,
+            session.status,
+            session.thread_id,
+            session.active_turn_id,
+            session.last_completed_turn_id,
+            getattr(session, "current_trace_id", None),
+            1 if session.instructions_dirty else 0,
+            int(session.last_seen_generation),
+            session.created_at,
+            session.last_user_message_at,
+            session.last_agent_message_at,
+            session.streaming_message_id,
+            json_dumps(session.streaming_message_ids),
+            session.thinking_message_id,
+            json_dumps(session.thinking_message_ids),
+            json_dumps(session.thinking_live_message_ids),
+            json_dumps(session.thinking_live_texts),
+            json_dumps(session.thinking_sent_texts),
+            json_dumps(session.thinking_history_order),
+            json_dumps(session.thinking_history_by_source),
+            session.streaming_output_text,
+            session.streaming_phase,
+            session.thinking_message_text,
+            session.thinking_history_text,
+            session.last_thinking_sent_text,
+            session.pending_output_text,
+            session.queued_user_input_text,
+            session.pending_output_updated_at,
+            session.last_delivered_output_text,
+        )
+
+    def _upsert_session(self, connection, session: SessionRecord) -> None:
+        connection.execute(
+            """
+            INSERT INTO sessions(
+                session_id, transport, transport_user_id, transport_chat_id, transport_topic_id, transport_channel,
+                attached, status, thread_id, active_turn_id, last_completed_turn_id, current_trace_id,
+                instructions_dirty, last_seen_generation, created_at, last_user_message_at, last_agent_message_at,
+                streaming_message_id, streaming_message_ids_json, thinking_message_id, thinking_message_ids_json,
+                thinking_live_message_ids_json, thinking_live_texts_json, thinking_sent_texts_json,
+                thinking_history_order_json, thinking_history_by_source_json, streaming_output_text, streaming_phase,
+                thinking_message_text, thinking_history_text, last_thinking_sent_text, pending_output_text,
+                queued_user_input_text, pending_output_updated_at, last_delivered_output_text
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            ON CONFLICT(session_id) DO UPDATE SET
+                transport = excluded.transport,
+                transport_user_id = excluded.transport_user_id,
+                transport_chat_id = excluded.transport_chat_id,
+                transport_topic_id = excluded.transport_topic_id,
+                transport_channel = excluded.transport_channel,
+                attached = excluded.attached,
+                status = excluded.status,
+                thread_id = excluded.thread_id,
+                active_turn_id = excluded.active_turn_id,
+                last_completed_turn_id = excluded.last_completed_turn_id,
+                current_trace_id = excluded.current_trace_id,
+                instructions_dirty = excluded.instructions_dirty,
+                last_seen_generation = excluded.last_seen_generation,
+                created_at = excluded.created_at,
+                last_user_message_at = excluded.last_user_message_at,
+                last_agent_message_at = excluded.last_agent_message_at,
+                streaming_message_id = excluded.streaming_message_id,
+                streaming_message_ids_json = excluded.streaming_message_ids_json,
+                thinking_message_id = excluded.thinking_message_id,
+                thinking_message_ids_json = excluded.thinking_message_ids_json,
+                thinking_live_message_ids_json = excluded.thinking_live_message_ids_json,
+                thinking_live_texts_json = excluded.thinking_live_texts_json,
+                thinking_sent_texts_json = excluded.thinking_sent_texts_json,
+                thinking_history_order_json = excluded.thinking_history_order_json,
+                thinking_history_by_source_json = excluded.thinking_history_by_source_json,
+                streaming_output_text = excluded.streaming_output_text,
+                streaming_phase = excluded.streaming_phase,
+                thinking_message_text = excluded.thinking_message_text,
+                thinking_history_text = excluded.thinking_history_text,
+                last_thinking_sent_text = excluded.last_thinking_sent_text,
+                pending_output_text = excluded.pending_output_text,
+                queued_user_input_text = excluded.queued_user_input_text,
+                pending_output_updated_at = excluded.pending_output_updated_at,
+                last_delivered_output_text = excluded.last_delivered_output_text
+            """,
+            self._session_values(session),
+        )
+        connection.execute(
+            """
+            INSERT INTO session_short_memory(session_id, short_memory_relpath, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                short_memory_relpath = excluded.short_memory_relpath,
+                updated_at = excluded.updated_at
+            """,
+            (session.session_id, session_short_memory_relpath(session.session_id), utc_now()),
+        )
+
+    def _touch_short_memory(self, session_id: str, connection=None) -> None:
+        path = self.short_memory_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+        if connection is not None:
+            connection.execute(
+                """
+                INSERT INTO session_short_memory(session_id, short_memory_relpath, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    short_memory_relpath = excluded.short_memory_relpath,
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, session_short_memory_relpath(session_id), utc_now()),
+            )
+
+    def _select_sessions(self, query: str = "", params: tuple[object, ...] = ()) -> list[SessionRecord]:
+        sql = "SELECT * FROM sessions"
+        if query:
+            sql = f"{sql} {query}"
+        with self.storage.read_connection() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [self._row_to_session(row) for row in rows]
+
+    def _select_single_session(self, where: str, params: tuple[object, ...]) -> SessionRecord | None:
+        rows = self._select_sessions(f"{where} LIMIT 1", params)
+        return rows[0] if rows else None
 
     def load(self) -> SessionStoreState:
         with _SESSION_STORE_LOCK:
-            return load_versioned_state(self.paths.sessions, SessionStoreState.from_dict) or SessionStoreState()
+            return SessionStoreState(self._select_sessions("ORDER BY created_at, session_id"))
 
     def save(self, state: SessionStoreState) -> None:
         with _SESSION_STORE_LOCK:
-            save_versioned_state(self.paths.sessions, state.to_dict())
+            session_ids = {session.session_id for session in state.sessions}
+            with self.storage.transaction() as connection:
+                protected_clause = """
+                    AND NOT EXISTS (SELECT 1 FROM approvals WHERE approvals.session_id = sessions.session_id)
+                    AND NOT EXISTS (SELECT 1 FROM traces WHERE traces.session_id = sessions.session_id)
+                    AND NOT EXISTS (SELECT 1 FROM events WHERE events.session_id = sessions.session_id)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM telegram_message_groups
+                        WHERE telegram_message_groups.session_id = sessions.session_id
+                    )
+                """
+                if session_ids:
+                    placeholders = ",".join("?" for _ in session_ids)
+                    connection.execute(
+                        f"DELETE FROM sessions WHERE session_id NOT IN ({placeholders}) {protected_clause}",
+                        tuple(session_ids),
+                    )
+                else:
+                    connection.execute(f"DELETE FROM sessions WHERE 1 = 1 {protected_clause}")
+                for session in state.sessions:
+                    self._upsert_session(connection, session)
+                    self._touch_short_memory(session.session_id, connection)
 
     @staticmethod
     def is_writable(session: SessionRecord) -> bool:
@@ -55,11 +255,7 @@ class SessionStore:
 
     @staticmethod
     def is_prunable_detached(session: SessionRecord) -> bool:
-        return (
-            not session.attached
-            and session.active_turn_id is None
-            and not session.pending_output_text
-        )
+        return not session.attached and session.active_turn_id is None and not session.pending_output_text
 
     @staticmethod
     def _matches_transport(session: SessionRecord, auth: AuthState, topic_id: int | None = None) -> bool:
@@ -73,20 +269,11 @@ class SessionStore:
     def _matches_local_channel(session: SessionRecord, channel: str) -> bool:
         return session.transport == "local" and session.transport_channel == channel
 
-    def _touch_short_memory(self, session_id: str) -> None:
-        path = self.short_memory_path(session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch(exist_ok=True)
-
     def get_or_create_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord:
         with _SESSION_STORE_LOCK:
             state = self.load()
-            matching = [
-                session
-                for session in state.sessions
-                if self._matches_transport(session, auth, topic_id) and session.attached
-            ]
-            active = next((session for session in matching if self.is_writable(session)), None)
+            matching = [s for s in state.sessions if self._matches_transport(s, auth, topic_id) and s.attached]
+            active = next((s for s in matching if self.is_writable(s)), None)
             if active is not None:
                 return active
             if matching:
@@ -98,21 +285,17 @@ class SessionStore:
                 transport_chat_id=auth.telegram_chat_id,
                 transport_topic_id=topic_id,
             )
-            state.sessions.append(session)
-            self.save(state)
+            self.save_session(session)
             self._touch_short_memory(session.session_id)
             return session
 
     def save_session(self, updated_session: SessionRecord) -> None:
         with _SESSION_STORE_LOCK:
-            state = self.load()
-            for index, session in enumerate(state.sessions):
-                if session.session_id == updated_session.session_id:
-                    state.sessions[index] = self._stabilize_session(updated_session, session)
-                    self.save(state)
-                    return
-            state.sessions.append(self._stabilize_session(updated_session))
-            self.save(state)
+            existing = self._select_single_session("WHERE session_id = ?", (updated_session.session_id,))
+            session = self._stabilize_session(updated_session, existing)
+            with self.storage.transaction() as connection:
+                self._upsert_session(connection, session)
+                self._touch_short_memory(session.session_id, connection)
 
     def mark_user_message(self, session: SessionRecord) -> SessionRecord:
         session.last_user_message_at = utc_now()
@@ -130,7 +313,7 @@ class SessionStore:
             for session in state.sessions:
                 if self._matches_transport(session, auth, topic_id):
                     session.attached = False
-            state.sessions = [session for session in state.sessions if not self.is_prunable_detached(session)]
+            state.sessions = [s for s in state.sessions if not self.is_prunable_detached(s)]
             session = SessionRecord(
                 session_id=str(uuid.uuid4()),
                 transport="telegram",
@@ -149,12 +332,8 @@ class SessionStore:
             raise ValueError("Local channel name is required.")
         with _SESSION_STORE_LOCK:
             state = self.load()
-            matching = [
-                session
-                for session in state.sessions
-                if self._matches_local_channel(session, normalized) and session.attached
-            ]
-            active = next((session for session in matching if self.is_writable(session)), None)
+            matching = [s for s in state.sessions if self._matches_local_channel(s, normalized) and s.attached]
+            active = next((s for s in matching if self.is_writable(s)), None)
             if active is not None:
                 return active
             if matching:
@@ -166,8 +345,7 @@ class SessionStore:
                 transport_chat_id=None,
                 transport_channel=normalized,
             )
-            state.sessions.append(session)
-            self.save(state)
+            self.save_session(session)
             self._touch_short_memory(session.session_id)
             return session
 
@@ -180,7 +358,7 @@ class SessionStore:
             for session in state.sessions:
                 if self._matches_local_channel(session, normalized):
                     session.attached = False
-            state.sessions = [session for session in state.sessions if not self.is_prunable_detached(session)]
+            state.sessions = [s for s in state.sessions if not self.is_prunable_detached(s)]
             session = SessionRecord(
                 session_id=str(uuid.uuid4()),
                 transport="local",
@@ -197,12 +375,10 @@ class SessionStore:
         normalized = channel.strip()
         if not normalized:
             return []
-        state = self.load()
-        return [
-            session
-            for session in state.sessions
-            if self._matches_local_channel(session, normalized)
-        ]
+        return self._select_sessions(
+            "WHERE transport = 'local' AND transport_channel = ? ORDER BY created_at, session_id",
+            (normalized,),
+        )
 
     def get_current_local_session(self, channel: str) -> SessionRecord | None:
         sessions = list(reversed(self.list_local_sessions(channel)))
@@ -222,12 +398,10 @@ class SessionStore:
         return session_short_memory_path(self.paths, session_id)
 
     def list_telegram_sessions(self, auth: AuthState, topic_id: int | None = None) -> list[SessionRecord]:
-        state = self.load()
-        return [
-            session
-            for session in state.sessions
-            if self._matches_transport(session, auth, topic_id)
-        ]
+        return self._select_sessions(
+            "WHERE transport = 'telegram' AND transport_chat_id IS ? AND transport_topic_id IS ? ORDER BY created_at, session_id",
+            (auth.telegram_chat_id, topic_id),
+        )
 
     def get_active_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord | None:
         sessions = list(reversed(self.list_telegram_sessions(auth, topic_id)))
@@ -248,25 +422,13 @@ class SessionStore:
         return any(session.attached and session.status == "RECOVERING_TURN" for session in sessions)
 
     def find_by_turn_id(self, turn_id: str) -> SessionRecord | None:
-        state = self.load()
-        for session in state.sessions:
-            if session.active_turn_id == turn_id:
-                return session
-        return None
+        return self._select_single_session("WHERE active_turn_id = ?", (turn_id,))
 
     def find_by_thread_id(self, thread_id: str) -> SessionRecord | None:
-        state = self.load()
-        for session in state.sessions:
-            if session.thread_id == thread_id:
-                return session
-        return None
+        return self._select_single_session("WHERE thread_id = ?", (thread_id,))
 
     def find_by_completed_turn_id(self, turn_id: str) -> SessionRecord | None:
-        state = self.load()
-        for session in state.sessions:
-            if session.last_completed_turn_id == turn_id:
-                return session
-        return None
+        return self._select_single_session("WHERE last_completed_turn_id = ?", (turn_id,))
 
     def append_pending_output(self, session: SessionRecord, text: str) -> SessionRecord:
         if text:
@@ -290,11 +452,12 @@ class SessionStore:
     def prune_detached_sessions(self) -> int:
         state = self.load()
         before = len(state.sessions)
-        state.sessions = [session for session in state.sessions if not self.is_prunable_detached(session)]
-        removed = before - len(state.sessions)
-        if removed:
+        state.sessions = [s for s in state.sessions if not self.is_prunable_detached(s)]
+        expected_removed = before - len(state.sessions)
+        if expected_removed:
             self.save(state)
-        return removed
+        after = len(self.load().sessions)
+        return max(before - after, 0)
 
     def mark_recovering_turns(self) -> list[SessionRecord]:
         state = self.load()

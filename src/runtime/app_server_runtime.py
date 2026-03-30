@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 import time
 from typing import Any, Callable
 
-from core.json_store import save_json
 from core.models import AuthState, CodexServerState, Config, RuntimeState
 from core.paths import AppPaths
-from core.state_versions import load_versioned_state, save_versioned_state
+from storage.runtime_state_store import save_codex_server_state, save_runtime_state
+from storage.operations import TraceStore
 
 from .app_server_client import AppServerClient
 from .approval_store import ApprovalRecord
@@ -107,6 +107,7 @@ class AppServerSession:
         self.config = config
         self.performance = performance
         self._resumed_threads: set[str] = set()
+        self.trace_store = TraceStore(session_store.paths)
 
     def _build_turn_input(self, session, text: str, *, recovered_from_error: bool = False) -> str:
         user_request = text
@@ -195,6 +196,13 @@ class AppServerSession:
                     self._steer_active_turn(thread_id, session.active_turn_id, text)
                     session.status = "RUNNING_TURN"
                     self.session_store.save_session(session)
+                    if getattr(session, "current_trace_id", None):
+                        self.trace_store.update_trace(
+                            session.current_trace_id,
+                            thread_id=thread_id,
+                            turn_id=session.active_turn_id,
+                            session_id=session.session_id,
+                        )
                     if self.performance is not None:
                         self.performance.mark_turn_registered(session)
                     return False
@@ -228,6 +236,8 @@ class AppServerSession:
                 thread_id = None
             session.thread_id = thread_id
             self.session_store.save_session(session)
+            if thread_id and getattr(session, "current_trace_id", None):
+                self.trace_store.update_trace(session.current_trace_id, thread_id=thread_id, session_id=session.session_id)
             if thread_id:
                 self._resumed_threads.add(thread_id)
                 if self.performance is not None:
@@ -244,6 +254,8 @@ class AppServerSession:
                 thread_id = None
             session.thread_id = thread_id
             self.session_store.save_session(session)
+            if thread_id and getattr(session, "current_trace_id", None):
+                self.trace_store.update_trace(session.current_trace_id, thread_id=thread_id, session_id=session.session_id)
             if thread_id:
                 self._resumed_threads.add(thread_id)
                 if self.performance is not None:
@@ -271,6 +283,13 @@ class AppServerSession:
         session.instructions_dirty = False
         session.last_seen_generation = current_generation(self.session_store.paths)
         self.session_store.save_session(session)
+        if getattr(session, "current_trace_id", None):
+            self.trace_store.update_trace(
+                session.current_trace_id,
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                turn_id=session.active_turn_id,
+            )
         if self.performance is not None:
             self.performance.mark_turn_registered(session)
         return recovered_from_error
@@ -451,9 +470,9 @@ def bootstrap_app_server_session(
         account_result=account_result,
         login_result=login_result,
     )
-    save_versioned_state(paths.codex_server, codex_server_state.to_dict())
+    save_codex_server_state(paths, codex_server_state)
     runtime.set_codex_state(derive_codex_state(account_result))
-    save_json(paths.runtime, runtime_state.to_dict())
+    save_runtime_state(paths, runtime_state)
     return AppServerSession(client, session_store, auth, config, performance=performance)
 
 
@@ -495,10 +514,10 @@ def make_app_server_start_fn(
                     pass
             last_error = str(exc)
             runtime.set_codex_state("DEGRADED")
-            save_json(paths.runtime, runtime_state.to_dict())
-            save_versioned_state(
-                paths.codex_server,
-                build_failed_codex_server_state(transport=transport_name, last_error=last_error).to_dict(),
+            save_runtime_state(paths, runtime_state)
+            save_codex_server_state(
+                paths,
+                build_failed_codex_server_state(transport=transport_name, last_error=last_error),
             )
             return None
 

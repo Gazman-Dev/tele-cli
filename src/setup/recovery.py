@@ -4,11 +4,11 @@ from dataclasses import dataclass
 
 from app_meta import APP_VERSION
 from core.locks import LockFile
-from core.logging_utils import append_recovery_log
 from core.models import LockMetadata, SetupState, utc_now
 from core.paths import AppPaths
 from core.process import describe_process, make_lock_metadata, process_exists, safe_kill
 from core.prompts import ask_choice
+from storage.diagnostics import log_recovery_event
 from .state import load_setup_state, save_setup_state
 
 
@@ -57,7 +57,7 @@ def handle_existing_app_lock(app_lock: LockFile, paths: AppPaths, choice: str | 
         print("Another app instance appears to be running.")
         print(describe_process(metadata))
         selected = choice or ask_choice("Resolve live app conflict", ["kill", "ignore", "exit"], default="exit")
-        append_recovery_log(paths.recovery_log, f"live app conflict -> {selected} pid={metadata.pid}")
+        log_recovery_event(paths, f"live app conflict -> {selected} pid={metadata.pid}")
         if selected == "kill":
             safe_kill(metadata.pid)
             app_lock.clear()
@@ -68,7 +68,7 @@ def handle_existing_app_lock(app_lock: LockFile, paths: AppPaths, choice: str | 
     print("A stale app lock was found.")
     print(describe_process(metadata))
     selected = choice or ask_choice("Resolve stale app lock", ["heal", "ignore", "exit"], default="heal")
-    append_recovery_log(paths.recovery_log, f"stale app lock -> {selected} pid={metadata.pid}")
+    log_recovery_event(paths, f"stale app lock -> {selected} pid={metadata.pid}")
     if selected == "heal":
         if metadata.child_codex_pid and process_exists(metadata.child_codex_pid):
             print("A Codex process from a previous run may still be active.")
@@ -98,7 +98,7 @@ def handle_existing_setup(paths: AppPaths, choice: str | None = None) -> SetupSt
     if conflict.kind == "active":
         print("A setup run is already marked as active.")
         selected = choice or ask_choice("Resolve setup conflict", ["kill", "ignore", "exit"], default="exit")
-        append_recovery_log(paths.recovery_log, f"active setup conflict -> {selected} pid={existing.pid}")
+        log_recovery_event(paths, f"active setup conflict -> {selected} pid={existing.pid}")
         if selected == "kill":
             safe_kill(existing.pid)
         elif selected == "exit":
@@ -111,7 +111,7 @@ def handle_existing_setup(paths: AppPaths, choice: str | None = None) -> SetupSt
         f"telegram_token_saved={existing.telegram_token_saved} telegram_validated={existing.telegram_validated}"
     )
     selected = choice or ask_choice("Resolve interrupted setup", ["resume", "restart", "ignore", "exit"], default="resume")
-    append_recovery_log(paths.recovery_log, f"stale setup -> {selected}")
+    log_recovery_event(paths, f"stale setup -> {selected}")
     if selected == "restart":
         state = SetupState(status="started", pid=0, timestamp=utc_now())
         save_setup_state(paths, state)

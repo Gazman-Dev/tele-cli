@@ -7,11 +7,11 @@ from pathlib import Path
 
 from .installer import current_installer
 from core.json_store import load_json, save_json
-from core.logging_utils import append_recovery_log
 from core.models import AuthState, Config
 from core.paths import AppPaths
 from core.prompts import ask_text
 from integrations.telegram import TelegramClient, is_auth_paired
+from storage.diagnostics import log_recovery_event
 from .host_service import build_service_registration, current_service_manager, resolve_duplicate_registrations
 from .pairing import complete_pending_pairing, pair_authorized_operator
 from .recovery import SetupRecoveryChoices, initialize_setup
@@ -135,12 +135,12 @@ def run_setup(paths: AppPaths, recovery_choices: SetupRecoveryChoices | None = N
         setup_state.status = "completed"
         save_setup_state(paths, setup_state)
         save_json(paths.config, config.to_dict())
-        append_recovery_log(paths.recovery_log, "setup completed")
+        log_recovery_event(paths, "setup completed")
         app_lock.clear()
         print("Setup complete.")
     except Exception:
         setup_state.status = "failed"
         save_setup_state(paths, setup_state)
-        append_recovery_log(paths.recovery_log, "setup failed")
+        log_recovery_event(paths, "setup failed")
         app_lock.clear()
         raise

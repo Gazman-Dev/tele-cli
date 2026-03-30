@@ -15,10 +15,8 @@ from urllib.request import urlopen
 
 from .debug_mirror import DebugMirror
 from core.json_store import load_json, save_json
-from core.logging_utils import append_recovery_log
 from core.models import AuthState, CodexServerState, Config, RuntimeState, utc_now
 from core.paths import AppPaths
-from core.state_versions import load_versioned_state, save_versioned_state
 from integrations.telegram import (
     TelegramClient,
     TelegramError,
@@ -28,12 +26,26 @@ from integrations.telegram import (
     register_pairing_request,
 )
 from setup.setup_flow import complete_pending_pairing
+from storage.operations import ServiceRunStore, TraceStore
+from storage.runtime_state_store import (
+    load_codex_server_state,
+    save_codex_server_state,
+    save_runtime_state,
+)
+from storage.telegram_groups import sync_message_chunks, upsert_message_group
+from storage.telegram_queue import install_delivery_manager, uninstall_delivery_manager
 from .app_server_runtime import default_transport_factory, derive_codex_state, is_stale_active_turn, make_app_server_start_fn
 from .approval_store import ApprovalStore
 from .codex_cli_config import read_codex_cli_preferences, write_codex_cli_preferences
 from .control import ServiceConflictChoices, isatty, prepare_service_lock, reset_auth, start_codex_session
 from .instructions import ensure_instruction_files
-from .performance import PerformanceTracker, edit_telegram_message, send_telegram_message
+from .performance import (
+    PerformanceTracker,
+    delete_telegram_message,
+    edit_telegram_message,
+    send_telegram_message,
+    send_telegram_typing,
+)
 from .recorder import Recorder
 from .runtime import ServiceRuntime
 from .session_store import SessionStore
@@ -67,10 +79,9 @@ def service_tick_seconds(config: Config) -> float:
     return max(min(configured, 0.1), 0.01)
 
 
-def append_app_server_notification_log(paths: AppPaths, method: str, params: dict) -> None:
-    paths.root.mkdir(parents=True, exist_ok=True)
+def build_app_server_notification_record(method: str, params: dict) -> dict:
     item = params.get("item") if isinstance(params.get("item"), dict) else {}
-    record = {
+    return {
         "timestamp": utc_now(),
         "method": method,
         "thread_id": params.get("threadId") or params.get("thread_id"),
@@ -82,14 +93,13 @@ def append_app_server_notification_log(paths: AppPaths, method: str, params: dic
         "status_text": extract_event_driven_status(method, params),
         "params": params,
     }
-    with paths.root.joinpath("app_server_notifications.log").open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def append_telegram_format_failure_log(
     paths: AppPaths,
     *,
     session_id: str,
+    trace_id: str | None = None,
     thread_id: str | None,
     turn_id: str | None,
     stage: str,
@@ -99,7 +109,6 @@ def append_telegram_format_failure_log(
     escaped_text: str,
     emergency_text: str | None = None,
 ) -> None:
-    paths.root.mkdir(parents=True, exist_ok=True)
     record = {
         "timestamp": utc_now(),
         "session_id": session_id,
@@ -112,16 +121,50 @@ def append_telegram_format_failure_log(
         "escaped_text": escaped_text,
         "emergency_text": emergency_text,
     }
-    with paths.root.joinpath("telegram_format_failures.log").open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    TraceStore(paths).log_event(
+        source="telegram_outbound",
+        event_type="telegram.format_failure",
+        trace_id=trace_id,
+        session_id=session_id,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        payload=record,
+    )
 
 
 def append_telegram_poll_log(paths: AppPaths, event: str, **fields: object) -> None:
-    paths.root.mkdir(parents=True, exist_ok=True)
     record = {"timestamp": utc_now(), "event": event}
     record.update(fields)
-    with paths.root.joinpath("telegram_poll.log").open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    TraceStore(paths).log_event(
+        source="telegram_inbound",
+        event_type=f"telegram.poll.{event}",
+        payload=record,
+    )
+
+
+def append_recovery_event(
+    paths: AppPaths,
+    message: str,
+    *,
+    run_id: str | None = None,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+    thread_id: str | None = None,
+    turn_id: str | None = None,
+    chat_id: int | None = None,
+    topic_id: int | None = None,
+) -> None:
+    TraceStore(paths, run_id=run_id).log_event(
+        source="service",
+        event_type="service.recovery",
+        trace_id=trace_id,
+        session_id=session_id,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        chat_id=chat_id,
+        topic_id=topic_id,
+        payload={"message": message},
+    )
 
 
 def remember_agent_message_phase(method: str, params: dict) -> str | None:
@@ -296,6 +339,7 @@ def _split_telegram_html_text(text: str, limit: int | None = None) -> list[str]:
 
 
 def _sync_telegram_message_chunks(
+    paths: AppPaths,
     telegram: TelegramClient,
     chat_id: int,
     *,
@@ -309,6 +353,12 @@ def _sync_telegram_message_chunks(
 ) -> None:
     context = dict(context or {})
     context.pop("performance", None)
+    context.setdefault("session_id", session.session_id)
+    context.setdefault("trace_id", getattr(session, "current_trace_id", None))
+    context.setdefault("thread_id", session.thread_id)
+    context.setdefault("turn_id", session.active_turn_id or session.last_completed_turn_id)
+    message_group_id = _message_group_id_for_session(session, context)
+    context.setdefault("message_group_id", message_group_id)
     existing_ids = _streaming_message_ids(session)
     kept_ids: list[int] = []
 
@@ -341,11 +391,24 @@ def _sync_telegram_message_chunks(
 
     for message_id in existing_ids[len(rendered_chunks) :]:
         try:
-            telegram.delete_message(chat_id, message_id)
+            delete_telegram_message(telegram, chat_id, message_id, performance=performance, **context)
         except TelegramError:
             pass
 
     _set_streaming_message_ids(session, kept_ids)
+    if chat_id:
+        upsert_message_group(
+            paths,
+            message_group_id=message_group_id,
+            session_id=session.session_id,
+            trace_id=getattr(session, "current_trace_id", None),
+            chat_id=chat_id,
+            topic_id=topic_id,
+            logical_role=_logical_role_from_context(context),
+            status="active" if _logical_role_from_context(context) == "live_progress" else "finalized",
+            finalized=_logical_role_from_context(context) != "live_progress",
+        )
+        sync_message_chunks(paths, message_group_id=message_group_id, rendered_chunks=rendered_chunks, telegram_message_ids=kept_ids)
 
 
 def _clear_streaming_messages(telegram: TelegramClient | None, chat_id: int | None, session) -> None:
@@ -357,7 +420,7 @@ def _clear_streaming_messages(telegram: TelegramClient | None, chat_id: int | No
         return
     for message_id in _streaming_message_ids(session):
         try:
-            telegram.delete_message(chat_id, message_id)
+            delete_telegram_message(telegram, chat_id, message_id)
         except TelegramError:
             pass
     _set_streaming_message_ids(session, [])
@@ -372,6 +435,21 @@ def _build_final_rendered_chunks(*, answer_html: str, thinking_html: str) -> lis
     if len(thinking_html) + 2 + len(answer_chunks[0]) <= TELEGRAM_TEXT_LIMIT:
         return [f"{thinking_html}\n\n{answer_chunks[0]}"] + answer_chunks[1:]
     return [thinking_html] + answer_chunks
+
+
+def _logical_role_from_context(context: dict | None) -> str:
+    category = str((context or {}).get("category") or "")
+    if category == "thinking_output":
+        return "live_progress"
+    if category == "error":
+        return "error_output"
+    return "final_output"
+
+
+def _message_group_id_for_session(session, context: dict | None) -> str:
+    logical_role = _logical_role_from_context(context)
+    trace_token = getattr(session, "current_trace_id", None) or session.active_turn_id or session.last_completed_turn_id or "session"
+    return f"{session.session_id}:{logical_role}:{trace_token}"
 
 
 def start_telegram_polling_thread(
@@ -407,7 +485,7 @@ def start_telegram_polling_thread(
                 )
                 if runtime_state.telegram_state != "RUNNING":
                     runtime_state.telegram_state = "RUNNING"
-                    save_json(paths.runtime, runtime_state.to_dict())
+                    save_runtime_state(paths, runtime_state)
                 telegram_failures = 0
                 next_poll_at = 0.0
             except TelegramError as exc:
@@ -415,8 +493,11 @@ def start_telegram_polling_thread(
                 delay = telegram_retry_delay(config, telegram_failures)
                 next_poll_at = time.monotonic() + delay
                 runtime_state.telegram_state = "BACKOFF"
-                save_json(paths.runtime, runtime_state.to_dict())
-                append_recovery_log(paths.recovery_log, f"telegram poll failed -> backoff={delay:.1f}s error={exc}")
+                save_runtime_state(paths, runtime_state)
+                append_recovery_event(
+                    paths,
+                    f"telegram poll failed -> backoff={delay:.1f}s error={exc}",
+                )
                 append_telegram_poll_log(paths, "poll_error", error=str(exc), backoff_seconds=delay)
                 continue
             except Exception as exc:
@@ -424,8 +505,11 @@ def start_telegram_polling_thread(
                 delay = telegram_retry_delay(config, telegram_failures)
                 next_poll_at = time.monotonic() + delay
                 runtime_state.telegram_state = "BACKOFF"
-                save_json(paths.runtime, runtime_state.to_dict())
-                append_recovery_log(paths.recovery_log, f"telegram poll crashed -> backoff={delay:.1f}s error={exc}")
+                save_runtime_state(paths, runtime_state)
+                append_recovery_event(
+                    paths,
+                    f"telegram poll crashed -> backoff={delay:.1f}s error={exc}",
+                )
                 append_telegram_poll_log(
                     paths,
                     "poll_crash",
@@ -625,7 +709,7 @@ def restart_codex_runtime(
 ):
     stop_codex_runtime(codex)
     runtime.set_codex_state("STOPPED")
-    save_json(paths.runtime, runtime_state.to_dict())
+    save_runtime_state(paths, runtime_state)
     restarted = None
     if is_auth_paired(auth):
         restarted = invoke_start_codex_session_fn(
@@ -703,20 +787,12 @@ def publish_codex_request_error(
     performance: PerformanceTracker | None = None,
 ) -> None:
     session = session_store.get_current_telegram_session(auth, topic_id) if session_store is not None else None
-    target_chat_id = None
-    if session is not None:
-        target_chat_id = session.transport_chat_id or auth.telegram_chat_id
-    else:
+    target_chat_id = session.transport_chat_id if session is not None else auth.telegram_chat_id
+    if target_chat_id is None:
         target_chat_id = auth.telegram_chat_id
     if not target_chat_id:
         return
-
-    error_html = _render_codex_error_html(error_text)
-    live_html = ""
-    if session is not None:
-        live_html = _render_live_thinking_html(session).strip()
-    rendered_html = error_html if not live_html else f"{live_html}\n\n{error_html}"
-    rendered_chunks = _split_telegram_html_text(rendered_html)
+    live_html = _render_live_thinking_html(session).strip() if session is not None else ""
     context = {
         "performance": performance,
         "category": "error",
@@ -724,29 +800,32 @@ def publish_codex_request_error(
         "thread_id": session.thread_id if session is not None else None,
         "turn_id": session.active_turn_id if session is not None else None,
     }
-    if session is not None and _streaming_message_ids(session):
+    if session is not None and _streaming_message_ids(session) and live_html:
+        rendered_html = f"{live_html}\n\n{_render_codex_error_html(error_text)}"
         _sync_telegram_message_chunks(
+            session_store.paths,
             telegram,
             target_chat_id,
             session=session,
-            rendered_chunks=rendered_chunks,
+            rendered_chunks=_split_telegram_html_text(rendered_html),
             topic_id=session.transport_topic_id,
             parse_mode=TELEGRAM_PARSE_MODE,
             disable_notification=False,
             performance=performance,
             context=context,
         )
-    else:
-        for chunk in rendered_chunks:
-            send_telegram_message(
-                telegram,
-                target_chat_id,
-                chunk,
-                topic_id=session.transport_topic_id if session is not None else topic_id,
-                parse_mode=TELEGRAM_PARSE_MODE,
-                performance=performance,
-                category="error",
-            )
+        return
+    send_telegram_message(
+        telegram,
+        target_chat_id,
+        f"Codex request failed: {error_text}",
+        topic_id=session.transport_topic_id if session is not None else topic_id,
+        performance=performance,
+        category="error",
+        session_id=session.session_id if session is not None else None,
+        thread_id=session.thread_id if session is not None else None,
+        turn_id=session.active_turn_id if session is not None else None,
+    )
 
 
 def extract_update_topic_id(update: dict) -> int | None:
@@ -1052,7 +1131,22 @@ def maybe_stream_partial_output(
     now: datetime | None = None,
     min_interval_seconds: float = 0.6,
 ) -> None:
-    return
+    if not _streaming_message_ids(session):
+        session_store.save_session(session)
+        return
+    if not session.pending_output_text.strip():
+        session_store.save_session(session)
+        return
+    flush_buffer(
+        session.session_id,
+        auth,
+        telegram,
+        recorder,
+        session_store,
+        mark_agent=False,
+        stream_format=True,
+        performance=performance,
+    )
 
 
 def replace_pending_output(session_store: SessionStore, session, text: str) -> None:
@@ -1284,6 +1378,11 @@ def set_visible_thinking_message(
     throttle_key = f"{session.session_id}:{effective_source}"
     now_monotonic = time.monotonic()
     last_sent_at = _THINKING_SOURCE_LAST_SENT_AT.get(throttle_key)
+    if last_sent_at is None and effective_source.startswith("commentary:") and session.last_agent_message_at:
+        recorded_last_sent_at = parse_utc_timestamp(session.last_agent_message_at)
+        if recorded_last_sent_at is not None:
+            age_seconds = max((datetime.now(timezone.utc) - recorded_last_sent_at).total_seconds(), 0.0)
+            last_sent_at = now_monotonic - age_seconds
     if last_sent_at is not None and (now_monotonic - last_sent_at) < min_interval_seconds:
         session.thinking_live_texts[effective_source] = current_text
         session_store.save_session(session)
@@ -1302,6 +1401,7 @@ def set_visible_thinking_message(
     _THINKING_SOURCE_LAST_SENT_AT[throttle_key] = now_monotonic
     try:
         _sync_telegram_message_chunks(
+            session_store.paths,
             telegram,
             target_chat_id,
             session=session,
@@ -1318,6 +1418,8 @@ def set_visible_thinking_message(
     session.thinking_sent_texts[effective_source] = current_text
     session.last_thinking_sent_text = current_text
     session.thinking_message_text = rendered
+    if effective_source.startswith("commentary:"):
+        session.streaming_phase = "commentary"
     session_store.mark_agent_message(session)
     session_store.save_session(session)
 
@@ -1489,7 +1591,7 @@ def update_codex_auth_state(
     runtime: ServiceRuntime | None,
     runtime_state: RuntimeState | None,
 ) -> str:
-    persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+    persisted = load_codex_server_state(paths)
     if persisted is None:
         persisted = CodexServerState(transport="stdio://", initialized=True)
     account_info = account_payload.get("account") if isinstance(account_payload.get("account"), dict) else {}
@@ -1504,12 +1606,24 @@ def update_codex_auth_state(
     if not persisted.auth_required:
         persisted.login_url = None
         persisted.login_type = None
-    save_versioned_state(paths.codex_server, persisted.to_dict())
+    save_codex_server_state(paths, persisted)
     next_state = derive_codex_state(account_payload)
     if runtime is not None and runtime_state is not None:
         runtime.set_codex_state(next_state)
-        save_json(paths.runtime, runtime_state.to_dict())
+        save_runtime_state(paths, runtime_state)
     return next_state
+
+
+def _read_thread_completion_text(codex, thread_id: str | None) -> str | None:
+    if not thread_id or codex is None or not hasattr(codex, "read_thread"):
+        return None
+    try:
+        payload = codex.read_thread(thread_id, include_turns=True)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return extract_latest_agent_message(payload)
 
 
 def _session_accepts_turn_notification(session, turn_id: str | None) -> bool:
@@ -1586,16 +1700,22 @@ def flush_buffer(
         else:
             text = f"{session.streaming_output_text}{pending_text}".strip()
     if not session.attached or not target_chat_id:
-        append_recovery_log(
-            session_store.paths.recovery_log,
+        append_recovery_event(
+            session_store.paths,
             f"hidden_session_output_consumed {session_log_label(session)} delivered_to_telegram=false",
+            trace_id=getattr(session, "current_trace_id", None),
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id or session.last_completed_turn_id,
+            chat_id=target_chat_id,
+            topic_id=session.transport_topic_id,
         )
         if mark_agent:
             session_store.mark_agent_message(session)
         session_store.consume_pending_output(session)
         pruned = session_store.prune_detached_sessions()
         if pruned:
-            append_recovery_log(session_store.paths.recovery_log, f"detached_sessions_pruned count={pruned}")
+            append_recovery_event(session_store.paths, f"detached_sessions_pruned count={pruned}")
         return
     if text == session.last_delivered_output_text:
         if mark_agent:
@@ -1626,7 +1746,32 @@ def flush_buffer(
         "turn_id": session.active_turn_id or session.last_completed_turn_id,
     }
     if not mark_agent:
-        session_store.save_session(session)
+        try:
+            _sync_telegram_message_chunks(
+                session_store.paths,
+                telegram,
+                target_chat_id,
+                session=session,
+                rendered_chunks=split_telegram_text(text),
+                topic_id=session.transport_topic_id,
+                parse_mode=None,
+                disable_notification=False,
+                performance=performance,
+                context=context,
+            )
+        except TelegramError:
+            session_store.save_session(session)
+            return
+        session.streaming_output_text = text
+        session.streaming_phase = "answer"
+        session.thinking_message_text = ""
+        session.last_thinking_sent_text = ""
+        session.thinking_live_texts = {}
+        session.thinking_sent_texts = {}
+        session_store.mark_delivered_output(session, text)
+        session_store.mark_agent_message(session)
+        session_store.consume_pending_output(session)
+        recorder.record("assistant", text)
         return
 
     answer_html = text.strip() if looks_like_telegram_html(text) else to_telegram_html(text)
@@ -1646,6 +1791,7 @@ def flush_buffer(
     for stage, rendered_chunks in rendered_attempts:
         try:
             _sync_telegram_message_chunks(
+                session_store.paths,
                 telegram,
                 target_chat_id,
                 session=session,
@@ -1662,6 +1808,7 @@ def flush_buffer(
             append_telegram_format_failure_log(
                 session_store.paths,
                 session_id=session.session_id,
+                trace_id=getattr(session, "current_trace_id", None),
                 thread_id=session.thread_id,
                 turn_id=session.active_turn_id or session.last_completed_turn_id,
                 stage=stage,
@@ -1690,7 +1837,7 @@ def flush_buffer(
     session_store.consume_pending_output(session)
     pruned = session_store.prune_detached_sessions()
     if pruned:
-        append_recovery_log(session_store.paths.recovery_log, f"detached_sessions_pruned count={pruned}")
+        append_recovery_event(session_store.paths, f"detached_sessions_pruned count={pruned}")
 
 
 def should_append_completion_text(session, assistant_text: str | None) -> bool:
@@ -1842,6 +1989,7 @@ def maybe_send_typing_indicator(
     interval_seconds: float,
     last_sent_at: datetime | None,
     now: datetime | None = None,
+    performance: PerformanceTracker | None = None,
 ) -> datetime | None:
     if interval_seconds <= 0:
         return last_sent_at
@@ -1860,10 +2008,14 @@ def maybe_send_typing_indicator(
     if last_sent_at is not None and (now - last_sent_at).total_seconds() < effective_interval:
         return last_sent_at
     if hasattr(telegram, "send_typing"):
-        try:
-            telegram.send_typing(target_chat_id, topic_id=current.transport_topic_id)
-        except TypeError:
-            telegram.send_typing(target_chat_id)
+        send_telegram_typing(
+            telegram,
+            target_chat_id,
+            topic_id=current.transport_topic_id,
+            performance=performance,
+            session_id=current.session_id,
+            trace_id=getattr(current, "current_trace_id", None),
+        )
         return now
     return last_sent_at
 
@@ -1925,8 +2077,12 @@ def maintain_codex_runtime(
         delay = codex_restart_delay(config, restart_failures)
         next_restart_at = now + delay
         runtime.set_codex_state("BACKOFF")
-        save_json(paths.runtime, runtime_state.to_dict())
-        append_recovery_log(paths.recovery_log, f"codex child exited -> restart backoff={delay:.1f}s")
+        save_runtime_state(paths, runtime_state)
+        append_recovery_event(
+            paths,
+            f"codex child exited -> restart backoff={delay:.1f}s",
+            run_id=runtime_state.session_id,
+        )
     if codex is None and is_auth_paired(auth) and now >= next_restart_at:
         restarted = invoke_start_codex_session_fn(
             start_codex_session_fn,
@@ -1941,11 +2097,15 @@ def maintain_codex_runtime(
             performance,
         )
         if restarted is not None:
-            append_recovery_log(paths.recovery_log, "codex restart succeeded")
+            append_recovery_event(paths, "codex restart succeeded", run_id=runtime_state.session_id)
             return restarted, 0, 0.0
         restart_failures += 1
         delay = codex_restart_delay(config, restart_failures)
-        append_recovery_log(paths.recovery_log, f"codex restart failed -> backoff={delay:.1f}s")
+        append_recovery_event(
+            paths,
+            f"codex restart failed -> backoff={delay:.1f}s",
+            run_id=runtime_state.session_id,
+        )
         return None, restart_failures, now + delay
     return codex, restart_failures, next_restart_at
 
@@ -2059,13 +2219,23 @@ def handle_authorized_message(
         session.status = "ACTIVE"
         session_store.save_session(session)
         if prior is not None:
-            append_recovery_log(
-                session_store.paths.recovery_log,
+            append_recovery_event(
+                session_store.paths,
                 f"session_detached_on_new {session_log_label(prior)} replacement_session_id={session.session_id}",
+                session_id=prior.session_id,
+                thread_id=prior.thread_id,
+                turn_id=prior.active_turn_id or prior.last_completed_turn_id,
+                chat_id=prior.transport_chat_id,
+                topic_id=prior.transport_topic_id,
             )
-        append_recovery_log(
-            session_store.paths.recovery_log,
+        append_recovery_event(
+            session_store.paths,
             f"session_attached_on_new {session_log_label(session)}",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id or session.last_completed_turn_id,
+            chat_id=session.transport_chat_id,
+            topic_id=session.transport_topic_id,
         )
         send_telegram_message(
             telegram,
@@ -2286,6 +2456,7 @@ def handle_authorized_message(
         return
     session_id: str | None = None
     recovered_from_stale_turn = False
+    trace_store = TraceStore(paths, run_id=runtime_state.session_id) if paths is not None else None
     if session_store is not None:
         tracked_session = session_store.get_or_create_telegram_session(auth, topic_id)
         if not tracked_session.active_turn_id:
@@ -2305,6 +2476,27 @@ def handle_authorized_message(
             tracked_session.last_thinking_sent_text = ""
         session_store.save_session(tracked_session)
         session_id = tracked_session.session_id
+        if trace_store is not None:
+            trace_id = trace_store.start_trace(
+                session_id=tracked_session.session_id,
+                chat_id=tracked_session.transport_chat_id or auth.telegram_chat_id,
+                topic_id=tracked_session.transport_topic_id,
+                user_text=text,
+                thread_id=tracked_session.thread_id,
+                turn_id=tracked_session.active_turn_id,
+            )
+            tracked_session.current_trace_id = trace_id
+            session_store.save_session(tracked_session)
+            trace_store.log_event(
+                source="service",
+                event_type="session.resolved",
+                trace_id=trace_id,
+                session_id=tracked_session.session_id,
+                thread_id=tracked_session.thread_id,
+                turn_id=tracked_session.active_turn_id,
+                chat_id=tracked_session.transport_chat_id or auth.telegram_chat_id,
+                topic_id=tracked_session.transport_topic_id,
+            )
         if performance is not None:
             performance.mark_turn_requested(tracked_session, topic_id=topic_id, text=text)
     try:
@@ -2413,17 +2605,39 @@ def process_telegram_update(
     performance: PerformanceTracker | None = None,
 ):
     update_id = update.get("update_id")
-    if isinstance(update_id, int):
-        update_store = TelegramUpdateStore(paths)
-        if not update_store.mark_processed(update_id):
-            return codex
-
-    session_store = SessionStore(paths)
+    trace_store = TraceStore(paths, run_id=runtime_state.session_id)
     topic_id = extract_update_topic_id(update)
     message = update.get("message", {}) or {}
     chat_id = message.get("chat", {}).get("id")
+    if isinstance(update_id, int):
+        update_store = TelegramUpdateStore(paths)
+        if not update_store.mark_processed(
+            update_id,
+            chat_id=int(chat_id) if isinstance(chat_id, int) else None,
+            topic_id=topic_id,
+            payload=update,
+        ):
+            trace_store.log_event(
+                source="telegram_inbound",
+                event_type="telegram.update.duplicate",
+                source_event_id=str(update_id),
+                chat_id=int(chat_id) if isinstance(chat_id, int) else None,
+                topic_id=topic_id,
+                payload={"update_id": update_id, "update": update},
+            )
+            return codex
+
+    session_store = SessionStore(paths)
     user_id = message.get("from", {}).get("id")
     text = build_telegram_input_text(paths, telegram, message)
+    trace_store.log_event(
+        source="telegram_inbound",
+        event_type="telegram.update.received",
+        source_event_id=str(update_id) if isinstance(update_id, int) else None,
+        chat_id=int(chat_id) if isinstance(chat_id, int) else None,
+        topic_id=topic_id,
+        payload={"update_id": update_id, "text_preview": text[:160], "update": update},
+    )
     if performance is not None and text:
         performance.mark_telegram_message_received(
             update_id=update_id if isinstance(update_id, int) else None,
@@ -2609,6 +2823,8 @@ def process_telegram_update(
             session_store,
             topic_id,
             performance,
+            paths=paths,
+            config=config,
         )
     return codex
 
@@ -2652,6 +2868,7 @@ def drain_codex_notifications(
     if codex is None or not hasattr(codex, "poll_notification"):
         return 0
     session_store = SessionStore(paths)
+    trace_store = TraceStore(paths, run_id=runtime_state.session_id if runtime_state is not None else None)
     handled = 0
     while True:
         if max_notifications is not None and handled >= max_notifications:
@@ -2663,10 +2880,22 @@ def drain_codex_notifications(
         method = notification.method
         params = notification.params or {}
         agent_message_phase = remember_agent_message_phase(method, params)
-        append_app_server_notification_log(paths, method, params)
+        notification_record = build_app_server_notification_record(method, params)
         if performance is not None:
             performance.mark_notification_received(method, params)
         session = resolve_notification_session(session_store, auth, params)
+        trace_store.log_event(
+            source="app_server",
+            event_type="app_server.notification",
+            trace_id=getattr(session, "current_trace_id", None) if session is not None else None,
+            session_id=session.session_id if session is not None else None,
+            thread_id=params.get("threadId"),
+            turn_id=params.get("turnId"),
+            chat_id=session.transport_chat_id if session is not None else auth.telegram_chat_id,
+            topic_id=session.transport_topic_id if session is not None else None,
+            item_id=params.get("itemId"),
+            payload=notification_record,
+        )
         thinking_delta = extract_thinking_delta(method, params)
         if session is not None and thinking_delta is not None:
             thinking_source_key = derive_thinking_source_key(
@@ -2860,6 +3089,8 @@ def drain_codex_notifications(
             if not session_store.is_recoverable(session):
                 continue
             assistant_text = extract_assistant_text(params)
+            if not assistant_text:
+                assistant_text = _read_thread_completion_text(codex, session.thread_id)
             if should_append_completion_text(session, assistant_text):
                 action, payload = merge_incremental_assistant_text(session, assistant_text)
                 if action != "ignore" and payload:
@@ -2877,12 +3108,25 @@ def drain_codex_notifications(
             session.last_completed_turn_id = str(turn_id)
             session.status = "ACTIVE"
             session_store.save_session(session)
+            if getattr(session, "current_trace_id", None):
+                trace_store.complete_trace(
+                    session.current_trace_id,
+                    outcome="completed" if method == "turn/completed" else "failed",
+                    thread_id=session.thread_id,
+                    turn_id=str(turn_id),
+                )
+                session.current_trace_id = None
+                session_store.save_session(session)
             if performance is not None:
                 performance.mark_reply_finished(
                     session,
                     outcome="completed" if method == "turn/completed" else "failed",
                 )
             if not session.pending_output_text.strip():
+                final_stream_text = session.streaming_output_text.strip()
+                if final_stream_text and final_stream_text != session.last_delivered_output_text:
+                    session_store.mark_delivered_output(session, final_stream_text)
+                    recorder.record("assistant", final_stream_text)
                 clear_thinking_message(auth, telegram, session_store, session, performance=performance)
                 _clear_streaming_messages(telegram, session.transport_chat_id or auth.telegram_chat_id, session)
                 session.streaming_output_text = ""
@@ -2980,10 +3224,13 @@ def run_service(
         debug_state="STOPPED",
     )
     runtime = ServiceRuntime(runtime_state)
+    run_store = ServiceRunStore(paths)
+    run_store.start(run_id=runtime_state.session_id, pid=getattr(metadata, "pid", None))
     recorder = Recorder(paths.terminal_log)
     performance = PerformanceTracker(paths.performance_log)
     debug = DebugMirror()
     telegram = TelegramClient(auth.bot_token)
+    install_delivery_manager(paths, telegram, run_id=runtime_state.session_id)
     session_store = SessionStore(paths)
     approval_store = ApprovalStore(paths)
     if start_codex_session_fn is start_codex_session:
@@ -3000,7 +3247,7 @@ def run_service(
         recorder.record(source, line)
         debug.emit(source, line)
         runtime_state.last_output_at = utc_now()
-        save_json(paths.runtime, runtime_state.to_dict())
+        save_runtime_state(paths, runtime_state)
 
     codex = None
     last_typing_sent_at: datetime | None = None
@@ -3028,8 +3275,12 @@ def run_service(
     if codex is None and is_auth_paired(auth):
         codex_restart_failures = 1
         next_codex_restart_at = time.monotonic() + codex_restart_delay(config, codex_restart_failures)
-    save_json(paths.runtime, runtime_state.to_dict())
-    append_recovery_log(paths.recovery_log, f"service started session_id={runtime_state.session_id}")
+    save_runtime_state(paths, runtime_state)
+    append_recovery_event(
+        paths,
+        f"service started session_id={runtime_state.session_id}",
+        run_id=runtime_state.session_id,
+    )
     telegram_thread = start_telegram_polling_thread(
         paths=paths,
         config=config,
@@ -3046,7 +3297,7 @@ def run_service(
         try:
             run_sleep(paths, config, startup_now, config.sleep_hour_local)
         except Exception as exc:
-            append_recovery_log(paths.recovery_log, f"sleep failed on startup -> {exc}")
+            append_recovery_event(paths, f"sleep failed on startup -> {exc}", run_id=runtime_state.session_id)
 
     try:
         if has_pending_pairing(auth) and isatty():
@@ -3067,7 +3318,7 @@ def run_service(
             )
         while True:
             if not telegram_thread.is_alive():
-                append_recovery_log(paths.recovery_log, "telegram poll thread stopped -> restarting")
+                append_recovery_event(paths, "telegram poll thread stopped -> restarting", run_id=runtime_state.session_id)
                 append_telegram_poll_log(paths, "thread_restarting")
                 telegram_thread = start_telegram_polling_thread(
                     paths=paths,
@@ -3131,6 +3382,7 @@ def run_service(
                     session_store,
                     interval_seconds=config.typing_indicator_interval_seconds,
                     last_sent_at=last_typing_sent_at,
+                    performance=performance,
                 )
                 if codex is not None:
                     maybe_refresh_thinking_message(
@@ -3159,7 +3411,7 @@ def run_service(
                 )
             if processed_updates:
                 poll_gate.set()
-                threading.Event().wait(0.02)
+                threading.Event().wait(0.05)
                 continue
             if time.monotonic() - last_sleep_check >= 30.0:
                 last_sleep_check = time.monotonic()
@@ -3169,7 +3421,11 @@ def run_service(
                     try:
                         run_sleep(paths, config, current_local, config.sleep_hour_local)
                     except Exception as exc:
-                        append_recovery_log(paths.recovery_log, f"sleep failed during service loop -> {exc}")
+                        append_recovery_event(
+                            paths,
+                            f"sleep failed during service loop -> {exc}",
+                            run_id=runtime_state.session_id,
+                        )
             drain_codex_approvals(paths, auth, telegram, codex, performance)
             drain_codex_notifications(
                 paths,
@@ -3199,6 +3455,7 @@ def run_service(
                 session_store,
                 interval_seconds=config.typing_indicator_interval_seconds,
                 last_sent_at=last_typing_sent_at,
+                performance=performance,
             )
             if codex is not None:
                 maybe_refresh_thinking_message(
@@ -3226,6 +3483,9 @@ def run_service(
                 performance=performance,
             )
             poll_gate.set()
+            threading.Event().wait(0.05)
+            if not updates_queue.empty():
+                continue
             time.sleep(service_tick_seconds(config))
     finally:
         threading.Event().wait(0.05)
@@ -3238,4 +3498,6 @@ def run_service(
         recorder.stop()
         debug.stop()
         app_lock.clear()
-        append_recovery_log(paths.recovery_log, "service stopped")
+        uninstall_delivery_manager()
+        run_store.stop(run_id=runtime_state.session_id, exit_reason="service_stopped")
+        append_recovery_event(paths, "service stopped", run_id=runtime_state.session_id)

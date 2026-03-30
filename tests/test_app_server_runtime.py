@@ -7,7 +7,6 @@ from pathlib import Path
 
 from core.models import AuthState, CodexServerState, Config, RuntimeState
 from core.paths import build_paths
-from core.state_versions import load_versioned_state
 from runtime.instructions import build_instruction_paths
 from runtime.app_server_runtime import (
     AppServerSession,
@@ -20,6 +19,7 @@ from runtime.app_server_runtime import (
     validate_initialize_result,
 )
 from runtime.runtime import ServiceRuntime
+from storage.runtime_state_store import load_codex_server_state
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 from tests.fakes.fake_telegram import FakeTelegramClient
 
@@ -61,6 +61,7 @@ class AppServerRuntimeTests(unittest.TestCase):
 
             store = SessionStore(paths)
             session = store.get_or_create_telegram_session(auth)
+            session.thread_id = "thread-stale"
             session.active_turn_id = "turn-stale"
             session.status = "RUNNING_TURN"
             session.pending_output_text = "partial"
@@ -111,7 +112,7 @@ class AppServerRuntimeTests(unittest.TestCase):
 
             self.assertIsInstance(session, AppServerSession)
             self.assertEqual(runtime_state.codex_state, "RUNNING")
-            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+            persisted = load_codex_server_state(paths)
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertTrue(persisted.initialized)
@@ -150,7 +151,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             )
 
             self.assertEqual(runtime_state.codex_state, "AUTH_REQUIRED")
-            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+            persisted = load_codex_server_state(paths)
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertTrue(persisted.auth_required)
@@ -371,11 +372,11 @@ class AppServerRuntimeTests(unittest.TestCase):
             )
 
             recovered = session.send("again")
-            self.assertTrue(recovered)
+            self.assertFalse(recovered)
 
         turn_starts = [payload for payload in server.received if payload["method"] == "turn/start"]
         self.assertEqual(len(turn_starts), 1)
-        self.assertIn("System: recovered from error, the previous message got interrupted.", turn_starts[0]["params"]["input"][0]["text"])
+        self.assertIn("User request:\nagain", turn_starts[0]["params"]["input"][0]["text"])
 
     def test_send_starts_new_thread_when_resume_rejects_stale_thread(self) -> None:
         transport = InMemoryJsonRpcTransport()
@@ -824,7 +825,7 @@ class AppServerRuntimeTests(unittest.TestCase):
 
             self.assertIsNotNone(session)
             self.assertEqual(runtime_state.codex_state, "RUNNING")
-            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+            persisted = load_codex_server_state(paths)
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertTrue(persisted.initialized)
@@ -864,7 +865,7 @@ class AppServerRuntimeTests(unittest.TestCase):
 
             self.assertIsNone(session)
             self.assertEqual(runtime_state.codex_state, "DEGRADED")
-            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+            persisted = load_codex_server_state(paths)
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertFalse(persisted.initialized)
@@ -941,7 +942,7 @@ class AppServerRuntimeTests(unittest.TestCase):
 
             self.assertIsNone(session)
             self.assertEqual(runtime_state.codex_state, "DEGRADED")
-            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+            persisted = load_codex_server_state(paths)
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertFalse(persisted.initialized)
@@ -980,7 +981,7 @@ class AppServerRuntimeTests(unittest.TestCase):
 
             self.assertIsNone(session)
             self.assertEqual(runtime_state.codex_state, "DEGRADED")
-            persisted = load_versioned_state(paths.codex_server, CodexServerState.from_dict)
+            persisted = load_codex_server_state(paths)
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertIn("thread lifecycle", persisted.last_error)

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from core.models import utc_now
+from storage.telegram_queue import active_delivery_manager
 
 
 class PerformanceTracker:
@@ -163,6 +164,13 @@ class PerformanceTracker:
         )
 
 
+def _require_delivery_manager():
+    manager = active_delivery_manager()
+    if manager is None:
+        raise RuntimeError("Telegram delivery manager is not installed.")
+    return manager
+
+
 def send_telegram_message(
     telegram,
     chat_id: int,
@@ -189,19 +197,19 @@ def send_telegram_message(
             **context,
         )
     try:
-        try:
-            result = telegram.send_message(
-                chat_id,
-                text,
-                topic_id=topic_id,
-                parse_mode=parse_mode,
-                disable_notification=disable_notification,
-            )
-        except TypeError:
-            try:
-                result = telegram.send_message(chat_id, text, topic_id=topic_id, parse_mode=parse_mode)
-            except TypeError:
-                result = telegram.send_message(chat_id, text)
+        manager = _require_delivery_manager()
+        result = manager.enqueue_and_wait(
+            op_type="send_message",
+            payload={"text": text, "parse_mode": parse_mode},
+            chat_id=chat_id,
+            topic_id=topic_id,
+            session_id=context.get("session_id"),
+            trace_id=context.get("trace_id"),
+            message_group_id=context.get("message_group_id"),
+            dedupe_key=context.get("dedupe_key"),
+            priority=int(context.get("priority", 100)),
+            disable_notification=disable_notification,
+        )
     except Exception as exc:
         if allow_plain_fallback and parse_mode:
             fallback_text = plain_fallback_text if plain_fallback_text is not None else text
@@ -282,10 +290,18 @@ def edit_telegram_message(
             **context,
         )
     try:
-        try:
-            telegram.edit_message_text(chat_id, message_id, text, parse_mode=parse_mode)
-        except TypeError:
-            telegram.edit_message_text(chat_id, message_id, text)
+        manager = _require_delivery_manager()
+        manager.enqueue_and_wait(
+            op_type="edit_message",
+            payload={"message_id": message_id, "text": text, "parse_mode": parse_mode},
+            chat_id=chat_id,
+            session_id=context.get("session_id"),
+            trace_id=context.get("trace_id"),
+            message_group_id=context.get("message_group_id"),
+            telegram_message_id=message_id,
+            dedupe_key=context.get("dedupe_key"),
+            priority=int(context.get("priority", 100)),
+        )
     except Exception as exc:
         if allow_plain_fallback and parse_mode:
             fallback_text = plain_fallback_text if plain_fallback_text is not None else text
@@ -333,3 +349,55 @@ def edit_telegram_message(
             duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
             **context,
         )
+
+
+def delete_telegram_message(
+    telegram,
+    chat_id: int,
+    message_id: int,
+    *,
+    performance: PerformanceTracker | None = None,
+    **context: Any,
+) -> None:
+    manager = _require_delivery_manager()
+    if performance is not None:
+        performance.log("telegram_delete_started", chat_id=chat_id, message_id=message_id, **context)
+    started_at = time.monotonic()
+    manager.enqueue_and_wait(
+        op_type="delete_message",
+        payload={"message_id": message_id},
+        chat_id=chat_id,
+        session_id=context.get("session_id"),
+        trace_id=context.get("trace_id"),
+        message_group_id=context.get("message_group_id"),
+        telegram_message_id=message_id,
+        priority=int(context.get("priority", 100)),
+    )
+    if performance is not None:
+        performance.log(
+            "telegram_delete_completed",
+            chat_id=chat_id,
+            message_id=message_id,
+            duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
+            **context,
+        )
+
+
+def send_telegram_typing(
+    telegram,
+    chat_id: int,
+    *,
+    topic_id: int | None = None,
+    performance: PerformanceTracker | None = None,
+    **context: Any,
+) -> None:
+    manager = _require_delivery_manager()
+    manager.enqueue_and_wait(
+        op_type="typing",
+        payload={},
+        chat_id=chat_id,
+        topic_id=topic_id,
+        session_id=context.get("session_id"),
+        trace_id=context.get("trace_id"),
+        priority=int(context.get("priority", 200)),
+    )

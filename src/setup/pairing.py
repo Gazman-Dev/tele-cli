@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 
 from core.json_store import save_json
-from core.logging_utils import append_recovery_log
 from core.models import AuthState
 from core.paths import AppPaths
 from core.prompts import ask_text
@@ -14,6 +13,7 @@ from integrations.telegram import (
     is_auth_paired,
     register_pairing_request,
 )
+from storage.diagnostics import log_recovery_event
 
 
 def pair_authorized_operator(paths: AppPaths, auth: AuthState, bot: TelegramClient) -> None:
@@ -73,10 +73,7 @@ def complete_pending_pairing(
         if confirm_pairing_code(auth, code):
             save_json(paths.auth, auth.to_dict())
             bot.send_message(auth.telegram_chat_id, "Pairing complete. Tele Cli is now authorized for this chat.")
-            append_recovery_log(
-                paths.recovery_log,
-                f"telegram paired chat_id={auth.telegram_chat_id} user_id={auth.telegram_user_id}",
-            )
+            log_recovery_event(paths, f"telegram paired chat_id={auth.telegram_chat_id} user_id={auth.telegram_user_id}")
             return True
         print("Invalid pairing code. Enter the current code from Telegram.")
     return True

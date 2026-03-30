@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +17,23 @@ from runtime.app_server_runtime import make_app_server_start_fn
 from runtime.runtime import ServiceRuntime
 from runtime.service import maintain_codex_runtime, run_service
 from runtime.session_store import SessionStore
+from runtime.telegram_update_store import TelegramUpdateStore
+from storage.runtime_state_store import load_runtime_state
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
+
+
+def load_event_types(paths) -> list[str]:
+    with sqlite3.connect(paths.database) as connection:
+        rows = connection.execute("SELECT event_type FROM events ORDER BY event_id").fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def load_recovery_messages(paths) -> list[str]:
+    with sqlite3.connect(paths.database) as connection:
+        rows = connection.execute(
+            "SELECT payload_json FROM events WHERE source = 'service' AND event_type = 'service.recovery' ORDER BY event_id"
+        ).fetchall()
+    return [json.loads(str(row[0])).get("message", "") for row in rows]
 
 
 class FakeAppLock:
@@ -147,14 +165,13 @@ class ServiceLoopTests(unittest.TestCase):
             sessions = SessionStore(paths).list_telegram_sessions(
                 AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
             )
-            self.assertEqual(len(sessions), 1)
-            self.assertTrue(sessions[0].attached)
-            self.assertEqual(sessions[0].status, "ACTIVE")
+            self.assertEqual(len(sessions), 2)
+            self.assertEqual(sum(1 for session in sessions if session.attached), 1)
+            current = next(session for session in sessions if session.attached)
+            self.assertEqual(current.status, "ACTIVE")
             self.assertTrue(any(text.startswith("Started new session ") for _, text in telegram.messages))
             self.assertFalse(any(text == "late answer" for _, text in telegram.messages))
-            recovery_log = paths.recovery_log.read_text(encoding="utf-8")
-            self.assertIn("hidden_session_output_consumed", recovery_log)
-            self.assertIn("detached_sessions_pruned count=1", recovery_log)
+            self.assertTrue(any("hidden_session_output_consumed" in message for message in load_recovery_messages(paths)))
             self.assertTrue(app_lock.cleared)
 
     def test_run_service_normalizes_recovering_turn_on_startup(self) -> None:
@@ -251,9 +268,10 @@ class ServiceLoopTests(unittest.TestCase):
 
             self._run_service_once(paths, telegram, start_fn, app_lock)
 
-            self.assertEqual(telegram.messages, [])
+            self.assertEqual(telegram.messages, [(22, "Buffered hello")])
             updated = SessionStore(paths).get_or_create_telegram_session(auth)
-            self.assertEqual(updated.pending_output_text, "Buffered hello")
+            self.assertEqual(updated.pending_output_text, "")
+            self.assertEqual(updated.last_delivered_output_text, "Buffered hello")
 
     def test_run_service_sends_typing_indicator_for_active_turn_while_idle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -416,7 +434,7 @@ class ServiceLoopTests(unittest.TestCase):
 
             self._run_service_once(paths, telegram, start_fn, app_lock)
 
-            runtime = load_json(paths.runtime, RuntimeState.from_dict)
+            runtime = load_runtime_state(paths)
             self.assertIsNotNone(runtime)
             assert runtime is not None
             self.assertEqual(runtime.telegram_state, "BACKOFF")
@@ -457,7 +475,7 @@ class ServiceLoopTests(unittest.TestCase):
                     with self.assertRaises(KeyboardInterrupt):
                         run_service(paths, start_codex_session_fn=start_fn)
 
-            runtime = load_json(paths.runtime, RuntimeState.from_dict)
+            runtime = load_runtime_state(paths)
             self.assertIsNotNone(runtime)
             assert runtime is not None
             self.assertEqual(runtime.telegram_state, "RUNNING")
@@ -498,15 +516,14 @@ class ServiceLoopTests(unittest.TestCase):
                     with self.assertRaises(KeyboardInterrupt):
                         run_service(paths, start_codex_session_fn=start_fn)
 
-            runtime = load_json(paths.runtime, RuntimeState.from_dict)
+            runtime = load_runtime_state(paths)
             self.assertIsNotNone(runtime)
             assert runtime is not None
             self.assertEqual(runtime.telegram_state, "RUNNING")
-            processed = paths.telegram_updates.read_text(encoding="utf-8")
-            self.assertIn("1", processed)
-            poll_log = paths.root.joinpath("telegram_poll.log").read_text(encoding="utf-8")
-            self.assertIn("poll_crash", poll_log)
-            self.assertIn("update_enqueued", poll_log)
+            self.assertTrue(TelegramUpdateStore(paths).has_processed(1))
+            event_types = load_event_types(paths)
+            self.assertIn("telegram.poll.poll_crash", event_types)
+            self.assertIn("telegram.poll.update_enqueued", event_types)
 
     def test_run_service_does_not_block_startup_on_stale_inflight_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -539,12 +556,11 @@ class ServiceLoopTests(unittest.TestCase):
 
             self._run_service_once(paths, telegram, start_fn, app_lock)
 
-            runtime = load_json(paths.runtime, RuntimeState.from_dict)
+            runtime = load_runtime_state(paths)
             self.assertIsNotNone(runtime)
             assert runtime is not None
             self.assertEqual(runtime.service_state, "RUNNING")
-            processed = paths.telegram_updates.read_text(encoding="utf-8")
-            self.assertIn("1", processed)
+            self.assertTrue(TelegramUpdateStore(paths).has_processed(1))
             session = SessionStore(paths).get_current_telegram_session(auth)
             self.assertIsNotNone(session)
             assert session is not None
@@ -570,7 +586,7 @@ class ServiceLoopTests(unittest.TestCase):
             app_lock = FakeAppLock()
 
             def crash_sleep(*args, **kwargs):
-                runtime = load_json(paths.runtime, RuntimeState.from_dict)
+                runtime = load_runtime_state(paths)
                 self.assertIsNotNone(runtime)
                 assert runtime is not None
                 self.assertEqual(runtime.service_state, "RUNNING")
