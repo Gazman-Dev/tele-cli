@@ -57,6 +57,7 @@ from .telegram_html import (
     render_telegram_progress_html,
     to_telegram_html,
 )
+from .telegram_markdown import normalize_telegram_markdown_source
 from .telegram_update_store import TelegramUpdateStore
 
 
@@ -1886,15 +1887,28 @@ def flush_buffer(
         "turn_id": session.active_turn_id or session.last_completed_turn_id,
     }
     if not mark_agent:
+        normalized_text = normalize_telegram_markdown_source(text)
         try:
+            if stream_format and _thinking_history_entries(session):
+                answer_html = (
+                    normalized_text.strip()
+                    if looks_like_telegram_html(normalized_text)
+                    else to_telegram_html(normalized_text)
+                )
+                thinking_html = render_collapsed_thinking_html(_thinking_history_entries(session))
+                rendered_chunks = _build_final_rendered_chunks(answer_html=answer_html, thinking_html=thinking_html)
+                parse_mode = TELEGRAM_PARSE_MODE
+            else:
+                rendered_chunks = split_telegram_text(text)
+                parse_mode = None
             _sync_telegram_message_chunks(
                 session_store.paths,
                 telegram,
                 target_chat_id,
                 session=session,
-                rendered_chunks=split_telegram_text(text),
+                rendered_chunks=rendered_chunks,
                 topic_id=session.transport_topic_id,
-                parse_mode=None,
+                parse_mode=parse_mode,
                 disable_notification=False,
                 performance=performance,
                 context=context,
@@ -1914,7 +1928,8 @@ def flush_buffer(
         recorder.record("assistant", text)
         return
 
-    answer_html = text.strip() if looks_like_telegram_html(text) else to_telegram_html(text)
+    normalized_text = normalize_telegram_markdown_source(text)
+    answer_html = normalized_text.strip() if looks_like_telegram_html(normalized_text) else to_telegram_html(normalized_text)
     thinking_html = render_collapsed_thinking_html(_thinking_history_entries(session))
     final_html = answer_html if not thinking_html else f"{thinking_html}\n\n{answer_html}"
     rendered_attempts = [
@@ -1922,7 +1937,7 @@ def flush_buffer(
         (
             "escaped_html",
             _build_final_rendered_chunks(
-                answer_html=escape_telegram_html(text),
+                answer_html=escape_telegram_html(normalized_text),
                 thinking_html=thinking_html,
             ),
         ),

@@ -35,6 +35,7 @@ from runtime.service import (
 )
 from runtime.session_store import SessionStore
 from runtime.telegram_html import escape_telegram_html, render_final_telegram_html, render_telegram_progress_html, to_telegram_html
+from runtime.telegram_markdown import normalize_telegram_markdown_source
 from storage.runtime_state_store import load_codex_server_state, save_codex_server_state
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 from tests.fakes.fake_telegram import FakeTelegramClient
@@ -2530,7 +2531,7 @@ class ServiceFlowTests(unittest.TestCase):
 
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
-        self.assertEqual(telegram.messages, [(22, to_telegram_html(text))])
+        self.assertEqual(telegram.messages, [(22, to_telegram_html(normalize_telegram_markdown_source(text)))])
         self.assertNotIn("telegram.format_failure", load_event_types(self.paths))
 
     def test_final_reply_normalizes_mixed_existing_telegram_markdownv2(self) -> None:
@@ -2577,7 +2578,7 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         self.assertEqual(telegram.parse_modes, ["HTML"])
-        self.assertEqual(telegram.messages, [(22, to_telegram_html(text))])
+        self.assertEqual(telegram.messages, [(22, to_telegram_html(normalize_telegram_markdown_source(text)))])
 
     def test_final_reply_uses_markdown_code_block_emergency_fallback_and_logs_failure(self) -> None:
         auth = AuthState(
@@ -2619,7 +2620,10 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertNotIn("telegram.format_failure", load_event_types(self.paths))
         self.assertEqual(telegram.parse_modes, ["HTML"])
-        self.assertEqual(telegram.messages, [(22, to_telegram_html("I’m *Tele Cli* - assistant."))])
+        self.assertEqual(
+            telegram.messages,
+            [(22, to_telegram_html(normalize_telegram_markdown_source("I’m *Tele Cli* - assistant.")))],
+        )
 
     def test_turn_completed_does_not_duplicate_item_completed_agent_message(self) -> None:
         auth = AuthState(

@@ -299,6 +299,30 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         self.assertEqual(refreshed.thinking_history_text, "")
         self.assertIsNone(refreshed.streaming_message_id)
 
+    def test_partial_stream_with_thinking_history_includes_collapsed_thinking_immediately(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.pending_output_text = "Final answer"
+        session.thinking_history_order = ["commentary:msg-1"]
+        session.thinking_history_by_source = {"commentary:msg-1": "Checking repo"}
+        session.thinking_history_text = "Checking repo"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        flush_buffer(session.session_id, auth, telegram, self.recorder, store, mark_agent=False, stream_format=True)
+
+        self.assertEqual(
+            telegram.messages,
+            [(22, "<blockquote expandable>Checking repo</blockquote>\n\nFinal answer")],
+        )
+        refreshed = store.get_or_create_telegram_session(auth)
+        self.assertEqual(refreshed.last_delivered_output_text, "Final answer")
+        self.assertEqual(refreshed.streaming_output_text, "Final answer")
+
     def test_final_reply_falls_back_to_escaped_html(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
         store = SessionStore(self.paths)
