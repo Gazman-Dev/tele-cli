@@ -14,6 +14,7 @@ from integrations.telegram import (
     register_pairing_request,
 )
 from storage.diagnostics import log_recovery_event
+from storage.operations import TraceStore
 
 
 def pair_authorized_operator(paths: AppPaths, auth: AuthState, bot: TelegramClient) -> None:
@@ -74,6 +75,12 @@ def complete_pending_pairing(
             save_json(paths.auth, auth.to_dict())
             bot.send_message(auth.telegram_chat_id, "Pairing complete. Tele Cli is now authorized for this chat.")
             log_recovery_event(paths, f"telegram paired chat_id={auth.telegram_chat_id} user_id={auth.telegram_user_id}")
+            TraceStore(paths).log_event(
+                source="telegram_inbound",
+                event_type="telegram.pairing.completed",
+                chat_id=auth.telegram_chat_id,
+                payload={"user_id": auth.telegram_user_id},
+            )
             return True
         print("Invalid pairing code. Enter the current code from Telegram.")
     return True

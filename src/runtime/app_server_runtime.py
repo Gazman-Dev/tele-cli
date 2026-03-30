@@ -23,6 +23,20 @@ from .sleep import build_refresh_instructions, current_generation
 STALE_ACTIVE_TURN_SECONDS = 30.0
 
 
+def _log_app_server_lifecycle(
+    paths: AppPaths,
+    runtime_state: RuntimeState,
+    *,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    TraceStore(paths, run_id=runtime_state.session_id).log_event(
+        source="app_server",
+        event_type=event_type,
+        payload=payload or {},
+    )
+
+
 def parse_session_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -155,6 +169,17 @@ class AppServerSession:
             raise RuntimeError("Session is recovering an in-flight turn.")
         stale_active_turn = bool(session.active_turn_id and is_stale_active_turn(session))
         self.session_store.mark_user_message(session)
+        if getattr(session, "current_trace_id", None):
+            self.trace_store.log_event(
+                source="service",
+                event_type="ai.dispatch.started",
+                trace_id=session.current_trace_id,
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                turn_id=session.active_turn_id,
+                chat_id=session.transport_chat_id,
+                topic_id=session.transport_topic_id,
+            )
         if self.performance is not None:
             self.performance.mark_ai_dispatch_started(session)
         if session.status != "ARCHIVED":
@@ -167,6 +192,17 @@ class AppServerSession:
         if session.active_turn_id:
             if stale_active_turn:
                 self.client.turn_interrupt(session.active_turn_id)
+                if getattr(session, "current_trace_id", None):
+                    self.trace_store.log_event(
+                        source="service",
+                        event_type="ai.dispatch.recovered_stale_turn",
+                        trace_id=session.current_trace_id,
+                        session_id=session.session_id,
+                        thread_id=session.thread_id,
+                        turn_id=session.active_turn_id,
+                        chat_id=session.transport_chat_id,
+                        topic_id=session.transport_topic_id,
+                    )
                 session.active_turn_id = None
                 session.pending_output_text = ""
                 session.pending_output_updated_at = None
@@ -203,6 +239,16 @@ class AppServerSession:
                             turn_id=session.active_turn_id,
                             session_id=session.session_id,
                         )
+                        self.trace_store.log_event(
+                            source="service",
+                            event_type="ai.turn.steered",
+                            trace_id=session.current_trace_id,
+                            session_id=session.session_id,
+                            thread_id=thread_id,
+                            turn_id=session.active_turn_id,
+                            chat_id=session.transport_chat_id,
+                            topic_id=session.transport_topic_id,
+                        )
                     if self.performance is not None:
                         self.performance.mark_turn_registered(session)
                     return False
@@ -222,6 +268,18 @@ class AppServerSession:
                     session.thread_id = thread_id
                     if thread_id:
                         self._resumed_threads.add(thread_id)
+                        if getattr(session, "current_trace_id", None):
+                            self.trace_store.log_event(
+                                source="service",
+                                event_type="ai.thread.ready",
+                                trace_id=session.current_trace_id,
+                                session_id=session.session_id,
+                                thread_id=thread_id,
+                                turn_id=session.active_turn_id,
+                                chat_id=session.transport_chat_id,
+                                topic_id=session.transport_topic_id,
+                                payload={"trigger": "thread_resume"},
+                            )
                         if self.performance is not None:
                             self.performance.mark_thread_ready(session, trigger="thread_resume")
         else:
@@ -238,6 +296,17 @@ class AppServerSession:
             self.session_store.save_session(session)
             if thread_id and getattr(session, "current_trace_id", None):
                 self.trace_store.update_trace(session.current_trace_id, thread_id=thread_id, session_id=session.session_id)
+                self.trace_store.log_event(
+                    source="service",
+                    event_type="ai.thread.ready",
+                    trace_id=session.current_trace_id,
+                    session_id=session.session_id,
+                    thread_id=thread_id,
+                    turn_id=session.active_turn_id,
+                    chat_id=session.transport_chat_id,
+                    topic_id=session.transport_topic_id,
+                    payload={"trigger": "thread_start"},
+                )
             if thread_id:
                 self._resumed_threads.add(thread_id)
                 if self.performance is not None:
@@ -256,6 +325,17 @@ class AppServerSession:
             self.session_store.save_session(session)
             if thread_id and getattr(session, "current_trace_id", None):
                 self.trace_store.update_trace(session.current_trace_id, thread_id=thread_id, session_id=session.session_id)
+                self.trace_store.log_event(
+                    source="service",
+                    event_type="ai.thread.ready",
+                    trace_id=session.current_trace_id,
+                    session_id=session.session_id,
+                    thread_id=thread_id,
+                    turn_id=session.active_turn_id,
+                    chat_id=session.transport_chat_id,
+                    topic_id=session.transport_topic_id,
+                    payload={"trigger": "thread_start_retry"},
+                )
             if thread_id:
                 self._resumed_threads.add(thread_id)
                 if self.performance is not None:
@@ -289,6 +369,16 @@ class AppServerSession:
                 session_id=session.session_id,
                 thread_id=session.thread_id,
                 turn_id=session.active_turn_id,
+            )
+            self.trace_store.log_event(
+                source="service",
+                event_type="ai.turn.registered",
+                trace_id=session.current_trace_id,
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                turn_id=session.active_turn_id,
+                chat_id=session.transport_chat_id,
+                topic_id=session.transport_topic_id,
             )
         if self.performance is not None:
             self.performance.mark_turn_registered(session)
@@ -449,21 +539,70 @@ def bootstrap_app_server_session(
     client_factory: Callable[[JsonRpcClient], AppServerClient] = AppServerClient,
     performance: PerformanceTracker | None = None,
 ) -> AppServerSession:
+    _log_app_server_lifecycle(
+        paths,
+        runtime_state,
+        event_type="app_server.initialize.started",
+        payload={"transport": transport_name},
+    )
     rpc = JsonRpcClient(transport)
     rpc.start()
     client = client_factory(rpc)
     initialize_result = normalize_initialize_result(client.initialize())
+    _log_app_server_lifecycle(
+        paths,
+        runtime_state,
+        event_type="app_server.initialize.completed",
+        payload={"transport": transport_name, "protocol_version": initialize_result.get("protocolVersion")},
+    )
     validate_initialize_result(initialize_result)
     client.initialized()
+    _log_app_server_lifecycle(
+        paths,
+        runtime_state,
+        event_type="app_server.initialized.completed",
+        payload={"transport": transport_name},
+    )
     account_result = client.get_account()
+    _log_app_server_lifecycle(
+        paths,
+        runtime_state,
+        event_type="app_server.account.received",
+        payload={"transport": transport_name, "codex_state": derive_codex_state(account_result), "account": account_result},
+    )
     login_result: dict[str, Any] | None = None
     if derive_codex_state(account_result) == "AUTH_REQUIRED":
+        _log_app_server_lifecycle(
+            paths,
+            runtime_state,
+            event_type="app_server.login.started",
+            payload={"provider": "chatgpt"},
+        )
         try:
             login_result = client.login_account("chatgpt")
-        except Exception:
+        except Exception as exc:
+            _log_app_server_lifecycle(
+                paths,
+                runtime_state,
+                event_type="app_server.login.failed",
+                payload={"provider": "chatgpt", "error": str(exc)},
+            )
             login_result = None
+        else:
+            _log_app_server_lifecycle(
+                paths,
+                runtime_state,
+                event_type="app_server.login.completed",
+                payload={"provider": "chatgpt", "result": login_result},
+            )
     session_store = SessionStore(paths)
     recover_inflight_sessions(client, session_store)
+    _log_app_server_lifecycle(
+        paths,
+        runtime_state,
+        event_type="app_server.recovery.completed",
+        payload={"recovered_sessions": len(session_store.load().sessions)},
+    )
     codex_server_state = build_codex_server_state(
         transport=transport_name,
         initialize_result=initialize_result,
@@ -473,6 +612,12 @@ def bootstrap_app_server_session(
     save_codex_server_state(paths, codex_server_state)
     runtime.set_codex_state(derive_codex_state(account_result))
     save_runtime_state(paths, runtime_state)
+    _log_app_server_lifecycle(
+        paths,
+        runtime_state,
+        event_type="app_server.bootstrap.completed",
+        payload={"transport": transport_name, "codex_state": runtime_state.codex_state},
+    )
     return AppServerSession(client, session_store, auth, config, performance=performance)
 
 
@@ -518,6 +663,12 @@ def make_app_server_start_fn(
             save_codex_server_state(
                 paths,
                 build_failed_codex_server_state(transport=transport_name, last_error=last_error),
+            )
+            _log_app_server_lifecycle(
+                paths,
+                runtime_state,
+                event_type="app_server.bootstrap.failed",
+                payload={"transport": transport_name, "error": last_error},
             )
             return None
 

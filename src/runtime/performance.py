@@ -116,7 +116,7 @@ class PerformanceTracker:
         self._turns.pop(session_id, None)
         self.log("agent_request_failed", session_id=session_id, error=error)
 
-    def mark_reply_started(self, session, *, trigger: str) -> None:
+    def mark_reply_started(self, session, *, trigger: str) -> bool:
         entry = self._turns.setdefault(
             session.session_id,
             {
@@ -128,7 +128,7 @@ class PerformanceTracker:
             },
         )
         if entry.get("reply_started_at_monotonic") is not None:
-            return
+            return False
         now = time.monotonic()
         entry["reply_started_at_monotonic"] = now
         entry["thread_id"] = session.thread_id
@@ -144,6 +144,7 @@ class PerformanceTracker:
             trigger=trigger,
             queue_ms=queue_ms,
         )
+        return True
 
     def mark_reply_finished(self, session, *, outcome: str) -> None:
         entry = self._turns.pop(session.session_id, {})

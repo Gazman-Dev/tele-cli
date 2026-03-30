@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -22,6 +24,15 @@ from runtime.runtime import ServiceRuntime
 from storage.runtime_state_store import load_codex_server_state
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 from tests.fakes.fake_telegram import FakeTelegramClient
+
+
+def load_event_records(paths) -> list[dict]:
+    with sqlite3.connect(paths.database) as connection:
+        rows = connection.execute("SELECT event_type, payload_json FROM events ORDER BY event_id").fetchall()
+    return [
+        {"event_type": str(row[0]), "payload": json.loads(str(row[1])) if row[1] else None}
+        for row in rows
+    ]
 
 
 class AppServerRuntimeTests(unittest.TestCase):
@@ -157,6 +168,23 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertTrue(persisted.auth_required)
             self.assertEqual(persisted.login_type, "chatgpt")
             self.assertEqual(persisted.login_url, "https://example.test/login")
+            self.assertEqual(
+                [
+                    event["event_type"]
+                    for event in load_event_records(paths)
+                    if event["event_type"].startswith("app_server.")
+                ],
+                [
+                    "app_server.initialize.started",
+                    "app_server.initialize.completed",
+                    "app_server.initialized.completed",
+                    "app_server.account.received",
+                    "app_server.login.started",
+                    "app_server.login.completed",
+                    "app_server.recovery.completed",
+                    "app_server.bootstrap.completed",
+                ],
+            )
 
     def test_app_server_session_send_steers_when_turn_is_already_active(self) -> None:
         transport = InMemoryJsonRpcTransport()

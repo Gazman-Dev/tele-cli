@@ -167,6 +167,35 @@ def append_recovery_event(
     )
 
 
+def append_structured_event(
+    paths: AppPaths,
+    *,
+    run_id: str | None = None,
+    source: str,
+    event_type: str,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+    thread_id: str | None = None,
+    turn_id: str | None = None,
+    source_event_id: str | None = None,
+    chat_id: int | None = None,
+    topic_id: int | None = None,
+    payload: dict | None = None,
+) -> None:
+    TraceStore(paths, run_id=run_id).log_event(
+        source=source,
+        event_type=event_type,
+        trace_id=trace_id,
+        session_id=session_id,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        source_event_id=source_event_id,
+        chat_id=chat_id,
+        topic_id=topic_id,
+        payload=payload or {},
+    )
+
+
 def remember_agent_message_phase(method: str, params: dict) -> str | None:
     item = params.get("item")
     if isinstance(item, dict) and item.get("type") == "agentMessage":
@@ -769,6 +798,31 @@ def reset_session_after_request_failure(
     session_store.save_session(session)
 
 
+def log_request_failure(
+    trace_store: TraceStore | None,
+    session_store: SessionStore | None,
+    auth: AuthState,
+    topic_id: int | None,
+    error_text: str,
+) -> None:
+    if trace_store is None or session_store is None:
+        return
+    failed_session = session_store.get_current_telegram_session(auth, topic_id)
+    if failed_session is None or not getattr(failed_session, "current_trace_id", None):
+        return
+    trace_store.log_event(
+        source="service",
+        event_type="ai.request.failed",
+        trace_id=failed_session.current_trace_id,
+        session_id=failed_session.session_id,
+        thread_id=failed_session.thread_id,
+        turn_id=failed_session.active_turn_id,
+        chat_id=failed_session.transport_chat_id or auth.telegram_chat_id,
+        topic_id=failed_session.transport_topic_id,
+        payload={"error": error_text},
+    )
+
+
 def _render_codex_error_html(error_text: str) -> str:
     return (
         "<pre><code>"
@@ -851,22 +905,73 @@ def save_telegram_file(
     *,
     file_id: str,
     suggested_name: str,
+    trace_store: TraceStore | None = None,
+    source_event_id: str | None = None,
+    chat_id: int | None = None,
+    topic_id: int | None = None,
 ) -> str:
-    metadata = telegram.get_file(file_id)
-    file_path = str(metadata.get("file_path") or "").strip()
-    if not file_path:
-        raise TelegramError(f"Telegram file metadata missing file_path for {file_id}")
-    destination = telegram_media_dir(paths) / f"{utc_now().replace(':', '').replace('-', '')}_{sanitize_telegram_filename(suggested_name)}"
-    destination.write_bytes(telegram.download_file(file_path))
-    return destination.relative_to(paths.root).as_posix()
+    try:
+        metadata = telegram.get_file(file_id)
+        file_path = str(metadata.get("file_path") or "").strip()
+        if not file_path:
+            raise TelegramError(f"Telegram file metadata missing file_path for {file_id}")
+        content = telegram.download_file(file_path)
+        destination = telegram_media_dir(paths) / f"{utc_now().replace(':', '').replace('-', '')}_{sanitize_telegram_filename(suggested_name)}"
+        destination.write_bytes(content)
+        relative_path = destination.relative_to(paths.root).as_posix()
+        if trace_store is not None:
+            trace_store.log_event(
+                source="telegram_inbound",
+                event_type="telegram.attachment.saved",
+                source_event_id=source_event_id,
+                chat_id=chat_id,
+                topic_id=topic_id,
+                payload={
+                    "file_id": file_id,
+                    "suggested_name": suggested_name,
+                    "file_path": file_path,
+                    "saved_relpath": relative_path,
+                    "size_bytes": len(content),
+                },
+            )
+        return relative_path
+    except Exception as exc:
+        if trace_store is not None:
+            trace_store.log_event(
+                source="telegram_inbound",
+                event_type="telegram.attachment.failed",
+                source_event_id=source_event_id,
+                chat_id=chat_id,
+                topic_id=topic_id,
+                payload={"file_id": file_id, "suggested_name": suggested_name, "error": str(exc)},
+            )
+        raise
 
 
-def build_telegram_attachment_notes(paths: AppPaths, telegram: TelegramClient, message: dict) -> list[str]:
+def build_telegram_attachment_notes(
+    paths: AppPaths,
+    telegram: TelegramClient,
+    message: dict,
+    *,
+    trace_store: TraceStore | None = None,
+    source_event_id: str | None = None,
+    chat_id: int | None = None,
+    topic_id: int | None = None,
+) -> list[str]:
     notes: list[str] = []
     document = message.get("document")
     if isinstance(document, dict) and document.get("file_id"):
         file_name = str(document.get("file_name") or f"document_{document.get('file_unique_id') or document['file_id']}")
-        relative_path = save_telegram_file(paths, telegram, file_id=str(document["file_id"]), suggested_name=file_name)
+        relative_path = save_telegram_file(
+            paths,
+            telegram,
+            file_id=str(document["file_id"]),
+            suggested_name=file_name,
+            trace_store=trace_store,
+            source_event_id=source_event_id,
+            chat_id=chat_id,
+            topic_id=topic_id,
+        )
         mime_type = document.get("mime_type") or mimetypes.guess_type(file_name)[0] or "application/octet-stream"
         notes.append(f"File saved to {relative_path} (name={file_name}, mime={mime_type}).")
     photos = message.get("photo")
@@ -874,14 +979,40 @@ def build_telegram_attachment_notes(paths: AppPaths, telegram: TelegramClient, m
         photo = photos[-1]
         if isinstance(photo, dict) and photo.get("file_id"):
             photo_name = f"photo_{photo.get('file_unique_id') or photo['file_id']}.jpg"
-            relative_path = save_telegram_file(paths, telegram, file_id=str(photo["file_id"]), suggested_name=photo_name)
+            relative_path = save_telegram_file(
+                paths,
+                telegram,
+                file_id=str(photo["file_id"]),
+                suggested_name=photo_name,
+                trace_store=trace_store,
+                source_event_id=source_event_id,
+                chat_id=chat_id,
+                topic_id=topic_id,
+            )
             notes.append(f"Image saved to {relative_path}.")
     return notes
 
 
-def build_telegram_input_text(paths: AppPaths, telegram: TelegramClient, message: dict) -> str:
+def build_telegram_input_text(
+    paths: AppPaths,
+    telegram: TelegramClient,
+    message: dict,
+    *,
+    trace_store: TraceStore | None = None,
+    source_event_id: str | None = None,
+    chat_id: int | None = None,
+    topic_id: int | None = None,
+) -> str:
     base_text = str(message.get("text") or message.get("caption") or "").strip()
-    attachment_notes = build_telegram_attachment_notes(paths, telegram, message)
+    attachment_notes = build_telegram_attachment_notes(
+        paths,
+        telegram,
+        message,
+        trace_store=trace_store,
+        source_event_id=source_event_id,
+        chat_id=chat_id,
+        topic_id=topic_id,
+    )
     if not attachment_notes:
         return base_text
     parts: list[str] = []
@@ -2122,13 +2253,36 @@ def handle_authorized_message(
     performance: PerformanceTracker | None = None,
     paths: AppPaths | None = None,
     config: Config | None = None,
+    source_event_id: str | None = None,
 ) -> None:
     if not auth.telegram_chat_id:
         return
     callback_url = extract_login_callback_url(text)
     if runtime_state.codex_state == "AUTH_REQUIRED" and callback_url:
+        if paths is not None:
+            append_structured_event(
+                paths,
+                run_id=runtime_state.session_id,
+                source="service",
+                event_type="codex.login_callback.received",
+                source_event_id=source_event_id,
+                chat_id=auth.telegram_chat_id,
+                topic_id=topic_id,
+                payload={"callback_url": callback_url},
+            )
         ok, detail = replay_login_callback(callback_url)
         if ok:
+            if paths is not None:
+                append_structured_event(
+                    paths,
+                    run_id=runtime_state.session_id,
+                    source="service",
+                    event_type="codex.login_callback.completed",
+                    source_event_id=source_event_id,
+                    chat_id=auth.telegram_chat_id,
+                    topic_id=topic_id,
+                    payload={"detail": detail},
+                )
             send_telegram_message(
                 telegram,
                 auth.telegram_chat_id,
@@ -2138,6 +2292,17 @@ def handle_authorized_message(
                 category="status",
             )
         else:
+            if paths is not None:
+                append_structured_event(
+                    paths,
+                    run_id=runtime_state.session_id,
+                    source="service",
+                    event_type="codex.login_callback.failed",
+                    source_event_id=source_event_id,
+                    chat_id=auth.telegram_chat_id,
+                    topic_id=topic_id,
+                    payload={"detail": detail},
+                )
             send_telegram_message(
                 telegram,
                 auth.telegram_chat_id,
@@ -2484,6 +2649,7 @@ def handle_authorized_message(
                 user_text=text,
                 thread_id=tracked_session.thread_id,
                 turn_id=tracked_session.active_turn_id,
+                source_event_id=source_event_id,
             )
             tracked_session.current_trace_id = trace_id
             session_store.save_session(tracked_session)
@@ -2496,6 +2662,29 @@ def handle_authorized_message(
                 turn_id=tracked_session.active_turn_id,
                 chat_id=tracked_session.transport_chat_id or auth.telegram_chat_id,
                 topic_id=tracked_session.transport_topic_id,
+            )
+            trace_store.log_event(
+                source="telegram_inbound",
+                event_type="telegram.update.bound_to_trace",
+                trace_id=trace_id,
+                session_id=tracked_session.session_id,
+                thread_id=tracked_session.thread_id,
+                turn_id=tracked_session.active_turn_id,
+                source_event_id=source_event_id,
+                chat_id=tracked_session.transport_chat_id or auth.telegram_chat_id,
+                topic_id=tracked_session.transport_topic_id,
+                payload={"source_event_id": source_event_id},
+            )
+            trace_store.log_event(
+                source="service",
+                event_type="ai.request.started",
+                trace_id=trace_id,
+                session_id=tracked_session.session_id,
+                thread_id=tracked_session.thread_id,
+                turn_id=tracked_session.active_turn_id,
+                chat_id=tracked_session.transport_chat_id or auth.telegram_chat_id,
+                topic_id=tracked_session.transport_topic_id,
+                payload={"text_preview": text[:160]},
             )
         if performance is not None:
             performance.mark_turn_requested(tracked_session, topic_id=topic_id, text=text)
@@ -2529,6 +2718,7 @@ def handle_authorized_message(
                 )
                 if performance is not None and session_id is not None:
                     performance.mark_turn_failed(session_id, error=str(exc))
+                log_request_failure(trace_store, session_store, auth, topic_id, str(exc))
                 return
         except Exception as exc:
             publish_codex_request_error(
@@ -2549,6 +2739,7 @@ def handle_authorized_message(
             )
             if performance is not None and session_id is not None:
                 performance.mark_turn_failed(session_id, error=str(exc))
+            log_request_failure(trace_store, session_store, auth, topic_id, str(exc))
             return
     except Exception as exc:
         publish_codex_request_error(
@@ -2569,6 +2760,7 @@ def handle_authorized_message(
         )
         if performance is not None and session_id is not None:
             performance.mark_turn_failed(session_id, error=str(exc))
+        log_request_failure(trace_store, session_store, auth, topic_id, str(exc))
         return
     if recovered_from_stale_turn:
         send_telegram_message(
@@ -2629,7 +2821,16 @@ def process_telegram_update(
 
     session_store = SessionStore(paths)
     user_id = message.get("from", {}).get("id")
-    text = build_telegram_input_text(paths, telegram, message)
+    source_event_id = str(update_id) if isinstance(update_id, int) else None
+    text = build_telegram_input_text(
+        paths,
+        telegram,
+        message,
+        trace_store=trace_store,
+        source_event_id=source_event_id,
+        chat_id=int(chat_id) if isinstance(chat_id, int) else None,
+        topic_id=topic_id,
+    )
     trace_store.log_event(
         source="telegram_inbound",
         event_type="telegram.update.received",
@@ -2649,6 +2850,14 @@ def process_telegram_update(
     save_json(paths.auth, auth.to_dict())
     if status == "already-paired":
         chat_id = update.get("message", {}).get("chat", {}).get("id")
+        trace_store.log_event(
+            source="telegram_inbound",
+            event_type="telegram.pairing.rejected",
+            source_event_id=source_event_id,
+            chat_id=int(chat_id) if isinstance(chat_id, int) else None,
+            topic_id=topic_id,
+            payload={"reason": "already_paired"},
+        )
         if chat_id:
             send_telegram_message(
                 telegram,
@@ -2660,6 +2869,14 @@ def process_telegram_update(
             )
         return codex
     if status == "code-issued":
+        trace_store.log_event(
+            source="telegram_inbound",
+            event_type="telegram.pairing.requested",
+            source_event_id=source_event_id,
+            chat_id=auth.pending_chat_id,
+            topic_id=topic_id,
+            payload={"pending_user_id": auth.pending_user_id},
+        )
         if auth.pending_chat_id and auth.pairing_code:
             send_telegram_message(
                 telegram,
@@ -2675,6 +2892,14 @@ def process_telegram_update(
         )
         if isatty():
             if complete_pending_pairing(paths, auth, telegram, allow_empty=True) and codex is None:
+                trace_store.log_event(
+                    source="telegram_inbound",
+                    event_type="telegram.pairing.completed",
+                    source_event_id=source_event_id,
+                    chat_id=auth.telegram_chat_id,
+                    topic_id=topic_id,
+                    payload={"user_id": auth.telegram_user_id},
+                )
                 codex = invoke_start_codex_session_fn(
                     start_codex_session_fn,
                     config,
@@ -2795,6 +3020,7 @@ def process_telegram_update(
             performance,
             paths=paths,
             config=config,
+            source_event_id=source_event_id,
         )
         return codex
 
@@ -2825,6 +3051,7 @@ def process_telegram_update(
             performance,
             paths=paths,
             config=config,
+            source_event_id=source_event_id,
         )
     return codex
 
@@ -2937,8 +3164,19 @@ def drain_codex_notifications(
             thinking_text = extract_thinking_text(params)
             activity_text = extract_activity_text(method, params)
             if session is not None and commentary_text:
-                if performance is not None:
-                    performance.mark_reply_started(session, trigger=method)
+                reply_started = performance.mark_reply_started(session, trigger=method) if performance is not None else True
+                if reply_started and getattr(session, "current_trace_id", None):
+                    trace_store.log_event(
+                        source="service",
+                        event_type="ai.reply.started",
+                        trace_id=session.current_trace_id,
+                        session_id=session.session_id,
+                        thread_id=session.thread_id,
+                        turn_id=session.active_turn_id,
+                        chat_id=session.transport_chat_id,
+                        topic_id=session.transport_topic_id,
+                        payload={"trigger": method},
+                    )
                 commentary_source_key = derive_thinking_source_key(
                     method,
                     params,
@@ -2977,8 +3215,19 @@ def drain_codex_notifications(
                     else:
                         action, payload = merge_incremental_assistant_text(session, text)
                 if action != "ignore" and payload:
-                    if performance is not None:
-                        performance.mark_reply_started(session, trigger=method)
+                    reply_started = performance.mark_reply_started(session, trigger=method) if performance is not None else True
+                    if reply_started and getattr(session, "current_trace_id", None):
+                        trace_store.log_event(
+                            source="service",
+                            event_type="ai.reply.started",
+                            trace_id=session.current_trace_id,
+                            session_id=session.session_id,
+                            thread_id=session.thread_id,
+                            turn_id=session.active_turn_id,
+                            chat_id=session.transport_chat_id,
+                            topic_id=session.transport_topic_id,
+                            payload={"trigger": method},
+                        )
                     if action == "replace":
                         replace_pending_output(session_store, session, payload)
                         session.streaming_output_text = ""
@@ -3062,8 +3311,19 @@ def drain_codex_notifications(
             session = resolve_notification_session(session_store, auth, params)
             if session is not None:
                 if text:
-                    if performance is not None:
-                        performance.mark_reply_started(session, trigger=method)
+                    reply_started = performance.mark_reply_started(session, trigger=method) if performance is not None else True
+                    if reply_started and getattr(session, "current_trace_id", None):
+                        trace_store.log_event(
+                            source="service",
+                            event_type="ai.reply.started",
+                            trace_id=session.current_trace_id,
+                            session_id=session.session_id,
+                            thread_id=session.thread_id,
+                            turn_id=session.active_turn_id,
+                            chat_id=session.transport_chat_id,
+                            topic_id=session.transport_topic_id,
+                            payload={"trigger": method},
+                        )
                     session_store.append_pending_output(session, text)
                 flush_buffer(
                     session.session_id,
@@ -3094,8 +3354,19 @@ def drain_codex_notifications(
             if should_append_completion_text(session, assistant_text):
                 action, payload = merge_incremental_assistant_text(session, assistant_text)
                 if action != "ignore" and payload:
-                    if performance is not None:
-                        performance.mark_reply_started(session, trigger=method)
+                    reply_started = performance.mark_reply_started(session, trigger=method) if performance is not None else True
+                    if reply_started and getattr(session, "current_trace_id", None):
+                        trace_store.log_event(
+                            source="service",
+                            event_type="ai.reply.started",
+                            trace_id=session.current_trace_id,
+                            session_id=session.session_id,
+                            thread_id=session.thread_id,
+                            turn_id=session.active_turn_id,
+                            chat_id=session.transport_chat_id,
+                            topic_id=session.transport_topic_id,
+                            payload={"trigger": method},
+                        )
                     if action == "replace":
                         session.pending_output_text = payload
                         session.pending_output_updated_at = utc_now()
@@ -3109,8 +3380,20 @@ def drain_codex_notifications(
             session.status = "ACTIVE"
             session_store.save_session(session)
             if getattr(session, "current_trace_id", None):
+                completed_trace_id = session.current_trace_id
+                trace_store.log_event(
+                    source="service",
+                    event_type="ai.reply.finished",
+                    trace_id=completed_trace_id,
+                    session_id=session.session_id,
+                    thread_id=session.thread_id,
+                    turn_id=str(turn_id),
+                    chat_id=session.transport_chat_id,
+                    topic_id=session.transport_topic_id,
+                    payload={"outcome": "completed" if method == "turn/completed" else "failed"},
+                )
                 trace_store.complete_trace(
-                    session.current_trace_id,
+                    completed_trace_id,
                     outcome="completed" if method == "turn/completed" else "failed",
                     thread_id=session.thread_id,
                     turn_id=str(turn_id),

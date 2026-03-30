@@ -110,6 +110,38 @@ def load_event_types(paths) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+def load_events(paths, *, event_type: str | None = None) -> list[dict]:
+    query = """
+        SELECT event_type, source, trace_id, session_id, thread_id, turn_id, source_event_id, chat_id, topic_id, payload_json
+        FROM events
+    """
+    params: tuple[object, ...] = ()
+    if event_type is not None:
+        query += " WHERE event_type = ?"
+        params = (event_type,)
+    query += " ORDER BY event_id"
+    with sqlite3.connect(paths.database) as connection:
+        rows = connection.execute(query, params).fetchall()
+    events: list[dict] = []
+    for row in rows:
+        payload = json.loads(str(row[9])) if row[9] else None
+        events.append(
+            {
+                "event_type": str(row[0]),
+                "source": str(row[1]),
+                "trace_id": row[2],
+                "session_id": row[3],
+                "thread_id": row[4],
+                "turn_id": row[5],
+                "source_event_id": row[6],
+                "chat_id": row[7],
+                "topic_id": row[8],
+                "payload": payload,
+            }
+        )
+    return events
+
+
 def load_recovery_messages(paths) -> list[str]:
     with sqlite3.connect(paths.database) as connection:
         rows = connection.execute(
@@ -920,6 +952,68 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(auth.pending_user_id, 11)
         self.assertEqual(len(telegram.messages), 1)
         self.assertIn("Pairing code:", telegram.messages[0][1])
+        pairing_event = next(event for event in load_events(self.paths) if event["event_type"] == "telegram.pairing.requested")
+        self.assertEqual(pairing_event["source_event_id"], "1")
+        self.assertEqual(pairing_event["chat_id"], 22)
+        self.assertEqual(pairing_event["payload"]["pending_user_id"], 11)
+
+    def test_process_telegram_update_logs_attachment_and_trace_linkage(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        telegram = FakeTelegramClient()
+        telegram.files["doc-1"] = {"file_path": "documents/report.txt"}
+        telegram.downloads["documents/report.txt"] = b"report-body"
+        update = {
+            "update_id": 7,
+            "message": {
+                "chat": {"id": 22},
+                "from": {"id": 11},
+                "caption": "please review",
+                "document": {"file_id": "doc-1", "file_name": "report.txt", "mime_type": "text/plain"},
+            },
+        }
+        codex = FakeCodex()
+
+        with patch("runtime.service.save_json"):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=codex,
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIs(returned, codex)
+        self.assertEqual(len(codex.sent), 1)
+        self.assertIn("Telegram attachments:", codex.sent[0])
+        self.assertIn("File saved to", codex.sent[0])
+
+        events = load_events(self.paths)
+        trace_started = next(event for event in events if event["event_type"] == "trace.started")
+        bound = next(event for event in events if event["event_type"] == "telegram.update.bound_to_trace")
+        request_started = next(event for event in events if event["event_type"] == "ai.request.started")
+        attachment_saved = next(event for event in events if event["event_type"] == "telegram.attachment.saved")
+
+        self.assertEqual(trace_started["source_event_id"], "7")
+        self.assertEqual(bound["source_event_id"], "7")
+        self.assertEqual(trace_started["trace_id"], bound["trace_id"])
+        self.assertEqual(bound["trace_id"], request_started["trace_id"])
+        self.assertEqual(attachment_saved["source_event_id"], "7")
+        self.assertEqual(attachment_saved["payload"]["file_id"], "doc-1")
+        saved_relpath = attachment_saved["payload"]["saved_relpath"]
+        self.assertTrue((self.paths.root / saved_relpath).exists())
+        self.assertIn(saved_relpath, codex.sent[0])
 
     def test_bootstrap_paired_codex_uses_app_server_and_reports_running(self) -> None:
         auth = AuthState(
@@ -1022,6 +1116,8 @@ class ServiceFlowTests(unittest.TestCase):
                 None,
                 telegram,
                 self.recorder,
+                paths=self.paths,
+                source_event_id="77",
             )
 
         replay.assert_called_once_with("http://localhost:1455/auth/callback?code=abc123&state=xyz987")
@@ -1030,6 +1126,12 @@ class ServiceFlowTests(unittest.TestCase):
             [(22, "Codex login callback received. Waiting for Codex to finish sign-in.")],
         )
         self.assertEqual(self.recorder.records, [])
+        callback_events = load_events(self.paths)
+        self.assertEqual(
+            [event["event_type"] for event in callback_events if event["event_type"].startswith("codex.login_callback.")],
+            ["codex.login_callback.received", "codex.login_callback.completed"],
+        )
+        self.assertTrue(all(event["source_event_id"] == "77" for event in callback_events if event["event_type"].startswith("codex.login_callback.")))
 
     def test_handle_authorized_message_reports_callback_replay_failure(self) -> None:
         auth = AuthState(
@@ -1058,12 +1160,20 @@ class ServiceFlowTests(unittest.TestCase):
                 None,
                 telegram,
                 self.recorder,
+                paths=self.paths,
+                source_event_id="78",
             )
 
         self.assertEqual(
             telegram.messages,
             [(22, "Codex login callback failed: Connection refused")],
         )
+        callback_events = load_events(self.paths)
+        self.assertEqual(
+            [event["event_type"] for event in callback_events if event["event_type"].startswith("codex.login_callback.")],
+            ["codex.login_callback.received", "codex.login_callback.failed"],
+        )
+        self.assertTrue(all(event["source_event_id"] == "78" for event in callback_events if event["event_type"].startswith("codex.login_callback.")))
 
     def test_sessions_command_lists_current_chat_sessions(self) -> None:
         auth = AuthState(
@@ -1638,6 +1748,20 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIn("agent_reply_finished", events)
         self.assertIn("telegram_send_started", events)
         self.assertIn("telegram_send_completed", events)
+        db_events = load_events(self.paths)
+        trace_started = next(event for event in db_events if event["event_type"] == "trace.started")
+        bound = next(event for event in db_events if event["event_type"] == "telegram.update.bound_to_trace")
+        request_started = next(event for event in db_events if event["event_type"] == "ai.request.started")
+        reply_started = next(event for event in db_events if event["event_type"] == "ai.reply.started")
+        reply_finished = next(event for event in db_events if event["event_type"] == "ai.reply.finished")
+        trace_completed = next(event for event in db_events if event["event_type"] == "trace.completed")
+        self.assertEqual(trace_started["source_event_id"], "50")
+        self.assertEqual(bound["source_event_id"], "50")
+        self.assertEqual(trace_started["trace_id"], bound["trace_id"])
+        self.assertEqual(bound["trace_id"], request_started["trace_id"])
+        self.assertEqual(request_started["trace_id"], reply_started["trace_id"])
+        self.assertEqual(reply_started["trace_id"], reply_finished["trace_id"])
+        self.assertEqual(reply_finished["trace_id"], trace_completed["trace_id"])
 
     def test_drain_codex_notifications_reads_nested_turn_id_and_thread_fallback_text(self) -> None:
         auth = AuthState(

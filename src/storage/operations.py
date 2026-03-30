@@ -105,6 +105,7 @@ class TraceStore:
         thread_id: str | None = None,
         turn_id: str | None = None,
         parent_trace_id: str | None = None,
+        source_event_id: str | None = None,
     ) -> str:
         trace_id = str(uuid.uuid4())
         with self.storage.transaction() as connection:
@@ -134,9 +135,10 @@ class TraceStore:
             session_id=session_id,
             thread_id=thread_id,
             turn_id=turn_id,
+            source_event_id=source_event_id,
             chat_id=chat_id,
             topic_id=topic_id,
-            payload={"preview": preview_text(user_text)},
+            payload={"preview": preview_text(user_text), "source_event_id": source_event_id},
         )
         return trace_id
 
