@@ -19,6 +19,7 @@ py-modules = ["cli", "app_shell", "app_meta", "local_chat", "telegram_command"]
 
 [tool.setuptools.package-data]
 runtime = ["resources/*.md", "resources/defaults/*.md"]
+storage = ["migrations/*.sql"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
