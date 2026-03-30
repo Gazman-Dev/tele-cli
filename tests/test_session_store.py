@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.models import AuthState
+from core.models import AuthState, SessionRecord
 from core.paths import build_paths
 from runtime.session_store import SessionStore
 
@@ -46,6 +46,26 @@ class SessionStoreTests(unittest.TestCase):
 
             loaded = store.get_or_create_telegram_session(auth)
             self.assertEqual(loaded.thread_id, "thread-1")
+
+    def test_save_session_preserves_existing_thread_id_for_active_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = SessionStore(paths)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+
+            session = store.get_or_create_telegram_session(auth)
+            session.thread_id = "thread-1"
+            session.active_turn_id = "turn-1"
+            session.status = "RUNNING_TURN"
+            store.save_session(session)
+
+            broken = SessionRecord.from_dict(session.to_dict())
+            broken.thread_id = None
+            store.save_session(broken)
+
+            loaded = store.get_or_create_telegram_session(auth)
+            self.assertEqual(loaded.thread_id, "thread-1")
+            self.assertEqual(loaded.active_turn_id, "turn-1")
 
     def test_get_or_create_telegram_session_prefers_active_session_after_new(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

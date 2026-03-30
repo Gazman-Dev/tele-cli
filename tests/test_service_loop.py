@@ -185,11 +185,13 @@ class ServiceLoopTests(unittest.TestCase):
 
             self._run_service_once(paths, telegram, start_fn, app_lock)
 
-            self.assertEqual(telegram.messages, [(22, "Thinking")])
+            self.assertEqual(telegram.messages, [])
             current = SessionStore(paths).get_current_telegram_session(auth)
             self.assertIsNotNone(current)
             assert current is not None
             self.assertEqual(current.status, "RUNNING_TURN")
+            self.assertEqual(current.active_turn_id, "turn-1")
+            self.assertEqual(current.thread_id, "thread-1")
             self.assertTrue(app_lock.cleared)
 
     def test_run_service_drains_codex_events_even_when_no_telegram_updates_arrive(self) -> None:
@@ -249,14 +251,9 @@ class ServiceLoopTests(unittest.TestCase):
 
             self._run_service_once(paths, telegram, start_fn, app_lock)
 
-            self.assertEqual(
-                telegram.messages,
-                [
-                    (22, "Buffered hello"),
-                ],
-            )
+            self.assertEqual(telegram.messages, [])
             updated = SessionStore(paths).get_or_create_telegram_session(auth)
-            self.assertEqual(updated.pending_output_text, "")
+            self.assertEqual(updated.pending_output_text, "Buffered hello")
 
     def test_run_service_sends_typing_indicator_for_active_turn_while_idle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import ast
 import json
 import mimetypes
+import queue
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from core.models import AuthState, utc_now
 
@@ -21,6 +25,51 @@ class TelegramClient:
         self.token = token
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.file_base_url = f"https://api.telegram.org/file/bot{token}"
+        self._outbound_queue: queue.Queue[tuple[Callable[[], object], queue.Queue[tuple[bool, object]]]] = queue.Queue()
+        self._outbound_worker = threading.Thread(target=self._run_outbound_worker, name="telegram-outbound", daemon=True)
+        self._outbound_worker.start()
+
+    @staticmethod
+    def _retry_delay_from_error(exc: Exception) -> float | None:
+        if not isinstance(exc, TelegramError):
+            return None
+        message = str(exc)
+        try:
+            payload = ast.literal_eval(message)
+        except (ValueError, SyntaxError):
+            return None
+        if not isinstance(payload, dict) or payload.get("error_code") != 429:
+            return None
+        parameters = payload.get("parameters")
+        if isinstance(parameters, dict):
+            retry_after = parameters.get("retry_after")
+            if isinstance(retry_after, (int, float)) and retry_after > 0:
+                return float(retry_after)
+        return 1.0
+
+    def _run_outbound_worker(self) -> None:
+        while True:
+            action, result_queue = self._outbound_queue.get()
+            attempts = 0
+            while True:
+                try:
+                    result_queue.put((True, action()))
+                    break
+                except Exception as exc:
+                    retry_delay = self._retry_delay_from_error(exc)
+                    if retry_delay is None or attempts >= 5:
+                        result_queue.put((False, exc))
+                        break
+                    attempts += 1
+                    time.sleep(retry_delay)
+
+    def _dispatch_outbound(self, action: Callable[[], object]):
+        result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+        self._outbound_queue.put((action, result_queue))
+        success, result = result_queue.get()
+        if success:
+            return result
+        raise result
 
     def _request(
         self,
@@ -114,7 +163,7 @@ class TelegramClient:
             params["parse_mode"] = parse_mode
         if disable_notification:
             params["disable_notification"] = "true"
-        return self._request("sendMessage", params=params)
+        return self._dispatch_outbound(lambda: self._request("sendMessage", params=params))
 
     def edit_message_text(
         self,
@@ -126,27 +175,12 @@ class TelegramClient:
         params = {"chat_id": chat_id, "message_id": message_id, "text": text}
         if parse_mode:
             params["parse_mode"] = parse_mode
-        return self._request("editMessageText", params=params)
-
-    def send_message_draft(
-        self,
-        chat_id: int,
-        draft_id: int,
-        text: str,
-        *,
-        topic_id: int | None = None,
-        parse_mode: str | None = None,
-    ) -> bool:
-        params = {"chat_id": chat_id, "draft_id": draft_id, "text": text}
-        if topic_id is not None:
-            params["message_thread_id"] = topic_id
-        if parse_mode:
-            params["parse_mode"] = parse_mode
-        result = self._request("sendMessageDraft", params=params)
-        return bool(result)
+        return self._dispatch_outbound(lambda: self._request("editMessageText", params=params))
 
     def delete_message(self, chat_id: int, message_id: int) -> dict:
-        return self._request("deleteMessage", params={"chat_id": chat_id, "message_id": message_id})
+        return self._dispatch_outbound(
+            lambda: self._request("deleteMessage", params={"chat_id": chat_id, "message_id": message_id})
+        )
 
     def send_photo(
         self,
@@ -168,7 +202,9 @@ class TelegramClient:
             params["parse_mode"] = parse_mode
         if disable_notification:
             params["disable_notification"] = "true"
-        return self._multipart_request("sendPhoto", params=params, file_field="photo", file_path=path)
+        return self._dispatch_outbound(
+            lambda: self._multipart_request("sendPhoto", params=params, file_field="photo", file_path=path)
+        )
 
     def send_document(
         self,
@@ -190,7 +226,9 @@ class TelegramClient:
             params["parse_mode"] = parse_mode
         if disable_notification:
             params["disable_notification"] = "true"
-        return self._multipart_request("sendDocument", params=params, file_field="document", file_path=path)
+        return self._dispatch_outbound(
+            lambda: self._multipart_request("sendDocument", params=params, file_field="document", file_path=path)
+        )
 
     def get_file(self, file_id: str) -> dict:
         return self._request("getFile", params={"file_id": file_id})
@@ -203,7 +241,7 @@ class TelegramClient:
         params = {"chat_id": chat_id, "action": "typing"}
         if topic_id is not None:
             params["message_thread_id"] = topic_id
-        self._request("sendChatAction", params=params)
+        self._dispatch_outbound(lambda: self._request("sendChatAction", params=params))
 
 
 def is_auth_paired(auth: Optional[AuthState]) -> bool:

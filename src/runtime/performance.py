@@ -258,58 +258,6 @@ def send_telegram_message(
     return None
 
 
-def send_telegram_message_draft(
-    telegram,
-    chat_id: int,
-    draft_id: int,
-    text: str,
-    *,
-    topic_id: int | None = None,
-    parse_mode: str | None = None,
-    performance: PerformanceTracker | None = None,
-    **context: Any,
-) -> bool:
-    started_at = time.monotonic()
-    if performance is not None:
-        performance.log(
-            "telegram_draft_started",
-            chat_id=chat_id,
-            topic_id=topic_id,
-            draft_id=draft_id,
-            text_chars=len(text),
-            parse_mode=parse_mode,
-            **context,
-        )
-    try:
-        result = telegram.send_message_draft(chat_id, draft_id, text, topic_id=topic_id, parse_mode=parse_mode)
-    except Exception as exc:
-        if performance is not None:
-            performance.log(
-                "telegram_draft_failed",
-                chat_id=chat_id,
-                topic_id=topic_id,
-                draft_id=draft_id,
-                text_chars=len(text),
-                parse_mode=parse_mode,
-                duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
-                error=str(exc),
-                **context,
-            )
-        raise
-    if performance is not None:
-        performance.log(
-            "telegram_draft_completed",
-            chat_id=chat_id,
-            topic_id=topic_id,
-            draft_id=draft_id,
-            text_chars=len(text),
-            parse_mode=parse_mode,
-            duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
-            **context,
-        )
-    return bool(result)
-
-
 def edit_telegram_message(
     telegram,
     chat_id: int,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,8 @@ from core.paths import AppPaths
 from core.state_versions import load_versioned_state, save_versioned_state
 
 from .instructions import session_short_memory_path
+
+_SESSION_STORE_LOCK = threading.RLock()
 
 
 @dataclass
@@ -27,11 +30,20 @@ class SessionStore:
     def __init__(self, paths: AppPaths):
         self.paths = paths
 
+    @staticmethod
+    def _stabilize_session(updated_session: SessionRecord, existing_session: SessionRecord | None = None) -> SessionRecord:
+        stabilized = SessionRecord.from_dict(updated_session.to_dict())
+        if stabilized.active_turn_id and not stabilized.thread_id and existing_session and existing_session.thread_id:
+            stabilized.thread_id = existing_session.thread_id
+        return stabilized
+
     def load(self) -> SessionStoreState:
-        return load_versioned_state(self.paths.sessions, SessionStoreState.from_dict) or SessionStoreState()
+        with _SESSION_STORE_LOCK:
+            return load_versioned_state(self.paths.sessions, SessionStoreState.from_dict) or SessionStoreState()
 
     def save(self, state: SessionStoreState) -> None:
-        save_versioned_state(self.paths.sessions, state.to_dict())
+        with _SESSION_STORE_LOCK:
+            save_versioned_state(self.paths.sessions, state.to_dict())
 
     @staticmethod
     def is_writable(session: SessionRecord) -> bool:
@@ -67,38 +79,40 @@ class SessionStore:
         path.touch(exist_ok=True)
 
     def get_or_create_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord:
-        state = self.load()
-        matching = [
-            session
-            for session in state.sessions
-            if self._matches_transport(session, auth, topic_id) and session.attached
-        ]
-        active = next((session for session in matching if self.is_writable(session)), None)
-        if active is not None:
-            return active
-        if matching:
-            return matching[-1]
-        session = SessionRecord(
-            session_id=str(uuid.uuid4()),
-            transport="telegram",
-            transport_user_id=auth.telegram_user_id,
-            transport_chat_id=auth.telegram_chat_id,
-            transport_topic_id=topic_id,
-        )
-        state.sessions.append(session)
-        self.save(state)
-        self._touch_short_memory(session.session_id)
-        return session
+        with _SESSION_STORE_LOCK:
+            state = self.load()
+            matching = [
+                session
+                for session in state.sessions
+                if self._matches_transport(session, auth, topic_id) and session.attached
+            ]
+            active = next((session for session in matching if self.is_writable(session)), None)
+            if active is not None:
+                return active
+            if matching:
+                return matching[-1]
+            session = SessionRecord(
+                session_id=str(uuid.uuid4()),
+                transport="telegram",
+                transport_user_id=auth.telegram_user_id,
+                transport_chat_id=auth.telegram_chat_id,
+                transport_topic_id=topic_id,
+            )
+            state.sessions.append(session)
+            self.save(state)
+            self._touch_short_memory(session.session_id)
+            return session
 
     def save_session(self, updated_session: SessionRecord) -> None:
-        state = self.load()
-        for index, session in enumerate(state.sessions):
-            if session.session_id == updated_session.session_id:
-                state.sessions[index] = updated_session
-                self.save(state)
-                return
-        state.sessions.append(updated_session)
-        self.save(state)
+        with _SESSION_STORE_LOCK:
+            state = self.load()
+            for index, session in enumerate(state.sessions):
+                if session.session_id == updated_session.session_id:
+                    state.sessions[index] = self._stabilize_session(updated_session, session)
+                    self.save(state)
+                    return
+            state.sessions.append(self._stabilize_session(updated_session))
+            self.save(state)
 
     def mark_user_message(self, session: SessionRecord) -> SessionRecord:
         session.last_user_message_at = utc_now()
@@ -111,70 +125,73 @@ class SessionStore:
         return session
 
     def create_new_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord:
-        state = self.load()
-        for session in state.sessions:
-            if self._matches_transport(session, auth, topic_id):
-                session.attached = False
-        state.sessions = [session for session in state.sessions if not self.is_prunable_detached(session)]
-        session = SessionRecord(
-            session_id=str(uuid.uuid4()),
-            transport="telegram",
-            transport_user_id=auth.telegram_user_id,
-            transport_chat_id=auth.telegram_chat_id,
-            transport_topic_id=topic_id,
-        )
-        state.sessions.append(session)
-        self.save(state)
-        self._touch_short_memory(session.session_id)
-        return session
+        with _SESSION_STORE_LOCK:
+            state = self.load()
+            for session in state.sessions:
+                if self._matches_transport(session, auth, topic_id):
+                    session.attached = False
+            state.sessions = [session for session in state.sessions if not self.is_prunable_detached(session)]
+            session = SessionRecord(
+                session_id=str(uuid.uuid4()),
+                transport="telegram",
+                transport_user_id=auth.telegram_user_id,
+                transport_chat_id=auth.telegram_chat_id,
+                transport_topic_id=topic_id,
+            )
+            state.sessions.append(session)
+            self.save(state)
+            self._touch_short_memory(session.session_id)
+            return session
 
     def get_or_create_local_session(self, channel: str) -> SessionRecord:
         normalized = channel.strip()
         if not normalized:
             raise ValueError("Local channel name is required.")
-        state = self.load()
-        matching = [
-            session
-            for session in state.sessions
-            if self._matches_local_channel(session, normalized) and session.attached
-        ]
-        active = next((session for session in matching if self.is_writable(session)), None)
-        if active is not None:
-            return active
-        if matching:
-            return matching[-1]
-        session = SessionRecord(
-            session_id=str(uuid.uuid4()),
-            transport="local",
-            transport_user_id=None,
-            transport_chat_id=None,
-            transport_channel=normalized,
-        )
-        state.sessions.append(session)
-        self.save(state)
-        self._touch_short_memory(session.session_id)
-        return session
+        with _SESSION_STORE_LOCK:
+            state = self.load()
+            matching = [
+                session
+                for session in state.sessions
+                if self._matches_local_channel(session, normalized) and session.attached
+            ]
+            active = next((session for session in matching if self.is_writable(session)), None)
+            if active is not None:
+                return active
+            if matching:
+                return matching[-1]
+            session = SessionRecord(
+                session_id=str(uuid.uuid4()),
+                transport="local",
+                transport_user_id=None,
+                transport_chat_id=None,
+                transport_channel=normalized,
+            )
+            state.sessions.append(session)
+            self.save(state)
+            self._touch_short_memory(session.session_id)
+            return session
 
     def create_new_local_session(self, channel: str) -> SessionRecord:
         normalized = channel.strip()
         if not normalized:
             raise ValueError("Local channel name is required.")
-        state = self.load()
-        for session in state.sessions:
-            if self._matches_local_channel(session, normalized):
-                session.attached = False
-        state.sessions = [session for session in state.sessions if not self.is_prunable_detached(session)]
-        session = SessionRecord(
-            session_id=str(uuid.uuid4()),
-            transport="local",
-            transport_user_id=None,
-            transport_chat_id=None,
-            transport_channel=normalized,
-        )
-        state.sessions.append(session)
-        self.save(state)
-        self._touch_short_memory(session.session_id)
-        return session
+        with _SESSION_STORE_LOCK:
+            state = self.load()
+            for session in state.sessions:
+                if self._matches_local_channel(session, normalized):
+                    session.attached = False
+            state.sessions = [session for session in state.sessions if not self.is_prunable_detached(session)]
+            session = SessionRecord(
+                session_id=str(uuid.uuid4()),
+                transport="local",
+                transport_user_id=None,
+                transport_chat_id=None,
+                transport_channel=normalized,
+            )
+            state.sessions.append(session)
+            self.save(state)
+            self._touch_short_memory(session.session_id)
+            return session
 
     def list_local_sessions(self, channel: str) -> list[SessionRecord]:
         normalized = channel.strip()
