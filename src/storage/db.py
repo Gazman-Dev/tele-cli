@@ -20,6 +20,20 @@ from .payloads import GENERAL_PAYLOAD_LIMIT_BYTES, json_dumps, preview_text
 _MIGRATION_GUARD = threading.RLock()
 _INITIALIZED_DATABASES: set[Path] = set()
 _BOOTSTRAP_STATE_KEY = "sqlite_bootstrap"
+_REQUIRED_TABLES = (
+    "service_runs",
+    "app_state",
+    "sessions",
+    "session_short_memory",
+    "telegram_updates",
+    "traces",
+    "approvals",
+    "events",
+    "telegram_outbound_queue",
+    "telegram_message_groups",
+    "telegram_message_chunks",
+    "artifacts",
+)
 
 
 def utc_now() -> str:
@@ -137,7 +151,18 @@ def _database_has_runtime_rows(connection: sqlite3.Connection) -> bool:
         "SELECT 1 FROM telegram_updates LIMIT 1",
         "SELECT 1 FROM app_state WHERE state_key IN ('runtime', 'codex_server') LIMIT 1",
     )
-    return any(connection.execute(query).fetchone() is not None for query in checks)
+    for query in checks:
+        if connection.execute(query).fetchone() is not None:
+            return True
+    return False
+
+
+def _has_required_schema(connection: sqlite3.Connection) -> bool:
+    rows = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    tables = {str(row["name"]) for row in rows}
+    return all(table in tables for table in _REQUIRED_TABLES)
 
 
 def _import_legacy_session_rows(connection: sqlite3.Connection, paths: AppPaths, data: dict) -> int:
@@ -432,6 +457,7 @@ def ensure_storage(paths: AppPaths) -> None:
                 int(row["version"]): (str(row["name"]), str(row["checksum"]))
                 for row in connection.execute("SELECT version, name, checksum FROM schema_migrations ORDER BY version")
             }
+            schema_needs_repair = not _has_required_schema(connection)
             for version, name, path in _migration_files():
                 checksum = _checksum(path)
                 existing = applied.get(version)
@@ -439,16 +465,20 @@ def ensure_storage(paths: AppPaths) -> None:
                     existing_name, existing_checksum = existing
                     if existing_name != name or existing_checksum != checksum:
                         raise RuntimeError(f"Migration drift detected for version {version}: {name}.")
-                    continue
+                    if not schema_needs_repair:
+                        continue
                 script = path.read_text(encoding="utf-8")
                 connection.executescript(script)
-                connection.execute(
-                    """
-                    INSERT INTO schema_migrations(version, name, checksum, applied_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (version, name, checksum, utc_now()),
-                )
+                if existing is None:
+                    connection.execute(
+                        """
+                        INSERT INTO schema_migrations(version, name, checksum, applied_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (version, name, checksum, utc_now()),
+                    )
+            if not _has_required_schema(connection):
+                raise RuntimeError("Database schema is incomplete after applying migrations.")
             _bootstrap_legacy_state(connection, paths)
             connection.commit()
             _INITIALIZED_DATABASES.add(database_path)

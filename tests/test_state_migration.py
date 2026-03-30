@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import tempfile
 import unittest
@@ -34,6 +35,44 @@ class SqliteMigrationTests(unittest.TestCase):
 
             self.assertIsNotNone(row)
             self.assertGreater(row[0], 0)
+
+    def test_storage_repairs_partial_schema_when_migration_marker_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            paths.root.mkdir(parents=True, exist_ok=True)
+            migration_path = Path(__file__).resolve().parents[1] / "src" / "storage" / "migrations" / "0001_initial.sql"
+            checksum = hashlib.sha256(migration_path.read_bytes()).hexdigest()
+            with sqlite3.connect(paths.database) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE schema_migrations (
+                        id INTEGER PRIMARY KEY,
+                        version INTEGER NOT NULL UNIQUE,
+                        name TEXT NOT NULL UNIQUE,
+                        checksum TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO schema_migrations(version, name, checksum, applied_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (1, "0001_initial.sql", checksum, "2026-03-30T00:00:00+00:00"),
+                )
+                connection.commit()
+
+            StorageManager(paths)
+
+            with sqlite3.connect(paths.database) as connection:
+                app_state_row = connection.execute("SELECT COUNT(*) FROM app_state").fetchone()
+                service_runs_row = connection.execute("SELECT COUNT(*) FROM service_runs").fetchone()
+                migration_row = connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version = 1").fetchone()
+
+            self.assertEqual(migration_row[0], 1)
+            self.assertEqual(app_state_row[0], 1)
+            self.assertEqual(service_runs_row[0], 0)
 
     def test_session_store_persists_into_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
