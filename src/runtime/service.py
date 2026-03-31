@@ -32,7 +32,7 @@ from storage.runtime_state_store import (
     save_codex_server_state,
     save_runtime_state,
 )
-from storage.telegram_groups import sync_message_chunks, upsert_message_group
+from storage.telegram_groups import load_active_message_chunk_ids, sync_message_chunks, upsert_message_group
 from storage.telegram_queue import active_delivery_manager, install_delivery_manager, uninstall_delivery_manager
 from .app_server_runtime import default_transport_factory, derive_codex_state, is_stale_active_turn, make_app_server_start_fn
 from .approval_store import ApprovalStore
@@ -398,6 +398,11 @@ def _sync_telegram_message_chunks(
     message_group_id = _message_group_id_for_session(session, context)
     context.setdefault("message_group_id", message_group_id)
     existing_ids = _streaming_message_ids(session)
+    logical_role = _logical_role_from_context(context)
+    if not existing_ids:
+        existing_ids = _stored_streaming_message_ids(paths, session=session, logical_role=logical_role)
+    if not existing_ids and logical_role != "live_progress":
+        existing_ids = _stored_streaming_message_ids(paths, session=session, logical_role="live_progress")
     kept_ids: list[int] = []
     delivery_manager = active_delivery_manager()
     allow_paused_return = delivery_manager.is_paused() if delivery_manager is not None else False
@@ -545,6 +550,15 @@ def _message_group_id_for_session(session, context: dict | None) -> str:
 
 def _message_chunk_dedupe_key(message_group_id: str, chunk_index: int) -> str:
     return f"{message_group_id}:chunk:{chunk_index}"
+
+
+def _message_group_id_for_role(session, logical_role: str) -> str:
+    trace_token = getattr(session, "current_trace_id", None) or session.active_turn_id or session.last_completed_turn_id or "session"
+    return f"{session.session_id}:{logical_role}:{trace_token}"
+
+
+def _stored_streaming_message_ids(paths: AppPaths, *, session, logical_role: str) -> list[int]:
+    return load_active_message_chunk_ids(paths, message_group_id=_message_group_id_for_role(session, logical_role))
 
 
 def start_telegram_polling_thread(

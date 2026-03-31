@@ -16,6 +16,7 @@ from .artifacts import ArtifactStore
 from .db import StorageManager
 from .operations import TraceStore
 from .payloads import QUEUE_PAYLOAD_LIMIT_BYTES, json_dumps, json_loads
+from .telegram_groups import update_message_chunk_id
 
 
 _ACTIVE_MANAGER: "TelegramDeliveryManager | None" = None
@@ -345,6 +346,20 @@ class TelegramDeliveryManager:
                     (utc_now(), message_id, row["queue_id"]),
                 )
                 self._clear_global_pause(connection)
+            if (
+                message_id is not None
+                and isinstance(row["message_group_id"], str)
+                and row["message_group_id"]
+                and row["op_type"] in {"send_message", "send_photo", "send_document"}
+            ):
+                chunk_index = self._chunk_index_from_dedupe_key(row["dedupe_key"])
+                if chunk_index is not None:
+                    update_message_chunk_id(
+                        self.paths,
+                        message_group_id=str(row["message_group_id"]),
+                        chunk_index=chunk_index,
+                        telegram_message_id=message_id,
+                    )
             self.traces.log_event(
                 source="telegram_outbound",
                 event_type=self._api_event_type(row["op_type"], success=True),
@@ -433,6 +448,15 @@ class TelegramDeliveryManager:
             return None
         message_id = row["telegram_message_id"]
         return int(message_id) if isinstance(message_id, int) else None
+
+    @staticmethod
+    def _chunk_index_from_dedupe_key(dedupe_key: str | None) -> int | None:
+        if not isinstance(dedupe_key, str) or ":chunk:" not in dedupe_key:
+            return None
+        try:
+            return int(dedupe_key.rsplit(":chunk:", 1)[1])
+        except ValueError:
+            return None
 
     @staticmethod
     def _api_event_type(op_type: str, *, success: bool) -> str:

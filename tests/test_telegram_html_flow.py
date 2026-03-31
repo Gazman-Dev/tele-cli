@@ -13,6 +13,8 @@ from integrations.telegram import TelegramError
 from runtime import service as service_module
 from runtime.service import CodexNotificationPump, drain_codex_notifications, flush_buffer, maybe_refresh_thinking_message
 from runtime.session_store import SessionStore
+from storage.operations import ServiceRunStore
+from storage.telegram_queue import TelegramDeliveryManager
 from tests.fakes.fake_telegram import FakeTelegramClient
 
 
@@ -586,6 +588,117 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         combined = "\n".join(rendered_texts)
         self.assertEqual(combined.count("<blockquote expandable>"), 1)
         self.assertNotIn("<pre><code", combined)
+
+    def test_async_answer_stream_reuses_existing_thinking_message(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.last_user_message_at = "2026-03-29T00:00:00+00:00"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+
+        with patch("runtime.performance.active_delivery_manager", return_value=manager), patch(
+            "runtime.service.active_delivery_manager", return_value=manager
+        ):
+            service_module.set_visible_thinking_message(
+                auth,
+                telegram,
+                self.recorder,
+                store,
+                session,
+                text="I'm updating",
+                source_key="commentary:msg-1",
+            )
+            time.sleep(0.06)
+            manager.process_next()
+
+            refreshed = store.get_or_create_telegram_session(auth)
+            self.assertEqual(refreshed.streaming_message_ids, [])
+
+            refreshed.pending_output_text = "I'm updating package metadata"
+            store.save_session(refreshed)
+            flush_buffer(
+                refreshed.session_id,
+                auth,
+                telegram,
+                self.recorder,
+                store,
+                mark_agent=False,
+                stream_format=True,
+                queue_only=True,
+            )
+            time.sleep(0.06)
+            manager.process_next()
+
+        self.assertEqual(telegram.messages, [(22, "I'm updating")])
+        self.assertEqual(len(telegram.edits), 1)
+        self.assertEqual(telegram.edits[0][0:2], (22, 1))
+        self.assertIn("I'm updating package metadata", telegram.edits[0][2])
+
+    def test_async_final_reply_deletes_extra_split_live_messages(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.last_user_message_at = "2026-03-29T00:00:00+00:00"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+
+        original_limit = service_module.TELEGRAM_TEXT_LIMIT
+        try:
+            service_module.TELEGRAM_TEXT_LIMIT = 40
+            with patch("runtime.performance.active_delivery_manager", return_value=manager), patch(
+                "runtime.service.active_delivery_manager", return_value=manager
+            ):
+                service_module.set_visible_thinking_message(
+                    auth,
+                    telegram,
+                    self.recorder,
+                    store,
+                    session,
+                    text="Alpha beta gamma delta epsilon zeta eta theta",
+                    source_key="commentary:msg-1",
+                )
+                time.sleep(0.06)
+                while manager.process_next() is not None:
+                    pass
+
+                refreshed = store.get_or_create_telegram_session(auth)
+                refreshed.pending_output_text = "Done"
+                refreshed.thinking_history_order = []
+                refreshed.thinking_history_by_source = {}
+                refreshed.thinking_history_text = ""
+                store.save_session(refreshed)
+                flush_buffer(
+                    refreshed.session_id,
+                    auth,
+                    telegram,
+                    self.recorder,
+                    store,
+                    mark_agent=True,
+                    queue_only=True,
+                )
+                time.sleep(0.06)
+                while manager.process_next() is not None:
+                    pass
+        finally:
+            service_module.TELEGRAM_TEXT_LIMIT = original_limit
+
+        self.assertEqual(len(telegram.messages), 2)
+        self.assertTrue(any(message_id == 1 for _, message_id, _ in telegram.edits))
+        self.assertIn((22, 2), telegram.deletes)
+        refreshed = store.get_or_create_telegram_session(auth)
+        self.assertEqual(refreshed.streaming_message_ids, [])
+        self.assertIsNone(refreshed.streaming_message_id)
 
 
 if __name__ == "__main__":

@@ -113,3 +113,37 @@ def sync_message_chunks(
         for artifact_ref in created_artifacts:
             artifacts.delete(artifact_ref)
         raise
+
+
+def load_active_message_chunk_ids(paths: AppPaths, *, message_group_id: str) -> list[int]:
+    storage = StorageManager(paths)
+    with storage.read_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT chunk_index, telegram_message_id
+            FROM telegram_message_chunks
+            WHERE message_group_id = ? AND deleted_at IS NULL AND telegram_message_id IS NOT NULL
+            ORDER BY chunk_index ASC
+            """,
+            (message_group_id,),
+        ).fetchall()
+    return [int(row["telegram_message_id"]) for row in rows if isinstance(row["telegram_message_id"], int)]
+
+
+def update_message_chunk_id(
+    paths: AppPaths,
+    *,
+    message_group_id: str,
+    chunk_index: int,
+    telegram_message_id: int,
+) -> None:
+    storage = StorageManager(paths)
+    with storage.transaction() as connection:
+        connection.execute(
+            """
+            UPDATE telegram_message_chunks
+            SET telegram_message_id = ?, updated_at = ?
+            WHERE message_group_id = ? AND chunk_index = ? AND deleted_at IS NULL
+            """,
+            (telegram_message_id, utc_now(), message_group_id, chunk_index),
+        )
