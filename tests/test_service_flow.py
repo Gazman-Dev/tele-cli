@@ -503,6 +503,69 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIsNone(updated.streaming_message_id)
         self.assertEqual(updated.streaming_message_ids, [])
 
+    def test_turn_completed_failed_surfaces_codex_error_message(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 5
+        session.streaming_message_ids = [5]
+        session.thinking_history_order = ["commentary:msg-1"]
+        session.thinking_history_by_source = {"commentary:msg-1": "Thinking"}
+        session.thinking_live_texts = {"commentary:msg-1": "Thinking"}
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification(
+                "turn/completed",
+                {
+                    "threadId": "thread-1",
+                    "turn": {
+                        "id": "turn-1",
+                        "status": "failed",
+                        "error": {
+                            "message": "Quota exceeded. Check your plan and billing details.",
+                            "codexErrorInfo": "usageLimitExceeded",
+                        },
+                        "items": [],
+                    },
+                },
+            )
+        )
+
+        drain_codex_notifications(
+            self.paths,
+            auth,
+            telegram,
+            self.recorder,
+            codex,
+            self.runtime,
+            self.runtime_state,
+            self.config,
+        )
+
+        delivered_texts = [text for _, _, text in telegram.edits] + [text for _, text in telegram.messages]
+        self.assertEqual(len(delivered_texts), 1)
+        self.assertIn("Quota exceeded. Check your plan and billing details.", delivered_texts[0])
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.status, "ACTIVE")
+        self.assertIsNone(updated.active_turn_id)
+        self.assertEqual(updated.streaming_message_ids, [])
+
     def test_regular_update_starts_codex_and_forwards_message(self) -> None:
         auth = AuthState(
             bot_token="token",
@@ -3302,6 +3365,10 @@ class ServiceFlowTests(unittest.TestCase):
 
     def test_extract_event_driven_status_from_thread_status_changed_idle(self) -> None:
         text = extract_event_driven_status("thread/status/changed", {"status": {"type": "idle"}})
+        self.assertIsNone(text)
+
+    def test_extract_event_driven_status_from_thread_status_changed_system_error(self) -> None:
+        text = extract_event_driven_status("thread/status/changed", {"status": {"type": "systemError"}})
         self.assertIsNone(text)
 
     def test_extract_event_driven_status_from_thread_status_waiting_flag(self) -> None:

@@ -1005,6 +1005,39 @@ def _render_codex_error_html(error_text: str) -> str:
     )
 
 
+def extract_codex_error_text(params: dict) -> str | None:
+    error = params.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    turn = params.get("turn")
+    if isinstance(turn, dict):
+        turn_error = turn.get("error")
+        if isinstance(turn_error, dict):
+            message = turn_error.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+    result = params.get("result")
+    if isinstance(result, dict):
+        result_error = result.get("error")
+        if isinstance(result_error, dict):
+            message = result_error.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+    return None
+
+
+def turn_completed_with_error(params: dict) -> bool:
+    if extract_codex_error_text(params):
+        return True
+    turn = params.get("turn")
+    if not isinstance(turn, dict):
+        return False
+    status = str(turn.get("status") or "").strip().lower()
+    return status == "failed"
+
+
 def publish_codex_request_error(
     session_store: SessionStore | None,
     auth: AuthState,
@@ -1547,6 +1580,8 @@ def extract_event_driven_status(method: str, params: dict) -> str | None:
                             label = _humanize_status_label(first_flag)
                             if label:
                                 return label
+                    return None
+                if status_type == "systemError":
                     return None
                 if status_type == "idle":
                     return None
@@ -3693,6 +3728,7 @@ def drain_codex_notifications(
                 continue
             if not session_store.is_recoverable(session):
                 continue
+            request_failed = method == "turn/failed" or turn_completed_with_error(params)
             assistant_text = extract_assistant_text(params)
             if not assistant_text:
                 assistant_text = _read_thread_completion_text(codex, session.thread_id)
@@ -3735,11 +3771,11 @@ def drain_codex_notifications(
                     turn_id=str(turn_id),
                     chat_id=session.transport_chat_id,
                     topic_id=session.transport_topic_id,
-                    payload={"outcome": "completed" if method == "turn/completed" else "failed"},
+                    payload={"outcome": "failed" if request_failed else "completed"},
                 )
                 trace_store.complete_trace(
                     completed_trace_id,
-                    outcome="completed" if method == "turn/completed" else "failed",
+                    outcome="failed" if request_failed else "completed",
                     thread_id=session.thread_id,
                     turn_id=str(turn_id),
                 )
@@ -3748,8 +3784,27 @@ def drain_codex_notifications(
             if performance is not None:
                 performance.mark_reply_finished(
                     session,
-                    outcome="completed" if method == "turn/completed" else "failed",
+                    outcome="failed" if request_failed else "completed",
                 )
+            if request_failed:
+                error_text = extract_codex_error_text(params) or "The request failed."
+                publish_codex_request_error(
+                    session_store,
+                    auth,
+                    telegram,
+                    topic_id=session.transport_topic_id,
+                    error_text=error_text,
+                    performance=performance,
+                )
+                reset_session_after_request_failure(
+                    session_store,
+                    auth,
+                    telegram=telegram,
+                    topic_id=session.transport_topic_id,
+                    error_text=error_text,
+                    clear_messages=False,
+                )
+                continue
             if not session.pending_output_text.strip():
                 final_stream_text = session.streaming_output_text.strip()
                 should_finalize_existing_delivery = bool(_streaming_message_ids(session)) and bool(
@@ -4059,6 +4114,8 @@ def run_service(
                     performance=performance,
                 )
                 notification_pump.set_codex(codex)
+                if not updates_queue.empty():
+                    continue
                 drain_codex_approvals(paths, auth, telegram, codex, performance)
                 drain_codex_notifications(
                     paths,
