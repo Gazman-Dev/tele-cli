@@ -80,6 +80,9 @@ _COMMAND_ACTIVITY_PREFIX = "__tele_cli_command__:"
 MIN_LIVE_THINKING_LENGTH = 12
 CODEX_NOTIFICATION_QUEUE_MAX_SIZE = 128
 CODEX_NOTIFICATION_POLL_IDLE_SECONDS = 0.02
+SERVICE_LOOP_YIELD_SECONDS = 0.005
+SERVICE_STARTUP_WAIT_SECONDS = 0.01
+SERVICE_THREAD_JOIN_TIMEOUT_SECONDS = 0.05
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -3984,7 +3987,7 @@ def run_service(
         stop_event=stop_event,
         poll_gate=poll_gate,
     )
-    threading.Event().wait(0.02)
+    threading.Event().wait(SERVICE_STARTUP_WAIT_SECONDS)
     startup_now = datetime.now().astimezone()
     if has_pending_sleep_work(paths) and should_run_sleep(paths, startup_now, config.sleep_hour_local):
         poll_gate.set()
@@ -4115,7 +4118,7 @@ def run_service(
                 notification_pump.set_codex(codex)
             if processed_updates:
                 poll_gate.set()
-                threading.Event().wait(0.05)
+                threading.Event().wait(SERVICE_LOOP_YIELD_SECONDS)
                 continue
             if time.monotonic() - last_sleep_check >= 30.0:
                 last_sleep_check = time.monotonic()
@@ -4196,15 +4199,15 @@ def run_service(
             )
             notification_pump.set_codex(codex)
             poll_gate.set()
-            threading.Event().wait(0.05)
+            threading.Event().wait(SERVICE_LOOP_YIELD_SECONDS)
             if not updates_queue.empty():
                 continue
             time.sleep(service_tick_seconds(config))
     finally:
-        threading.Event().wait(0.05)
+        threading.Event().wait(SERVICE_LOOP_YIELD_SECONDS)
         stop_event.set()
         poll_gate.set()
-        telegram_thread.join(timeout=0.5)
+        telegram_thread.join(timeout=SERVICE_THREAD_JOIN_TIMEOUT_SECONDS)
         notification_pump.stop()
         if codex is not None:
             codex.stop()
