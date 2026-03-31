@@ -700,6 +700,50 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         self.assertEqual(refreshed.streaming_message_ids, [])
         self.assertIsNone(refreshed.streaming_message_id)
 
+    def test_async_final_reply_stays_pending_until_queue_completes(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.last_completed_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.pending_output_text = "Final answer"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+
+        with patch("runtime.performance.active_delivery_manager", return_value=manager), patch(
+            "runtime.service.active_delivery_manager", return_value=manager
+        ):
+            flush_buffer(
+                session.session_id,
+                auth,
+                telegram,
+                self.recorder,
+                store,
+                mark_agent=True,
+                queue_only=True,
+            )
+            pending = next(item for item in store.load().sessions if item.session_id == session.session_id)
+            self.assertEqual(pending.status, "DELIVERING_FINAL")
+            self.assertFalse(pending.attached)
+            self.assertEqual(pending.pending_output_text, "Final answer")
+            self.assertEqual(pending.last_delivered_output_text, "")
+
+            replacement = store.get_or_create_telegram_session(auth)
+            self.assertNotEqual(replacement.session_id, session.session_id)
+
+            time.sleep(0.06)
+            while manager.process_next() is not None:
+                pass
+            service_module.reconcile_pending_final_deliveries(self.paths, auth, self.recorder, store)
+
+        completed = next(item for item in store.load().sessions if item.session_id == session.session_id)
+        self.assertEqual(completed.last_delivered_output_text, "Final answer")
+        self.assertEqual(completed.pending_output_text, "")
+        self.assertEqual(self.recorder.records, [("assistant", "Final answer")])
+
 
 if __name__ == "__main__":
     unittest.main()

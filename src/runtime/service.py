@@ -27,6 +27,7 @@ from integrations.telegram import (
 )
 from setup.setup_flow import complete_pending_pairing
 from storage.operations import ServiceRunStore, TraceStore
+from storage.db import StorageManager
 from storage.runtime_state_store import (
     load_codex_server_state,
     save_codex_server_state,
@@ -41,6 +42,7 @@ from .control import ServiceConflictChoices, isatty, prepare_service_lock, reset
 from .instructions import ensure_instruction_files
 from .performance import (
     PerformanceTracker,
+    delivery_manager_supports_background_queue,
     delete_telegram_message,
     edit_telegram_message,
     queue_telegram_delete_message,
@@ -559,6 +561,93 @@ def _message_group_id_for_role(session, logical_role: str) -> str:
 
 def _stored_streaming_message_ids(paths: AppPaths, *, session, logical_role: str) -> list[int]:
     return load_active_message_chunk_ids(paths, message_group_id=_message_group_id_for_role(session, logical_role))
+
+
+def _message_group_queue_state(paths: AppPaths, *, message_group_id: str) -> dict[str, int]:
+    storage = StorageManager(paths)
+    with storage.read_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS total_count,
+                SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+                SUM(CASE WHEN status = 'claimed' THEN 1 ELSE 0 END) AS claimed_count,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+            FROM telegram_outbound_queue
+            WHERE message_group_id = ?
+            """,
+            (message_group_id,),
+        ).fetchone()
+    if row is None:
+        return {
+            "total_count": 0,
+            "queued_count": 0,
+            "claimed_count": 0,
+            "completed_count": 0,
+            "failed_count": 0,
+        }
+    return {key: int(row[key] or 0) for key in row.keys()}
+
+
+def reconcile_pending_final_deliveries(
+    paths: AppPaths,
+    auth: AuthState,
+    recorder: Recorder,
+    session_store: SessionStore,
+    *,
+    performance: PerformanceTracker | None = None,
+) -> None:
+    del performance
+    for session in session_store.list_telegram_sessions(auth):
+        if session.status != "DELIVERING_FINAL":
+            continue
+        final_text = session.pending_output_text.strip() or session.streaming_output_text.strip()
+        if not final_text:
+            continue
+        message_group_id = _message_group_id_for_role(session, "final_output")
+        queue_state = _message_group_queue_state(paths, message_group_id=message_group_id)
+        if queue_state["queued_count"] or queue_state["claimed_count"]:
+            continue
+        if queue_state["failed_count"]:
+            append_recovery_event(
+                paths,
+                (
+                    "final_delivery_waiting_for_retry "
+                    f"session_id={session.session_id} failed_count={queue_state['failed_count']}"
+                ),
+                trace_id=getattr(session, "current_trace_id", None),
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                turn_id=session.last_completed_turn_id,
+                chat_id=session.transport_chat_id,
+                topic_id=session.transport_topic_id,
+            )
+            continue
+        if queue_state["total_count"] <= 0 or queue_state["completed_count"] <= 0:
+            continue
+        recorder.record("assistant", final_text)
+        session.streaming_message_id = None
+        session.streaming_message_ids = []
+        session.streaming_output_text = ""
+        session.streaming_phase = ""
+        session.last_thinking_sent_text = ""
+        session.thinking_history_text = ""
+        session.thinking_history_order = []
+        session.thinking_history_by_source = {}
+        session.thinking_message_text = ""
+        session.thinking_message_ids = []
+        session.thinking_live_message_ids = {}
+        session.thinking_live_texts = {}
+        session.thinking_sent_texts = {}
+        session.status = "ACTIVE"
+        session_store.mark_delivered_output(session, final_text)
+        session_store.mark_agent_message(session)
+        session_store.consume_pending_output(session)
+        session_store.save_session(session)
+        pruned = session_store.prune_detached_sessions()
+        if pruned:
+            append_recovery_event(paths, f"detached_sessions_pruned count={pruned}")
 
 
 def start_telegram_polling_thread(
@@ -2050,7 +2139,11 @@ def flush_buffer(
             append_recovery_event(session_store.paths, f"detached_sessions_pruned count={pruned}")
         return
     if text == session.last_delivered_output_text:
-        should_finalize_existing_delivery = mark_agent and bool(_streaming_message_ids(session))
+        should_finalize_existing_delivery = (
+            mark_agent
+            and bool(_streaming_message_ids(session))
+            and (bool(_thinking_history_entries(session)) or delivery_manager_supports_background_queue())
+        )
         if mark_agent and not should_finalize_existing_delivery:
             session.streaming_message_id = None
             session.streaming_message_ids = []
@@ -2175,6 +2268,13 @@ def flush_buffer(
     if not delivered:
         raise TelegramError("All Telegram HTML delivery attempts failed.")
     clear_thinking_message(auth, telegram, session_store, session, performance=performance)
+    if queue_only and delivery_manager_supports_background_queue():
+        session.streaming_output_text = text
+        session.streaming_phase = "finalizing"
+        session.status = "DELIVERING_FINAL"
+        session.attached = False
+        session_store.save_session(session)
+        return
     recorder.record("assistant", text)
     session.streaming_message_id = None
     session.streaming_message_ids = []
@@ -3635,24 +3735,37 @@ def drain_codex_notifications(
                 )
             if not session.pending_output_text.strip():
                 final_stream_text = session.streaming_output_text.strip()
-                if final_stream_text and final_stream_text != session.last_delivered_output_text:
-                    session_store.mark_delivered_output(session, final_stream_text)
-                    recorder.record("assistant", final_stream_text)
-                clear_thinking_message(auth, telegram, session_store, session, performance=performance)
-                _clear_streaming_messages(telegram, session.transport_chat_id or auth.telegram_chat_id, session)
-                session.streaming_output_text = ""
-                session.streaming_phase = ""
-                session.thinking_message_text = ""
-                session.thinking_history_text = ""
-                session.thinking_history_order = []
-                session.thinking_history_by_source = {}
-                session.last_thinking_sent_text = ""
-                session.thinking_message_ids = []
-                session.thinking_live_message_ids = {}
-                session.thinking_live_texts = {}
-                session.thinking_sent_texts = {}
-                session_store.save_session(session)
-                continue
+                should_finalize_existing_delivery = bool(_streaming_message_ids(session)) and bool(
+                    _thinking_history_entries(session)
+                )
+                should_queue_background_final = (
+                    delivery_manager_supports_background_queue()
+                    and bool(_streaming_message_ids(session))
+                    and bool(final_stream_text)
+                )
+                if final_stream_text and (should_finalize_existing_delivery or should_queue_background_final):
+                    session.pending_output_text = final_stream_text or session.last_delivered_output_text
+                    session.pending_output_updated_at = utc_now()
+                    session_store.save_session(session)
+                else:
+                    if final_stream_text and final_stream_text != session.last_delivered_output_text:
+                        session_store.mark_delivered_output(session, final_stream_text)
+                        recorder.record("assistant", final_stream_text)
+                    clear_thinking_message(auth, telegram, session_store, session, performance=performance)
+                    _clear_streaming_messages(telegram, session.transport_chat_id or auth.telegram_chat_id, session)
+                    session.streaming_output_text = ""
+                    session.streaming_phase = ""
+                    session.thinking_message_text = ""
+                    session.thinking_history_text = ""
+                    session.thinking_history_order = []
+                    session.thinking_history_by_source = {}
+                    session.last_thinking_sent_text = ""
+                    session.thinking_message_ids = []
+                    session.thinking_live_message_ids = {}
+                    session.thinking_live_texts = {}
+                    session.thinking_sent_texts = {}
+                    session_store.save_session(session)
+                    continue
             flush_buffer(
                 session.session_id,
                 auth,
@@ -3952,6 +4065,13 @@ def run_service(
                     idle_seconds=config.partial_flush_idle_seconds,
                     performance=performance,
                 )
+                reconcile_pending_final_deliveries(
+                    paths,
+                    auth,
+                    recorder,
+                    session_store,
+                    performance=performance,
+                )
                 last_typing_sent_at = maybe_send_typing_indicator(
                     paths,
                     auth,
@@ -4025,6 +4145,13 @@ def run_service(
                 recorder,
                 session_store,
                 idle_seconds=config.partial_flush_idle_seconds,
+                performance=performance,
+            )
+            reconcile_pending_final_deliveries(
+                paths,
+                auth,
+                recorder,
+                session_store,
                 performance=performance,
             )
             last_typing_sent_at = maybe_send_typing_indicator(

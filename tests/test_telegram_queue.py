@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,11 @@ class RateLimitedTelegram(FakeTelegramClient):
             self._remaining_edit_failures -= 1
             raise TelegramError("{'ok': False, 'error_code': 429, 'parameters': {'retry_after': 1}}")
         return super().edit_message_text(chat_id, message_id, text, parse_mode=parse_mode)
+
+
+class BareHttp429Telegram(FakeTelegramClient):
+    def edit_message_text(self, chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> dict:
+        raise TelegramError("HTTP Error 429: Too Many Requests")
 
 
 class CallbackTelegram(FakeTelegramClient):
@@ -205,6 +211,26 @@ class TelegramQueueTests(unittest.TestCase):
         state = self._read_app_state(_RATE_LIMIT_STATE_KEY)
         self.assertEqual(state["backoff_seconds"], 4)
 
+    def test_bare_http_429_is_treated_as_rate_limit(self) -> None:
+        telegram = BareHttp429Telegram()
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+
+        manager.enqueue(
+            op_type="edit_message",
+            payload={"message_id": 9, "text": "first"},
+            chat_id=321,
+            telegram_message_id=9,
+            dedupe_key="group:chunk:0",
+        )
+        self._expire_pause_and_queue()
+        result = manager.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "queued")
+        state = self._read_app_state(_RATE_LIMIT_STATE_KEY)
+        self.assertEqual(state["backoff_seconds"], 2)
+
     def test_unpaused_queue_uses_throttle_window_to_keep_only_latest_chunk(self) -> None:
         telegram = FakeTelegramClient()
         manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
@@ -270,6 +296,8 @@ class TelegramQueueTests(unittest.TestCase):
 
         self._expire_pause_and_queue()
         first = manager.process_next()
+        time.sleep(0.06)
+        self._expire_pause_and_queue()
         second = manager.process_next()
 
         self.assertIsNotNone(first)

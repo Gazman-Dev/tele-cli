@@ -172,6 +172,11 @@ def _require_delivery_manager():
     return manager
 
 
+def delivery_manager_supports_background_queue() -> bool:
+    manager = active_delivery_manager()
+    return manager is not None and hasattr(manager, "enqueue")
+
+
 def send_telegram_message(
     telegram,
     chat_id: int,

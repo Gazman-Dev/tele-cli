@@ -31,9 +31,11 @@ class TelegramClient:
 
     @staticmethod
     def _retry_delay_from_error(exc: Exception) -> float | None:
+        message = str(exc)
+        if "429" in message and "Too Many Requests" in message:
+            return 1.0
         if not isinstance(exc, TelegramError):
             return None
-        message = str(exc)
         try:
             payload = ast.literal_eval(message)
         except (ValueError, SyntaxError):
