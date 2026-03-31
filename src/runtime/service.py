@@ -1271,6 +1271,43 @@ def _extract_delta_text(params: dict, *, limit: int = 80) -> str | None:
     return None
 
 
+def _extract_file_change_paths(item: object) -> list[str]:
+    if not isinstance(item, dict):
+        return []
+    changes = item.get("changes")
+    if not isinstance(changes, list):
+        return []
+    paths: list[str] = []
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        path = change.get("path")
+        if isinstance(path, str) and path.strip():
+            normalized = " ".join(path.split()).strip()
+            if normalized and normalized not in paths:
+                paths.append(normalized)
+    return paths
+
+
+def _render_file_change_activity(item: object) -> str:
+    if not isinstance(item, dict):
+        return "Applying file changes"
+    paths = _extract_file_change_paths(item)
+    status = str(item.get("status") or "").lower()
+    if not paths:
+        if status == "completed":
+            return "Updated files"
+        if status in {"inprogress", "in_progress", "started"}:
+            return "Updating files"
+        return "Applying file changes"
+    if len(paths) == 1:
+        if status == "completed":
+            return f"Updated {paths[0]}"
+        return f"Updating {paths[0]}"
+    prefix = "Updated files:" if status == "completed" else "Updating files:"
+    return f"{prefix}\n" + "\n".join(f"• {path}" for path in paths)
+
+
 def _extract_command_label(command: str, *, limit: int = 4096) -> str:
     compact = " ".join(command.split())
     shell_wrapper = re.match(r'^(?:/[\w./-]+/)?(?:zsh|bash|sh)\s+-lc\s+["\'](?P<body>.+)["\']$', compact)
@@ -1359,7 +1396,7 @@ def extract_activity_text(method: str, params: dict) -> str | None:
             return "Tool: coordinating helper agents"
         return "Tool: helper agent"
     if item_type == "fileChange":
-        return "Applying file changes"
+        return _render_file_change_activity(item)
     if item_type == "plan":
         return "Planning next steps"
     if item_type == "search":

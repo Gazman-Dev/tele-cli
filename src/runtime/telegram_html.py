@@ -4,6 +4,11 @@ import html
 import re
 
 
+_WEBSITE_REFERENCE_RE = re.compile(
+    r"(?i)(?:https?://\S+|www\.\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s]*)?)"
+)
+
+
 _ALLOWED_TAG_NAMES = {
     "b",
     "strong",
@@ -47,6 +52,10 @@ def normalize_legacy_telegram_text(text: str) -> str:
 
 def looks_like_telegram_html(text: str) -> bool:
     return bool(_ALLOWED_HTML_TAG_RE.search(text))
+
+
+def contains_website_reference(text: str | None) -> bool:
+    return bool(_WEBSITE_REFERENCE_RE.search(text or ""))
 
 
 def repair_partial_telegram_html(text: str) -> str:
@@ -206,6 +215,8 @@ def render_telegram_progress_html(text: str | None) -> str:
         return rendered
     if looks_like_telegram_html(body):
         return repair_partial_telegram_html(body)
+    if contains_website_reference(body):
+        return f"<pre><code>{escape_telegram_html(body)}</code></pre>"
     return to_telegram_html(body)
 
 

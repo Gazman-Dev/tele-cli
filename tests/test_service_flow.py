@@ -3230,6 +3230,52 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(text, "Applying file changes: updated README.md")
 
+    def test_extract_activity_text_from_file_change_start_includes_path(self) -> None:
+        text = extract_activity_text(
+            "item/started",
+            {
+                "item": {
+                    "type": "fileChange",
+                    "status": "inProgress",
+                    "changes": [
+                        {
+                            "path": "/repo/README.md",
+                            "kind": {"type": "update"},
+                        }
+                    ],
+                }
+            },
+        )
+
+        self.assertEqual(text, "Updating /repo/README.md")
+
+    def test_extract_activity_text_from_completed_file_change_uses_updated_label(self) -> None:
+        text = extract_activity_text(
+            "item/completed",
+            {
+                "item": {
+                    "type": "fileChange",
+                    "status": "completed",
+                    "changes": [
+                        {
+                            "path": "/repo/README.md",
+                            "kind": {"type": "update"},
+                        }
+                    ],
+                }
+            },
+        )
+
+        self.assertEqual(text, "Updated /repo/README.md")
+
+    def test_render_telegram_progress_html_wraps_website_references_in_code_block(self) -> None:
+        rendered = render_telegram_progress_html("Checking homedepot.com Bayonne inventory")
+
+        self.assertEqual(
+            rendered,
+            "<pre><code>Checking homedepot.com Bayonne inventory</code></pre>",
+        )
+
     def test_extract_activity_text_from_plan_delta(self) -> None:
         text = extract_activity_text(
             "item/plan/delta",
