@@ -1233,12 +1233,14 @@ def _render_search_activity(queries: list[str]) -> str:
     if not queries:
         return ""
     if len(queries) == 1:
-        return _render_search_query(queries[0])
+        body = _render_search_query(queries[0])
+        return f"🌐 Searching:\n{body}" if body else ""
     if all(_is_site_search_query(query) for query in queries):
         body = "\n".join(_render_search_query(query, multiline=True) for query in queries if query.strip())
-        return f"<pre><code>{escape_telegram_html(body)}</code></pre>" if body else ""
+        rendered = f"<pre><code>{escape_telegram_html(body)}</code></pre>" if body else ""
+        return f"🌐 Searching:\n{rendered}" if rendered else ""
     body = "\n".join(_render_search_query(query, multiline=True) for query in queries if query.strip())
-    return f"Searching:\n{body}" if body else ""
+    return f"🌐 Searching:\n{body}" if body else ""
 
 
 def _extract_delta_text(params: dict, *, limit: int = 80) -> str | None:

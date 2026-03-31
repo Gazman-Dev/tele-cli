@@ -3123,7 +3123,7 @@ class ServiceFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(text, "latest codex releases")
+        self.assertEqual(text, "🌐 Searching:\nlatest codex releases")
 
     def test_extract_activity_text_from_web_search_item(self) -> None:
         text = extract_activity_text(
@@ -3145,7 +3145,7 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(
             text,
-            "Searching:\n• openWakeWord GitHub official docs\n• Porcupine official docs",
+            "🌐 Searching:\n• openWakeWord GitHub official docs\n• Porcupine official docs",
         )
 
     def test_extract_activity_text_from_site_search_renders_preformatted_query(self) -> None:
@@ -3161,7 +3161,7 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(
             text,
-            "<pre><code>homedepot.com Bayonne NJ Home Depot Jersey City route 440</code></pre>",
+            "🌐 Searching:\n<pre><code>homedepot.com Bayonne NJ Home Depot Jersey City route 440</code></pre>",
         )
 
     def test_extract_activity_text_from_multiple_site_searches_renders_bullets(self) -> None:
@@ -3183,18 +3183,18 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(
             text,
-            "<pre><code>• homedepot.com Bayonne NJ Home Depot Jersey City route 440\n"
+            "🌐 Searching:\n<pre><code>• homedepot.com Bayonne NJ Home Depot Jersey City route 440\n"
             "• lowes.com Bayonne NJ Lowe's Jersey City fountain pump</code></pre>",
         )
 
     def test_render_telegram_progress_html_preserves_search_html(self) -> None:
         rendered = render_telegram_progress_html(
-            "<pre><code>homedepot.com Bayonne NJ Home Depot Jersey City route 440</code></pre>"
+            "🌐 Searching:\n<pre><code>homedepot.com Bayonne NJ Home Depot Jersey City route 440</code></pre>"
         )
 
         self.assertEqual(
             rendered,
-            "<pre><code>homedepot.com Bayonne NJ Home Depot Jersey City route 440</code></pre>",
+            "🌐 Searching:\n<pre><code>homedepot.com Bayonne NJ Home Depot Jersey City route 440</code></pre>",
         )
 
     def test_extract_activity_text_unwraps_shell_command_wrapper(self) -> None:
