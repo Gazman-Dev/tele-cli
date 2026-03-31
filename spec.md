@@ -1,447 +1,160 @@
-## Purpose
+# Tele Cli Product Spec
 
-Build a local terminal application for **one operator** that:
+## Status
 
-* installs and runs **Codex**
-* connects a **single Telegram bot** to a **single authorized Telegram chat**
-* mirrors Codex terminal state to Telegram
-* records a replayable terminal log
-* exposes a debug mirror locally in the terminal/CLI
-* protects against:
+- Status: active working spec
+- Date: March 31, 2026
+- Scope: product definition for the current Tele Cli direction
 
-    * duplicate app instances
-    * stale lockfiles
-    * half-finished setup runs
-    * orphaned Codex child processes
+## Product Summary
 
----
+Tele Cli is a local, single-operator assistant that runs on the operator's own Linux or macOS machine.
 
-# Simplified V1 Model
+It connects four surfaces:
 
-## User model
+- Telegram for day-to-day messaging
+- a local interactive app shell for setup and maintenance
+- a local chat/debug surface for direct use on the machine
+- Codex App Server as the long-lived agent runtime
 
-Exactly one user is supported.
+The product is intentionally optimized for one trusted operator, not for a shared or multi-tenant deployment.
 
-Store:
+## Primary Goal
 
-* one Telegram user ID
-* one Telegram chat ID
-* one bot token
-* one active Codex session
-* one local operator approval authority
+The operator should be able to treat Tele Cli as a dependable personal assistant that:
 
-No multi-user roles!
+- stays reachable from Telegram
+- preserves session continuity across restarts when safe
+- exposes a clear local control surface for setup, repair, update, and uninstall
+- keeps enough local state and logs to explain what happened
+- fails explicitly instead of silently deleting or replacing state
 
----
+## Product Boundaries
 
-# OS Support
+### In scope
 
-## Supported
+- one operator
+- one bot token
+- one authorized Telegram identity
+- one paired main chat, with support for attached group topics and local channels
+- one long-lived Tele Cli service per state directory
+- one Codex App Server child supervised by that service
+- multiple persisted sessions mapped to Telegram topics or local channels
 
-* Linux
-* macOS
+### Out of scope for this product line
 
-## Not in V1
+- multi-user access control
+- hosted SaaS deployment
+- Windows support
+- silent destructive repair of ambiguous state
 
-* Windows
+## Product Principles
 
----
+### Single-operator first
 
-# Setup Flow Changes
+The machine belongs to the operator. Tele Cli should optimize for speed, directness, and low ceremony for that one person.
 
-## First-run setup
+### Telegram-first, not Telegram-only
 
-The terminal setup wizard must do this in order:
+Telegram is the main remote interface, but install, recovery, update, and detailed status live in the local app shell.
 
-1. Check whether another app instance is already running
-2. Check whether a previous setup is already in progress or was interrupted
-3. Ask the operator how to resolve conflicts if found
-4. Detect whether `codex` is installed
-5. Detect whether `npm` is installed
-6. If `npm` is missing, install it
-7. If Codex is missing, install Codex
-8. Ask for Telegram bot token
-9. Validate Telegram connectivity
-10. Save config
-11. Enter service mode
+### One interactive shell
 
----
+Interactive local entry points should converge on the same app shell instead of scattering behavior across raw shell prompts.
 
-# npm and Codex Installation Requirements
+### Explicit recovery
 
-## npm detection
+When locks, sessions, approvals, or subprocess state look unsafe, Tele Cli should explain the problem and surface a recovery path instead of guessing.
 
-The app must check whether `npm` is available in `PATH`.
+### Portable state and docs
 
-## If npm is missing
+Specs, code, and docs must avoid developer-specific filesystem paths. All examples should use relative paths, config-driven paths, or symbolic names.
 
-The app must try to install it in an OS-appropriate way.
+## Operator Experience
 
-### Linux
+### Remote use
 
-Support common package managers with detection:
+From Telegram, the operator should be able to:
 
-* `apt`
-* `dnf`
-* `yum`
-* `pacman`
-* `zypper`
+- send normal requests
+- create a fresh session with `/new`
+- inspect status with `/status`
+- inspect recent sessions with `/sessions`
+- stop or abort work with `/stop` and `/abort`
+- answer approval prompts if they ever appear
 
-### macOS
+### Local use
 
-Use:
+From the machine, the operator should be able to:
 
-* Homebrew if available
-* otherwise guide or automate installation of Homebrew only if explicitly enabled in config/design
+- launch `tele-cli` into the app shell
+- run setup, update, and uninstall through that same shell when interactive
+- open a local chat session for direct use without Telegram
+- send proactive Telegram text, images, or files by session/channel name
 
-## Important implementation rule
+## System Model
 
-V1 should use an **installer strategy abstraction**:
+Tele Cli is composed of:
 
-* `detect_package_manager()`
-* `install_npm()`
-* `install_codex()`
+1. an installer and service registration layer
+2. a host-managed Tele Cli service
+3. a local interactive app shell
+4. a Telegram integration
+5. a Codex App Server integration
+6. durable local state and logs
 
-This is cleaner than hardcoding shell commands all over the code.
+The host-managed service is the source of continuity.
+The app shell is the source of operator control.
+Telegram and local chat are user-facing transports.
+Codex App Server is the execution engine.
 
-## Codex install
+## State Model
 
-After npm exists, install Codex.
+The default state directory contains:
 
----
+- `auth.json`
+- `config.json`
+- `runtime.json`
+- `sessions.json`
+- `approvals.json`
+- `codex_server.json`
+- `telegram_updates.json`
+- `app.lock`
+- `setup.lock`
+- `recovery.log`
+- `terminal.log`
+- `performance.log`
+- `app_server_notifications.log`
+- `memory/sessions/<session_id>.short_memory.md`
 
-# Single-Instance Protection
+These files exist to preserve continuity, expose health, and support explicit recovery after crashes or interrupted setup.
 
-## Requirement
+## Default Runtime Policy
 
-The app must protect against multiple copies of:
+Unless the operator overrides `config.json`, Tele Cli should start Codex threads with:
 
-* the main service
-* the setup wizard
-* the Codex child runtime for this app instance
+- `sandbox_mode = "danger-full-access"`
+- `approval_policy = "never"`
 
-## Main mechanism
+This reflects the product assumption that Tele Cli runs on the operator's own device and acts on the operator's behalf.
 
-Use a **lock + PID metadata file** in the app state directory.
+## Success Criteria
 
-Example stored metadata:
+Tele Cli is succeeding when:
 
-* PID
-* hostname
-* username
-* process start time if available
-* mode: `setup` or `service`
-* timestamp
-* app version
-* child Codex PID if active
+- Telegram remains responsive while the host is healthy
+- the app shell can always explain setup and runtime state
+- session-to-thread mappings survive restart when safe
+- stale or conflicting state is surfaced clearly
+- the operator can review logs and understand failures
 
-## On startup
+## Spec Set
 
-When the app starts, it must check:
+The detailed behavior is split into these documents:
 
-1. Is there a lockfile?
-2. Does the PID still exist?
-3. Does the process appear to be this same app?
-4. Is it in setup mode or service mode?
-5. Is there an active Codex child attached to it?
-
-## If a live instance exists
-
-The app must not blindly continue.
-
-It must prompt the operator:
-
-* `kill` — terminate the conflicting app/Codex process if safely identifiable
-* `ignore` — continue without taking ownership
-* optionally `exit` — safest choice, recommended to include
-
-You asked for kill/ignore; I strongly recommend also supporting `exit`.
-
----
-
-# Setup Re-entrancy Protection
-
-## Requirement
-
-The setup wizard must not run twice at the same time.
-
-## Setup lock
-
-Create a dedicated **setup lock/state file**.
-
-It must contain:
-
-* status: `started`, `completed`, `failed`, `abandoned`
-* PID
-* timestamp
-* partial progress markers:
-
-    * npm installed?
-    * codex installed?
-    * telegram token saved?
-    * telegram validated?
-
-## On setup startup
-
-If an existing setup state is found:
-
-### Case 1 — setup is actively running
-
-Prompt:
-
-* `kill`
-* `ignore`
-* `exit`
-
-### Case 2 — setup was interrupted/stale
-
-Prompt:
-
-* `resume`
-* `restart`
-* `ignore`
-* `exit`
-
-Even though you requested kill/ignore, for interrupted setup `resume` and `restart` are much better UX, so they should be added.
-
----
-
-# Self-Heal Rules
-
-## General principle
-
-Whenever duplicate state or stale runtime state is detected, the app should not guess silently.
-
-It should:
-
-1. inspect
-2. explain what it found
-3. ask the operator what to do
-4. execute the selected recovery action
-5. log that choice
-
-## Recovery scenarios
-
-### Scenario A — stale main lock, process dead
-
-Show:
-
-* stored PID
-* timestamp
-* conclusion that process is no longer alive
-
-Offer:
-
-* `heal` or `resume` by clearing stale lock
-* `ignore`
-* `exit`
-
-### Scenario B — live main app instance detected
-
-Show:
-
-* PID
-* mode
-* age
-* whether Codex child exists
-
-Offer:
-
-* `kill`
-* `ignore`
-* `exit`
-
-### Scenario C — stale setup run detected
-
-Show:
-
-* partial setup progress
-* what appears complete and incomplete
-
-Offer:
-
-* `resume`
-* `restart`
-* `ignore`
-* `exit`
-
-### Scenario D — orphaned Codex process detected
-
-The app should detect Codex processes likely started by this app but whose parent app is gone.
-
-Offer:
-
-* `kill`
-* `adopt` if implementation supports taking ownership safely
-* `ignore`
-
-For V1, `kill` and `ignore` are enough. `adopt` is optional.
-
----
-
-# Process Ownership Rules
-
-## Requirement
-
-Never kill arbitrary unrelated processes just because they contain the word `codex`.
-
-The app must only auto-target processes that can be strongly linked to this app by one or more of:
-
-* stored PID metadata
-* same working directory marker
-* same session metadata
-* same wrapper command signature
-* same state directory ownership
-
-If ownership is uncertain:
-
-* do not auto-kill
-* warn the operator
-* default to ignore/exit
-
----
-
-# Revised Runtime Locking Model
-
-Use these files in the app state directory:
-
-* `app.lock` — single service instance lock
-* `setup.lock` — setup instance lock
-* `runtime.json` — current runtime metadata
-* `auth.json` — single authorized Telegram chat/user
-* `config.json` or equivalent
-* `recovery.log` — recovery decisions and events
-
----
-
-# Single User Authentication Update
-
-## Pairing model
-
-Only one Telegram chat can ever become the controlling chat in V1.
-
-### Before pairing
-
-Any incoming Telegram message gets a 5-digit code.
-
-### Once paired
-
-If a different chat or user sends a message:
-
-* deny control
-* reply that this bot is already paired to another chat
-* do not generate a new pairing code unless the operator explicitly resets pairing locally
-
-## Reset pairing
-
-A local terminal command should exist:
-
-* `reset-auth`
-
-This clears the saved Telegram user/chat authorization and allows pairing again.
-
----
-
-# Runtime Conflict Protection
-
-## Requirement
-
-The service must detect these conflicts at runtime too:
-
-* Telegram polling loop started twice
-* Codex child started twice
-* recorder started twice
-* debug server started twice
-
-## Rule
-
-Each subsystem should have an internal state machine and reject duplicate startup.
-
-Example:
-
-* if Codex session state is not `STOPPED`, do not start a second one
-* if Telegram poller is already active, refuse second poller start
-
----
-
-# Revised Session Constraints
-
-## V1 session model
-
-* exactly one Codex session
-* exactly one Telegram controller chat
-* exactly one debug mirror
-* exactly one recorder
-
-No parallel sessions.
-
----
-
-# New Acceptance Criteria
-
-V1 is complete only if all of the following are true:
-
-1. App runs on Linux and macOS.
-2. App detects missing npm.
-3. App can install npm using OS/package-manager-specific logic.
-4. App detects missing Codex and installs it.
-5. App prevents duplicate setup runs.
-6. App prevents duplicate service runs.
-7. App detects stale locks and interrupted setup state.
-8. App presents self-heal choices when conflicts are found.
-9. Self-heal includes at least `kill` and `ignore`.
-10. App supports one Telegram user/chat only.
-11. Once paired, other Telegram users cannot take control.
-12. App can recover from an interrupted prior setup without corrupting config.
-13. App never launches a second Codex child while one is already owned by the service.
-14. App keeps recovery/audit logs for kill/ignore/resume decisions.
-
----
-
-# Explicit Build Notes for the Implementing AI
-
-* V1 is **single-user**, not multi-user.
-* Target only **Linux and macOS**.
-* Implement **package-manager-aware npm installation**.
-* Protect both **setup mode** and **service mode** with separate locks.
-* Add **stale lock detection** and **interactive recovery**.
-* Prefer asking the operator over silently killing processes.
-* Never kill an uncertain process match.
-* Keep all recovery flows explicit and logged.
-
----
-
-# Recommended Terminal Prompts
-
-## Duplicate live app found
-
-`Another app instance appears to be running.`
-Show PID, age, mode.
-
-Choices:
-
-* `kill` — terminate the existing instance
-* `ignore` — continue without touching it
-* `exit`
-
-## Interrupted setup found
-
-`A previous setup did not finish.`
-Show completed steps.
-
-Choices:
-
-* `resume`
-* `restart`
-* `ignore`
-* `exit`
-
-## Orphaned Codex found
-
-`A Codex process from a previous run may still be active.`
-
-Choices:
-
-* `kill`
-* `ignore`
-* `exit`
+- `spec/ux_spec.md`: user-facing product and interaction contract
+- `spec/full_ui_migration_spec.md`: interactive app shell as the primary control surface
+- `spec/full_ui_migration_test_plan.md`: tests for the app shell migration
+- `spec/codex_app_server_integration_spec.md`: Codex App Server architecture and routing
+- `spec/codex_app_server_integration_test_plan.md`: tests for the runtime integration
+- `spec/services_and_lifecycle_spec.md`: service ownership, recovery, and lifecycle rules
