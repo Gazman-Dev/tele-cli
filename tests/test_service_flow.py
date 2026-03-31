@@ -3125,6 +3125,26 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertEqual(text, "Searching: latest codex releases")
 
+    def test_extract_activity_text_from_web_search_item(self) -> None:
+        text = extract_activity_text(
+            "item/completed",
+            {
+                "item": {
+                    "type": "webSearch",
+                    "query": "openWakeWord GitHub official docs",
+                    "action": {
+                        "type": "search",
+                        "queries": [
+                            "openWakeWord GitHub official docs",
+                            "Porcupine official docs",
+                        ],
+                    },
+                }
+            },
+        )
+
+        self.assertEqual(text, "Searching: openWakeWord GitHub official docs")
+
     def test_extract_activity_text_unwraps_shell_command_wrapper(self) -> None:
         text = extract_activity_text(
             "item/started",

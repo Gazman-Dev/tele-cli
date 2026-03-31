@@ -43,6 +43,10 @@ from .performance import (
     PerformanceTracker,
     delete_telegram_message,
     edit_telegram_message,
+    queue_telegram_delete_message,
+    queue_telegram_edit_message,
+    queue_telegram_message,
+    queue_telegram_typing,
     send_telegram_message,
     send_telegram_typing,
 )
@@ -54,6 +58,7 @@ from .telegram_html import (
     escape_telegram_html,
     looks_like_telegram_html,
     normalize_legacy_telegram_text,
+    repair_partial_telegram_html,
     render_collapsed_thinking_html,
     render_telegram_progress_html,
     to_telegram_html,
@@ -71,6 +76,8 @@ COMMENTARY_STREAM_MIN_INTERVAL_SECONDS = 1.0
 DEFAULT_THINKING_STREAM_MIN_INTERVAL_SECONDS = 1.0
 _COMMAND_ACTIVITY_PREFIX = "__tele_cli_command__:"
 MIN_LIVE_THINKING_LENGTH = 12
+CODEX_NOTIFICATION_QUEUE_MAX_SIZE = 128
+CODEX_NOTIFICATION_POLL_IDLE_SECONDS = 0.02
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -378,6 +385,7 @@ def _sync_telegram_message_chunks(
     topic_id: int | None,
     parse_mode: str | None,
     disable_notification: bool,
+    queue_only: bool = False,
     performance: PerformanceTracker | None = None,
     context: dict | None = None,
 ) -> None:
@@ -395,50 +403,86 @@ def _sync_telegram_message_chunks(
     allow_paused_return = delivery_manager.is_paused() if delivery_manager is not None else False
 
     for index, chunk in enumerate(rendered_chunks):
+        if parse_mode == TELEGRAM_PARSE_MODE:
+            chunk = repair_partial_telegram_html(chunk)
         dedupe_key = _message_chunk_dedupe_key(message_group_id, index)
         message_id = existing_ids[index] if index < len(existing_ids) else None
         if not isinstance(message_id, int) and delivery_manager is not None:
             message_id = delivery_manager.latest_message_id_for_dedupe(dedupe_key)
         if isinstance(message_id, int):
-            edit_telegram_message(
+            if queue_only:
+                queue_telegram_edit_message(
+                    chat_id,
+                    message_id,
+                    chunk,
+                    parse_mode=parse_mode,
+                    performance=performance,
+                    dedupe_key=dedupe_key,
+                    **context,
+                )
+            else:
+                edit_telegram_message(
+                    telegram,
+                    chat_id,
+                    message_id,
+                    chunk,
+                    parse_mode=parse_mode,
+                    allow_paused_return=allow_paused_return,
+                    performance=performance,
+                    dedupe_key=dedupe_key,
+                    **context,
+                )
+            kept_ids.append(message_id)
+            continue
+        if queue_only:
+            message_id = queue_telegram_message(
+                chat_id,
+                chunk,
+                topic_id=topic_id,
+                parse_mode=parse_mode,
+                disable_notification=disable_notification,
+                performance=performance,
+                dedupe_key=dedupe_key,
+                **context,
+            )
+            if isinstance(message_id, int):
+                kept_ids.append(message_id)
+        else:
+            message_id = send_telegram_message(
                 telegram,
                 chat_id,
-                message_id,
                 chunk,
+                topic_id=topic_id,
                 parse_mode=parse_mode,
+                disable_notification=disable_notification,
                 allow_paused_return=allow_paused_return,
                 performance=performance,
                 dedupe_key=dedupe_key,
                 **context,
             )
-            kept_ids.append(message_id)
-            continue
-        message_id = send_telegram_message(
-            telegram,
-            chat_id,
-            chunk,
-            topic_id=topic_id,
-            parse_mode=parse_mode,
-            disable_notification=disable_notification,
-            allow_paused_return=allow_paused_return,
-            performance=performance,
-            dedupe_key=dedupe_key,
-            **context,
-        )
-        if isinstance(message_id, int):
-            kept_ids.append(message_id)
+            if isinstance(message_id, int):
+                kept_ids.append(message_id)
 
     for message_id in existing_ids[len(rendered_chunks) :]:
         try:
-            delete_telegram_message(
-                telegram,
-                chat_id,
-                message_id,
-                allow_paused_return=allow_paused_return,
-                performance=performance,
-                dedupe_key=f"{message_group_id}:delete:{message_id}",
-                **context,
-            )
+            if queue_only:
+                queue_telegram_delete_message(
+                    chat_id,
+                    message_id,
+                    performance=performance,
+                    dedupe_key=f"{message_group_id}:delete:{message_id}",
+                    **context,
+                )
+            else:
+                delete_telegram_message(
+                    telegram,
+                    chat_id,
+                    message_id,
+                    allow_paused_return=allow_paused_return,
+                    performance=performance,
+                    dedupe_key=f"{message_group_id}:delete:{message_id}",
+                    **context,
+                )
         except TelegramError:
             pass
 
@@ -1240,6 +1284,21 @@ def extract_activity_text(method: str, params: dict) -> str | None:
         if query:
             return f"Searching: {query}"
         return "Searching"
+    if item_type == "webSearch":
+        query = _extract_search_hint(item)
+        action = item.get("action")
+        if not query and isinstance(action, dict):
+            query = _extract_search_hint(action)
+            if not query:
+                queries = action.get("queries")
+                if isinstance(queries, list):
+                    for candidate in queries:
+                        if isinstance(candidate, str) and candidate.strip():
+                            query = candidate.strip()
+                            break
+        if query:
+            return f"Searching: {query}"
+        return "Searching"
     return None
 
 
@@ -1305,6 +1364,7 @@ def maybe_stream_partial_output(
         session_store,
         mark_agent=False,
         stream_format=True,
+        queue_only=True,
         performance=performance,
     )
 
@@ -1569,6 +1629,7 @@ def set_visible_thinking_message(
             topic_id=session.transport_topic_id,
             parse_mode=TELEGRAM_PARSE_MODE,
             disable_notification=True,
+            queue_only=True,
             performance=performance,
             context=context,
         )
@@ -1841,6 +1902,7 @@ def flush_buffer(
     *,
     mark_agent: bool,
     stream_format: bool = False,
+    queue_only: bool = False,
     performance: PerformanceTracker | None = None,
 ) -> None:
     session = next((item for item in session_store.load().sessions if item.session_id == session_id), None)
@@ -1910,9 +1972,9 @@ def flush_buffer(
     if not mark_agent:
         normalized_text = normalize_legacy_telegram_text(text)
         try:
-            if stream_format and _thinking_history_entries(session):
+            if stream_format:
                 answer_html = (
-                    normalized_text.strip()
+                    repair_partial_telegram_html(normalized_text.strip())
                     if looks_like_telegram_html(normalized_text)
                     else to_telegram_html(normalized_text)
                 )
@@ -1931,6 +1993,7 @@ def flush_buffer(
                 topic_id=session.transport_topic_id,
                 parse_mode=parse_mode,
                 disable_notification=False,
+                queue_only=queue_only,
                 performance=performance,
                 context=context,
             )
@@ -1950,7 +2013,11 @@ def flush_buffer(
         return
 
     normalized_text = normalize_legacy_telegram_text(text)
-    answer_html = normalized_text.strip() if looks_like_telegram_html(normalized_text) else to_telegram_html(normalized_text)
+    answer_html = (
+        repair_partial_telegram_html(normalized_text.strip())
+        if looks_like_telegram_html(normalized_text)
+        else to_telegram_html(normalized_text)
+    )
     thinking_html = render_collapsed_thinking_html(_thinking_history_entries(session))
     final_html = answer_html if not thinking_html else f"{thinking_html}\n\n{answer_html}"
     rendered_attempts = [
@@ -1975,6 +2042,7 @@ def flush_buffer(
                 topic_id=session.transport_topic_id,
                 parse_mode=TELEGRAM_PARSE_MODE,
                 disable_notification=False,
+                queue_only=queue_only,
                 performance=performance,
                 context=context,
             )
@@ -2152,6 +2220,7 @@ def flush_idle_partial_outputs(
             session_store,
             mark_agent=False,
             stream_format=True,
+            queue_only=True,
             performance=performance,
         )
 
@@ -2184,11 +2253,9 @@ def maybe_send_typing_indicator(
     if last_sent_at is not None and (now - last_sent_at).total_seconds() < effective_interval:
         return last_sent_at
     if hasattr(telegram, "send_typing"):
-        send_telegram_typing(
-            telegram,
+        queue_telegram_typing(
             target_chat_id,
             topic_id=current.transport_topic_id,
-            allow_paused_return=True,
             performance=performance,
             session_id=current.session_id,
             trace_id=getattr(current, "current_trace_id", None),
@@ -3137,8 +3204,9 @@ def drain_codex_notifications(
     config: Config | None = None,
     performance: PerformanceTracker | None = None,
     max_notifications: int | None = None,
+    notification_pump: CodexNotificationPump | None = None,
 ) -> int:
-    if codex is None or not hasattr(codex, "poll_notification"):
+    if notification_pump is None and (codex is None or not hasattr(codex, "poll_notification")):
         return 0
     session_store = SessionStore(paths)
     trace_store = TraceStore(paths, run_id=runtime_state.session_id if runtime_state is not None else None)
@@ -3146,9 +3214,15 @@ def drain_codex_notifications(
     while True:
         if max_notifications is not None and handled >= max_notifications:
             break
-        notification = codex.poll_notification()
-        if notification is None:
-            break
+        if notification_pump is not None:
+            try:
+                notification = notification_pump.get_nowait()
+            except queue.Empty:
+                break
+        else:
+            notification = codex.poll_notification()
+            if notification is None:
+                break
         handled += 1
         method = notification.method
         params = notification.params or {}
@@ -3476,6 +3550,7 @@ def drain_codex_notifications(
                 recorder,
                 session_store,
                 mark_agent=True,
+                queue_only=True,
                 performance=performance,
             )
             continue
@@ -3522,6 +3597,67 @@ def bootstrap_paired_codex(
         handle_output,
         performance,
     )
+
+
+class CodexNotificationPump:
+    def __init__(self, *, maxsize: int = CODEX_NOTIFICATION_QUEUE_MAX_SIZE):
+        self._queue: queue.Queue[object] = queue.Queue(maxsize=maxsize)
+        self._codex = None
+        self._codex_lock = threading.Lock()
+        self._wake_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self, codex=None) -> None:
+        self.set_codex(codex)
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._run_loop, name="codex-notification-pump", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._wake_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def set_codex(self, codex) -> None:
+        with self._codex_lock:
+            self._codex = codex
+        self._wake_event.set()
+
+    def get_nowait(self):
+        return self._queue.get_nowait()
+
+    def _current_codex(self):
+        with self._codex_lock:
+            return self._codex
+
+    def _run_loop(self) -> None:
+        while not self._stop_event.is_set():
+            codex = self._current_codex()
+            if codex is None or not hasattr(codex, "poll_notification"):
+                self._wake_event.wait(CODEX_NOTIFICATION_POLL_IDLE_SECONDS)
+                self._wake_event.clear()
+                continue
+            try:
+                notification = codex.poll_notification()
+            except Exception:
+                if self._stop_event.is_set():
+                    break
+                self._wake_event.wait(CODEX_NOTIFICATION_POLL_IDLE_SECONDS)
+                self._wake_event.clear()
+                continue
+            if notification is None:
+                self._wake_event.wait(CODEX_NOTIFICATION_POLL_IDLE_SECONDS)
+                self._wake_event.clear()
+                continue
+            while not self._stop_event.is_set():
+                try:
+                    self._queue.put(notification, timeout=0.1)
+                    break
+                except queue.Full:
+                    continue
 
 
 def run_service(
@@ -3580,6 +3716,7 @@ def run_service(
     last_typing_sent_at: datetime | None = None
     codex_restart_failures = 0
     next_codex_restart_at = 0.0
+    notification_pump = CodexNotificationPump()
     updates_queue: queue.Queue[dict] = queue.Queue()
     stop_event = threading.Event()
     poll_gate = threading.Event()
@@ -3602,6 +3739,7 @@ def run_service(
     if codex is None and is_auth_paired(auth):
         codex_restart_failures = 1
         next_codex_restart_at = time.monotonic() + codex_restart_delay(config, codex_restart_failures)
+    notification_pump.start(codex)
     save_runtime_state(paths, runtime_state)
     append_recovery_event(
         paths,
@@ -3680,6 +3818,7 @@ def run_service(
                     start_codex_session_fn=start_codex_session_fn,
                     performance=performance,
                 )
+                notification_pump.set_codex(codex)
                 drain_codex_approvals(paths, auth, telegram, codex, performance)
                 drain_codex_notifications(
                     paths,
@@ -3692,6 +3831,7 @@ def run_service(
                     config,
                     performance,
                     max_notifications=100,
+                    notification_pump=notification_pump,
                 )
                 flush_idle_partial_outputs(
                     paths,
@@ -3736,6 +3876,7 @@ def run_service(
                     next_restart_at=next_codex_restart_at,
                     performance=performance,
                 )
+                notification_pump.set_codex(codex)
             if processed_updates:
                 poll_gate.set()
                 threading.Event().wait(0.05)
@@ -3765,6 +3906,7 @@ def run_service(
                 config,
                 performance,
                 max_notifications=100,
+                notification_pump=notification_pump,
             )
             flush_idle_partial_outputs(
                 paths,
@@ -3809,6 +3951,7 @@ def run_service(
                 next_restart_at=next_codex_restart_at,
                 performance=performance,
             )
+            notification_pump.set_codex(codex)
             poll_gate.set()
             threading.Event().wait(0.05)
             if not updates_queue.empty():
@@ -3819,6 +3962,7 @@ def run_service(
         stop_event.set()
         poll_gate.set()
         telegram_thread.join(timeout=0.5)
+        notification_pump.stop()
         if codex is not None:
             codex.stop()
             runtime.stop_codex()

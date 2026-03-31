@@ -22,6 +22,7 @@ _ACTIVE_MANAGER: "TelegramDeliveryManager | None" = None
 _RATE_LIMIT_STATE_KEY = "telegram_delivery_backoff"
 _MAX_RATE_LIMIT_BACKOFF_SECONDS = 3600
 _INITIAL_RATE_LIMIT_BACKOFF_SECONDS = 2
+_QUEUE_THROTTLE_SECONDS = 0.05
 
 
 def install_delivery_manager(paths: AppPaths, telegram: TelegramClient, *, run_id: str) -> None:
@@ -61,6 +62,15 @@ class TelegramDeliveryManager:
         self._thread.start()
 
     def stop(self) -> None:
+        deadline = time.monotonic() + 0.25
+        while time.monotonic() < deadline:
+            processed = self.process_next()
+            if processed is not None:
+                continue
+            if not self._has_pending_items():
+                break
+            self._wake_event.wait(0.01)
+            self._wake_event.clear()
         self._stop_event.set()
         self._wake_event.set()
         if self._thread is not None:
@@ -98,6 +108,8 @@ class TelegramDeliveryManager:
         try:
             with self.storage.transaction() as connection:
                 paused_until = self._load_paused_until(connection)
+                created_at = utc_now()
+                available_at = self._initial_available_at(paused_until)
                 if len(payload_json.encode("utf-8")) > QUEUE_PAYLOAD_LIMIT_BYTES:
                     artifact_ref = self.artifacts.write_text(
                         kind="telegram_queue_payload",
@@ -124,8 +136,8 @@ class TelegramDeliveryManager:
                     """,
                     (
                         queue_id,
-                        utc_now(),
-                        paused_until or utc_now(),
+                        created_at,
+                        available_at,
                         op_type,
                         chat_id,
                         topic_id,
@@ -157,6 +169,14 @@ class TelegramDeliveryManager:
         self._wake_event.set()
         return queue_id
 
+    def _initial_available_at(self, paused_until: str | None) -> str:
+        now = datetime.now(timezone.utc)
+        available_at = now + timedelta(seconds=_QUEUE_THROTTLE_SECONDS)
+        paused_at = self._parse_timestamp(paused_until)
+        if paused_at is not None and paused_at > available_at:
+            available_at = paused_at
+        return available_at.isoformat()
+
     def _wait_for_completion(self, target_queue_id: str, *, allow_paused_return: bool = False) -> Any:
         deadline = time.monotonic() + float(_MAX_RATE_LIMIT_BACKOFF_SECONDS)
         while True:
@@ -185,6 +205,18 @@ class TelegramDeliveryManager:
                 raise TimeoutError(f"Timed out waiting for Telegram queue item {target_queue_id}.")
             self._wake_event.wait(0.05)
             self._wake_event.clear()
+
+    def _has_pending_items(self) -> bool:
+        with self.storage.read_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM telegram_outbound_queue
+                WHERE status = 'queued'
+                LIMIT 1
+                """
+            ).fetchone()
+        return row is not None
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():

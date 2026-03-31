@@ -412,3 +412,231 @@ def send_telegram_typing(
         trace_id=context.get("trace_id"),
         priority=int(context.get("priority", 200)),
     )
+
+
+def queue_telegram_message(
+    chat_id: int,
+    text: str,
+    *,
+    topic_id: int | None = None,
+    parse_mode: str | None = None,
+    disable_notification: bool = False,
+    performance: PerformanceTracker | None = None,
+    **context: Any,
+) -> int | None:
+    started_at = time.monotonic()
+    if performance is not None:
+        performance.log(
+            "telegram_send_started",
+            chat_id=chat_id,
+            topic_id=topic_id,
+            text_chars=len(text),
+            parse_mode=parse_mode,
+            disable_notification=disable_notification,
+            queued_only=True,
+            **context,
+        )
+    manager = _require_delivery_manager()
+    completed_inline = False
+    if hasattr(manager, "enqueue"):
+        result = manager.enqueue(
+            op_type="send_message",
+            payload={"text": text, "parse_mode": parse_mode},
+            chat_id=chat_id,
+            topic_id=topic_id,
+            session_id=context.get("session_id"),
+            trace_id=context.get("trace_id"),
+            message_group_id=context.get("message_group_id"),
+            dedupe_key=context.get("dedupe_key"),
+            priority=int(context.get("priority", 100)),
+            disable_notification=disable_notification,
+        )
+    else:
+        result = manager.enqueue_and_wait(
+            op_type="send_message",
+            payload={"text": text, "parse_mode": parse_mode},
+            chat_id=chat_id,
+            topic_id=topic_id,
+            session_id=context.get("session_id"),
+            trace_id=context.get("trace_id"),
+            message_group_id=context.get("message_group_id"),
+            dedupe_key=context.get("dedupe_key"),
+            priority=int(context.get("priority", 100)),
+            disable_notification=disable_notification,
+        )
+        completed_inline = True
+    if performance is not None:
+        performance.log(
+            "telegram_send_completed" if completed_inline else "telegram_send_queued",
+            chat_id=chat_id,
+            topic_id=topic_id,
+            text_chars=len(text),
+            parse_mode=parse_mode,
+            disable_notification=disable_notification,
+            duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
+            **context,
+        )
+    if isinstance(result, dict):
+        message_id = result.get("message_id")
+        if isinstance(message_id, int):
+            return message_id
+    return None
+
+
+def queue_telegram_edit_message(
+    chat_id: int,
+    message_id: int,
+    text: str,
+    *,
+    parse_mode: str | None = None,
+    performance: PerformanceTracker | None = None,
+    **context: Any,
+) -> None:
+    started_at = time.monotonic()
+    if performance is not None:
+        performance.log(
+            "telegram_edit_started",
+            chat_id=chat_id,
+            message_id=message_id,
+            text_chars=len(text),
+            parse_mode=parse_mode,
+            queued_only=True,
+            **context,
+        )
+    manager = _require_delivery_manager()
+    completed_inline = False
+    if hasattr(manager, "enqueue"):
+        manager.enqueue(
+            op_type="edit_message",
+            payload={"message_id": message_id, "text": text, "parse_mode": parse_mode},
+            chat_id=chat_id,
+            session_id=context.get("session_id"),
+            trace_id=context.get("trace_id"),
+            message_group_id=context.get("message_group_id"),
+            telegram_message_id=message_id,
+            dedupe_key=context.get("dedupe_key"),
+            priority=int(context.get("priority", 100)),
+        )
+    else:
+        manager.enqueue_and_wait(
+            op_type="edit_message",
+            payload={"message_id": message_id, "text": text, "parse_mode": parse_mode},
+            chat_id=chat_id,
+            session_id=context.get("session_id"),
+            trace_id=context.get("trace_id"),
+            message_group_id=context.get("message_group_id"),
+            telegram_message_id=message_id,
+            dedupe_key=context.get("dedupe_key"),
+            priority=int(context.get("priority", 100)),
+        )
+        completed_inline = True
+    if performance is not None:
+        performance.log(
+            "telegram_edit_completed" if completed_inline else "telegram_edit_queued",
+            chat_id=chat_id,
+            message_id=message_id,
+            text_chars=len(text),
+            parse_mode=parse_mode,
+            duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
+            **context,
+        )
+
+
+def queue_telegram_delete_message(
+    chat_id: int,
+    message_id: int,
+    *,
+    performance: PerformanceTracker | None = None,
+    **context: Any,
+) -> None:
+    started_at = time.monotonic()
+    if performance is not None:
+        performance.log(
+            "telegram_delete_started",
+            chat_id=chat_id,
+            message_id=message_id,
+            queued_only=True,
+            **context,
+        )
+    manager = _require_delivery_manager()
+    completed_inline = False
+    if hasattr(manager, "enqueue"):
+        manager.enqueue(
+            op_type="delete_message",
+            payload={"message_id": message_id},
+            chat_id=chat_id,
+            session_id=context.get("session_id"),
+            trace_id=context.get("trace_id"),
+            message_group_id=context.get("message_group_id"),
+            telegram_message_id=message_id,
+            priority=int(context.get("priority", 100)),
+        )
+    else:
+        manager.enqueue_and_wait(
+            op_type="delete_message",
+            payload={"message_id": message_id},
+            chat_id=chat_id,
+            session_id=context.get("session_id"),
+            trace_id=context.get("trace_id"),
+            message_group_id=context.get("message_group_id"),
+            telegram_message_id=message_id,
+            priority=int(context.get("priority", 100)),
+        )
+        completed_inline = True
+    if performance is not None:
+        performance.log(
+            "telegram_delete_completed" if completed_inline else "telegram_delete_queued",
+            chat_id=chat_id,
+            message_id=message_id,
+            duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
+            **context,
+        )
+
+
+def queue_telegram_typing(
+    chat_id: int,
+    *,
+    topic_id: int | None = None,
+    performance: PerformanceTracker | None = None,
+    **context: Any,
+) -> None:
+    started_at = time.monotonic()
+    if performance is not None:
+        performance.log(
+            "telegram_typing_started",
+            chat_id=chat_id,
+            topic_id=topic_id,
+            queued_only=True,
+            **context,
+        )
+    manager = _require_delivery_manager()
+    completed_inline = False
+    if hasattr(manager, "enqueue"):
+        manager.enqueue(
+            op_type="typing",
+            payload={},
+            chat_id=chat_id,
+            topic_id=topic_id,
+            session_id=context.get("session_id"),
+            trace_id=context.get("trace_id"),
+            priority=int(context.get("priority", 200)),
+        )
+    else:
+        manager.enqueue_and_wait(
+            op_type="typing",
+            payload={},
+            chat_id=chat_id,
+            topic_id=topic_id,
+            session_id=context.get("session_id"),
+            trace_id=context.get("trace_id"),
+            priority=int(context.get("priority", 200)),
+        )
+        completed_inline = True
+    if performance is not None:
+        performance.log(
+            "telegram_typing_completed" if completed_inline else "telegram_typing_queued",
+            chat_id=chat_id,
+            topic_id=topic_id,
+            duration_ms=round((time.monotonic() - started_at) * 1000.0, 1),
+            **context,
+        )

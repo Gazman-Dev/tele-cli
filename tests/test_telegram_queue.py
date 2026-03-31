@@ -141,6 +141,7 @@ class TelegramQueueTests(unittest.TestCase):
             telegram_message_id=9,
             dedupe_key="group:chunk:0",
         )
+        self._expire_pause_and_queue()
         first_result = manager.process_next()
 
         self.assertIsNotNone(first_result)
@@ -177,6 +178,44 @@ class TelegramQueueTests(unittest.TestCase):
         self.assertEqual(second_result["status"], "queued")
         state = self._read_app_state(_RATE_LIMIT_STATE_KEY)
         self.assertEqual(state["backoff_seconds"], 4)
+
+    def test_unpaused_queue_uses_throttle_window_to_keep_only_latest_chunk(self) -> None:
+        telegram = FakeTelegramClient()
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+
+        manager.enqueue(
+            op_type="send_message",
+            payload={"text": "I am cur"},
+            chat_id=123,
+            dedupe_key="group:chunk:0",
+        )
+        manager.enqueue(
+            op_type="send_message",
+            payload={"text": "I am currently running"},
+            chat_id=123,
+            dedupe_key="group:chunk:0",
+        )
+
+        with sqlite3.connect(self.paths.database) as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json, available_at
+                FROM telegram_outbound_queue
+                WHERE dedupe_key = ?
+                """,
+                ("group:chunk:0",),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(json.loads(str(row[0]))["text"], "I am currently running")
+        available_at = datetime.fromisoformat(str(row[1]))
+        self.assertGreater(available_at, datetime.now(timezone.utc))
+
+        self._expire_pause_and_queue()
+        result = manager.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(telegram.messages, [(123, "I am currently running")])
 
 
 if __name__ == "__main__":

@@ -4,6 +4,25 @@ import html
 import re
 
 
+_ALLOWED_TAG_NAMES = {
+    "b",
+    "strong",
+    "i",
+    "em",
+    "u",
+    "ins",
+    "s",
+    "strike",
+    "del",
+    "code",
+    "pre",
+    "a",
+    "blockquote",
+    "tg-spoiler",
+    "tg-emoji",
+    "tg-time",
+}
+_HTML_TAG_TOKEN_RE = re.compile(r"(<[^>]+>)")
 _ALLOWED_HTML_TAG_RE = re.compile(r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|blockquote|tg-spoiler|tg-emoji|tg-time)\b", re.IGNORECASE)
 _COMMAND_ACTIVITY_PREFIX = "__tele_cli_command__:"
 _LEGACY_DASH_VARIANTS = (
@@ -28,6 +47,46 @@ def normalize_legacy_telegram_text(text: str) -> str:
 
 def looks_like_telegram_html(text: str) -> bool:
     return bool(_ALLOWED_HTML_TAG_RE.search(text))
+
+
+def repair_partial_telegram_html(text: str) -> str:
+    normalized = (text or "").replace("\r\n", "\n").strip()
+    if not normalized:
+        return ""
+    normalized = re.sub(r"<[^>\n]*$", "", normalized)
+    pieces: list[str] = []
+    stack: list[str] = []
+    for token in _HTML_TAG_TOKEN_RE.split(normalized):
+        if not token:
+            continue
+        if token.startswith("<") and token.endswith(">"):
+            tag_match = re.match(r"^<\s*(/)?\s*([a-zA-Z0-9-]+)\b([^>]*)>$", token)
+            if not tag_match:
+                pieces.append(escape_telegram_html(token))
+                continue
+            is_closing = bool(tag_match.group(1))
+            tag_name = tag_match.group(2).lower()
+            suffix = tag_match.group(3) or ""
+            if tag_name not in _ALLOWED_TAG_NAMES:
+                pieces.append(escape_telegram_html(token))
+                continue
+            is_self_closing = suffix.strip().endswith("/") or tag_name in {"tg-emoji", "tg-time"}
+            if is_closing:
+                if tag_name in stack:
+                    while stack:
+                        open_tag = stack.pop()
+                        pieces.append(f"</{open_tag}>")
+                        if open_tag == tag_name:
+                            break
+                continue
+            pieces.append(token)
+            if not is_self_closing:
+                stack.append(tag_name)
+            continue
+        pieces.append(token)
+    while stack:
+        pieces.append(f"</{stack.pop()}>")
+    return "".join(pieces)
 
 
 def _make_placeholder(index: int) -> str:

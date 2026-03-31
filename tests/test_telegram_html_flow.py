@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -10,7 +11,7 @@ from core.models import AuthState
 from core.paths import build_paths
 from integrations.telegram import TelegramError
 from runtime import service as service_module
-from runtime.service import drain_codex_notifications, flush_buffer, maybe_refresh_thinking_message
+from runtime.service import CodexNotificationPump, drain_codex_notifications, flush_buffer, maybe_refresh_thinking_message
 from runtime.session_store import SessionStore
 from tests.fakes.fake_telegram import FakeTelegramClient
 
@@ -83,6 +84,26 @@ class ImmediateDeliveryManager:
         if op_type == "typing":
             return target.send_typing(chat_id, topic_id=topic_id)
         raise RuntimeError(f"Unsupported op_type {op_type!r} in test delivery manager.")
+
+
+class EnqueueOnlyManager:
+    def __init__(self) -> None:
+        self.enqueued: list[dict] = []
+        self.wait_calls = 0
+
+    def is_paused(self) -> bool:
+        return False
+
+    def latest_message_id_for_dedupe(self, dedupe_key: str) -> int | None:
+        return None
+
+    def enqueue(self, **kwargs):
+        self.enqueued.append(dict(kwargs))
+        return f"q-{len(self.enqueued)}"
+
+    def enqueue_and_wait(self, **kwargs):
+        self.wait_calls += 1
+        raise AssertionError("enqueue_and_wait should not be used on live notification delivery paths")
 
 
 class TelegramHtmlFlowTests(unittest.TestCase):
@@ -323,6 +344,38 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         self.assertEqual(refreshed.last_delivered_output_text, "Final answer")
         self.assertEqual(refreshed.streaming_output_text, "Final answer")
 
+    def test_partial_stream_without_thinking_history_uses_html_formatting(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.pending_output_text = "# Title\n**done**"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        flush_buffer(session.session_id, auth, telegram, self.recorder, store, mark_agent=False, stream_format=True)
+
+        self.assertEqual(telegram.messages, [(22, "<b>Title</b>\n<b>done</b>")])
+        self.assertEqual(telegram.message_details[0][3], "HTML")
+
+    def test_partial_html_stream_repairs_missing_closing_tags(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.pending_output_text = "<b>bold"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        flush_buffer(session.session_id, auth, telegram, self.recorder, store, mark_agent=False, stream_format=True)
+
+        self.assertEqual(telegram.messages, [(22, "<b>bold</b>")])
+        self.assertEqual(telegram.message_details[0][3], "HTML")
+
     def test_final_reply_falls_back_to_escaped_html(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
         store = SessionStore(self.paths)
@@ -426,6 +479,53 @@ class TelegramHtmlFlowTests(unittest.TestCase):
         refreshed = store.get_or_create_telegram_session(auth)
         self.assertEqual(refreshed.pending_output_text, "I am currently running")
         self.assertEqual(telegram.edits, [])
+
+    def test_drain_codex_notifications_does_not_wait_for_telegram_delivery(self) -> None:
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification(
+                    "item/started",
+                    {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "msg-1", "type": "agentMessage", "phase": "final_answer", "text": ""}},
+                ),
+                Notification(
+                    "item/agentMessage/delta",
+                    {"threadId": "thread-1", "turnId": "turn-1", "itemId": "msg-1", "delta": "Final answer"},
+                ),
+                Notification("turn/completed", {"turnId": "turn-1", "outputText": "Final answer"}),
+            ]
+        )
+
+        manager = EnqueueOnlyManager()
+        pump = CodexNotificationPump(maxsize=8)
+        with patch("runtime.performance.active_delivery_manager", return_value=manager):
+            pump.start(codex)
+            try:
+                time.sleep(0.05)
+                drain_codex_notifications(
+                    self.paths,
+                    auth,
+                    FakeTelegramClient(),
+                    self.recorder,
+                    codex,
+                    notification_pump=pump,
+                )
+            finally:
+                pump.stop()
+
+        self.assertEqual(manager.wait_calls, 0)
+        self.assertTrue(manager.enqueued)
+        self.assertTrue(any(item["op_type"] == "send_message" for item in manager.enqueued))
+        refreshed = store.get_or_create_telegram_session(auth)
+        self.assertEqual(refreshed.status, "ACTIVE")
+        self.assertEqual(refreshed.last_completed_turn_id, "turn-1")
 
     def test_final_reply_uses_multiple_telegram_messages_when_over_limit(self) -> None:
         auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
