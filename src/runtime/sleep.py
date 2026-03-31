@@ -16,6 +16,7 @@ from .app_server_process import SubprocessJsonRpcTransport
 from .instructions import ensure_instruction_files, build_instruction_paths, lesson_path, load_lesson_texts
 from .jsonrpc import JsonRpcClient, JsonRpcRequest, JsonRpcTransport
 from .session_store import SessionStore
+from .workspaces import WorkspaceManager
 
 SLEEP_AI_TIMEOUT_SECONDS = 30.0
 
@@ -169,11 +170,13 @@ def _run_sleep_ai(
     rpc = JsonRpcClient(transport)
     rpc.start()
     client = AppServerClient(rpc)
+    workspace_manager = WorkspaceManager(paths)
+    workspace_root = workspace_manager.workspace_path(workspace_manager.ensure_workspace_initialized(workspace_manager.get_or_create_root_workspace().workspace_id))
     try:
         client.initialize("tele-cli-sleep")
         client.get_account()
         thread = client.thread_start(
-            cwd=config.state_dir,
+            cwd=str(workspace_root),
             sandbox=config.sandbox_mode,
             approvalPolicy=config.approval_policy,
             personality=config.codex_personality,
@@ -184,7 +187,7 @@ def _run_sleep_ai(
         turn = client.turn_start(
             thread_id,
             prompt,
-            cwd=config.state_dir,
+            cwd=str(workspace_root),
             approvalPolicy=config.approval_policy,
             sandboxPolicy=config.sandbox_mode,
             personality=config.codex_personality,
@@ -319,3 +322,7 @@ def run_sleep(
             generation=next_generation,
         ),
     )
+    workspace_manager = WorkspaceManager(paths)
+    root_workspace = workspace_manager.ensure_workspace_initialized(workspace_manager.get_or_create_root_workspace().workspace_id)
+    workspace_manager.commit_root_workspace_if_changed(f"Sleep memory update {deadline.date().isoformat()}")
+    workspace_manager.best_effort_push_workspace(root_workspace)

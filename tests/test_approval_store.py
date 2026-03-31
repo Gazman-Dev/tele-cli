@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -52,7 +53,7 @@ class ApprovalStoreTests(unittest.TestCase):
             assert pending is not None
             self.assertEqual(pending.params, large_params)
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 row = connection.execute("SELECT params_json FROM approvals WHERE request_id = 99").fetchone()
 
             self.assertIn('"storage":"artifact"', row[0])

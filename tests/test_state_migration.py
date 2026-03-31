@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import sqlite3
 import tempfile
@@ -30,11 +31,29 @@ class SqliteMigrationTests(unittest.TestCase):
             StorageManager(paths)
 
             self.assertTrue(paths.database.exists())
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 row = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()
 
             self.assertIsNotNone(row)
             self.assertGreater(row[0], 0)
+
+    def test_storage_initialization_creates_workspace_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            StorageManager(paths)
+
+            with closing(sqlite3.connect(paths.database)) as connection:
+                workspace_table = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'"
+                ).fetchone()
+                session_columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+                }
+
+            self.assertEqual(workspace_table, ("workspaces",))
+            self.assertIn("workspace_relpath", session_columns)
+            self.assertIn("agents_md_relpath", session_columns)
 
     def test_storage_repairs_partial_schema_when_migration_marker_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -42,7 +61,7 @@ class SqliteMigrationTests(unittest.TestCase):
             paths.root.mkdir(parents=True, exist_ok=True)
             migration_path = Path(__file__).resolve().parents[1] / "src" / "storage" / "migrations" / "0001_initial.sql"
             checksum = hashlib.sha256(migration_path.read_bytes()).hexdigest()
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 connection.execute(
                     """
                     CREATE TABLE schema_migrations (
@@ -65,7 +84,7 @@ class SqliteMigrationTests(unittest.TestCase):
 
             StorageManager(paths)
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 app_state_row = connection.execute("SELECT COUNT(*) FROM app_state").fetchone()
                 service_runs_row = connection.execute("SELECT COUNT(*) FROM service_runs").fetchone()
                 migration_row = connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version = 1").fetchone()
@@ -83,7 +102,7 @@ class SqliteMigrationTests(unittest.TestCase):
             session.thread_id = "thread-1"
             store.save_session(session)
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 row = connection.execute(
                     "SELECT transport, transport_channel, thread_id FROM sessions WHERE session_id = ?",
                     (session.session_id,),
@@ -97,7 +116,7 @@ class SqliteMigrationTests(unittest.TestCase):
             store = ApprovalStore(paths)
             store.add(ApprovalRecord(17, "approval/request", {"tool": "shell"}))
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 row = connection.execute("SELECT request_id, status FROM approvals WHERE request_id = 17").fetchone()
 
             self.assertEqual(row, (17, "pending"))
@@ -190,7 +209,7 @@ class SqliteMigrationTests(unittest.TestCase):
             assert pending is not None
             self.assertEqual(pending.params, large_approval_params)
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 row = connection.execute(
                     "SELECT value_json FROM app_state WHERE state_key = 'sqlite_bootstrap'"
                 ).fetchone()
@@ -216,7 +235,7 @@ class SqliteMigrationTests(unittest.TestCase):
                 payload={"text": "x" * 9000},
             )
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 row = connection.execute(
                     "SELECT payload_json, payload_preview, artifact_id FROM events ORDER BY event_id DESC LIMIT 1"
                 ).fetchone()
@@ -263,7 +282,7 @@ class SqliteMigrationTests(unittest.TestCase):
 
             runs.start(run_id="new-run")
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 rows = connection.execute(
                     "SELECT queue_id, status, claimed_by_run_id FROM telegram_outbound_queue ORDER BY queue_id"
                 ).fetchall()
@@ -297,7 +316,7 @@ class SqliteMigrationTests(unittest.TestCase):
             with patch("storage.operations.process_exists", return_value=True):
                 runs.start(run_id="new-run")
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 row = connection.execute(
                     "SELECT queue_id, status, claimed_by_run_id FROM telegram_outbound_queue WHERE queue_id = 'claimed-live'"
                 ).fetchone()

@@ -13,6 +13,11 @@ class AppPaths:
     setup_lock: Path
     database: Path
     artifacts: Path
+    memory: Path
+    lessons: Path
+    session_memory: Path
+    workspace: Path
+    workspace_topics: Path
     auth: Path
     config: Path
     sleep_state: Path
@@ -36,6 +41,11 @@ def build_paths(state_dir: Optional[Path | str] = None) -> AppPaths:
         setup_lock=root / "setup.lock",
         database=root / "tele_cli.db",
         artifacts=root / "artifacts",
+        memory=root / "memory",
+        lessons=root / "memory" / "lessons",
+        session_memory=root / "memory" / "sessions",
+        workspace=root / "workspace",
+        workspace_topics=root / "workspace" / "topics",
         auth=root / "auth.json",
         config=root / "config.json",
         sleep_state=root / "sleep_state.json",

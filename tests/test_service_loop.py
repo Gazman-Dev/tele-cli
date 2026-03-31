@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
@@ -23,13 +24,13 @@ from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 
 
 def load_event_types(paths) -> list[str]:
-    with sqlite3.connect(paths.database) as connection:
+    with closing(sqlite3.connect(paths.database)) as connection:
         rows = connection.execute("SELECT event_type FROM events ORDER BY event_id").fetchall()
     return [str(row[0]) for row in rows]
 
 
 def load_recovery_messages(paths) -> list[str]:
-    with sqlite3.connect(paths.database) as connection:
+    with closing(sqlite3.connect(paths.database)) as connection:
         rows = connection.execute(
             "SELECT payload_json FROM events WHERE source = 'service' AND event_type = 'service.recovery' ORDER BY event_id"
         ).fetchall()

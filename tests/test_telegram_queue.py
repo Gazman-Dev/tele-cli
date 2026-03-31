@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import sqlite3
 import time
@@ -67,14 +68,14 @@ class TelegramQueueTests(unittest.TestCase):
         self.paths = build_paths(Path.cwd() / ".test_state" / "telegram_queue" / str(uuid.uuid4()))
 
     def _read_app_state(self, key: str) -> dict:
-        with sqlite3.connect(self.paths.database) as connection:
+        with closing(sqlite3.connect(self.paths.database)) as connection:
             row = connection.execute("SELECT value_json FROM app_state WHERE state_key = ?", (key,)).fetchone()
         if row is None:
             return {}
         return json.loads(str(row[0]))
 
     def _set_pause_state(self, *, paused_until: datetime, backoff_seconds: int) -> None:
-        with sqlite3.connect(self.paths.database) as connection:
+        with closing(sqlite3.connect(self.paths.database)) as connection:
             connection.execute(
                 """
                 INSERT INTO app_state(state_key, value_json, updated_at)
@@ -94,10 +95,11 @@ class TelegramQueueTests(unittest.TestCase):
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
+            connection.commit()
 
     def _expire_pause_and_queue(self, *, backoff_seconds: int = 0) -> None:
         expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
-        with sqlite3.connect(self.paths.database) as connection:
+        with closing(sqlite3.connect(self.paths.database)) as connection:
             connection.execute(
                 """
                 INSERT INTO app_state(state_key, value_json, updated_at)
@@ -116,6 +118,7 @@ class TelegramQueueTests(unittest.TestCase):
                 "UPDATE telegram_outbound_queue SET available_at = ? WHERE status = 'queued'",
                 (expired,),
             )
+            connection.commit()
 
     def test_paused_replaceable_send_keeps_only_latest_payload(self) -> None:
         telegram = FakeTelegramClient()
@@ -142,7 +145,7 @@ class TelegramQueueTests(unittest.TestCase):
         self.assertEqual(first["status"], "queued")
         self.assertEqual(second["status"], "queued")
 
-        with sqlite3.connect(self.paths.database) as connection:
+        with closing(sqlite3.connect(self.paths.database)) as connection:
             rows = connection.execute(
                 """
                 SELECT queue_id, payload_json
@@ -181,7 +184,7 @@ class TelegramQueueTests(unittest.TestCase):
         state = self._read_app_state(_RATE_LIMIT_STATE_KEY)
         self.assertEqual(state["backoff_seconds"], 2)
 
-        with sqlite3.connect(self.paths.database) as connection:
+        with closing(sqlite3.connect(self.paths.database)) as connection:
             queued_row = connection.execute(
                 "SELECT available_at FROM telegram_outbound_queue WHERE dedupe_key = ?",
                 ("group:chunk:0",),
@@ -197,7 +200,7 @@ class TelegramQueueTests(unittest.TestCase):
             allow_paused_return=True,
         )
         self.assertEqual(queued_typing["status"], "queued")
-        with sqlite3.connect(self.paths.database) as connection:
+        with closing(sqlite3.connect(self.paths.database)) as connection:
             typing_row = connection.execute(
                 "SELECT available_at FROM telegram_outbound_queue WHERE op_type = 'typing'"
             ).fetchone()
@@ -249,7 +252,7 @@ class TelegramQueueTests(unittest.TestCase):
             dedupe_key="group:chunk:0",
         )
 
-        with sqlite3.connect(self.paths.database) as connection:
+        with closing(sqlite3.connect(self.paths.database)) as connection:
             row = connection.execute(
                 """
                 SELECT payload_json, available_at
@@ -305,7 +308,7 @@ class TelegramQueueTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [(123, "I’m tightening")])
         self.assertEqual(telegram.edits, [(123, 1, "I’m tightening the queue lifecycle")])
 
-        with sqlite3.connect(self.paths.database) as connection:
+        with closing(sqlite3.connect(self.paths.database)) as connection:
             rows = connection.execute(
                 """
                 SELECT op_type, telegram_message_id

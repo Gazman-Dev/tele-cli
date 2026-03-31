@@ -34,7 +34,7 @@ Target outcome:
 - each Telegram group topic gets its own dedicated sub-workspace
 - each topic workspace has its own Git repository connected through a parent recursive Git workflow
 - each topic workspace becomes the Codex working directory for that topic
-- each topic workspace has an `AGENT.md` file for topic-specific durable guidance
+- each topic workspace has an `AGENTS.md` file for topic-specific durable guidance
 - general operator memory remains separate from topic-local memory
 
 This is a structural change to how Tele Cli should think about sessions, not just a storage optimization.
@@ -103,13 +103,13 @@ Inside the configured Tele Cli state root, the recommended layout is:
     sessions/
       <session_id>.short_memory.md
   workspace/
-    AGENT.md
+    AGENTS.md
     long_memory.md
     .gitignore
     .git/
     topics/
       <topic-folder>/
-        AGENT.md
+        AGENTS.md
         .gitignore
         .git/
 ```
@@ -196,30 +196,30 @@ Reason:
 
 ### 7.3 Submodule semantics
 
-Topic workspaces should be managed as Git submodules under the root workspace.
+Topic workspaces should be managed under the root workspace with submodule-style linkage metadata.
 
 Reason:
 
-- the operator can clone or update the whole Tele Cli workspace tree with one recursive Git command
+- the root workspace can keep explicit Git-visible references to topic workspaces
 - each topic still keeps a separate repository and separate history
-- switching devices becomes simpler because the topic repositories come along with the parent workspace model
+- when a remote is configured later, the parent workspace can carry topic linkage metadata along with it
 
 Operational rule:
 
 - the root workspace is the parent Git repository
-- each topic workspace is a Git submodule entry under `workspace/topics/`
-- Tele Cli should treat topic workspaces as independent repos for Codex operations, but as submodules for workspace synchronization and multi-device portability
+- each topic workspace is represented under `workspace/topics/` with submodule-style linkage metadata in the root repo
+- Tele Cli should treat topic workspaces as independent repos for Codex operations, while keeping linkage metadata in the root repo for local organization
 
 ### 7.4 Auto-init policy
 
 When a topic workspace is created for the first time, Tele Cli should ensure:
 
 - the directory exists
-- an `AGENT.md` exists
+- an `AGENTS.md` exists
 - a `.gitignore` exists
-- a Git repository exists and is registered as a submodule from the root workspace
+- a Git repository exists and is registered in the root workspace with submodule-style linkage metadata
 
-If the repo or submodule wiring is missing, Tele Cli should initialize it automatically.
+If the repo or linkage metadata is missing, Tele Cli should initialize it automatically.
 
 Required behavior:
 
@@ -228,6 +228,7 @@ Required behavior:
 - the root workspace should also get an initial commit after its Git initialization
 
 Tele Cli should also attempt to push after these commits when a remote is configured and reachable.
+If no remote is configured, Tele Cli does not need to invent one and may remain local-only.
 
 Push behavior is best-effort:
 
@@ -242,7 +243,7 @@ Minimum goals:
 
 - keep Git metadata clean
 - avoid committing temporary editor files, OS files, and Tele Cli temporary memory files
-- preserve committed durable memory such as `long_memory.md` and `AGENT.md`
+- preserve committed durable memory such as `long_memory.md` and `AGENTS.md`
 
 At minimum, the ignore file should cover:
 
@@ -299,7 +300,7 @@ Those files remain part of the system-level memory model.
 
 ### 9.2 Root workspace memory
 
-The root workspace `AGENT.md` stores long-lived guidance relevant to the main 1:1 chat and to Tele Cli operation broadly.
+The root workspace `AGENTS.md` stores long-lived guidance relevant to the main 1:1 chat and to Tele Cli operation broadly.
 
 Examples:
 
@@ -310,7 +311,7 @@ Examples:
 
 ### 9.3 Topic memory
 
-Each topic workspace `AGENT.md` stores durable guidance that matters only to that topic.
+Each topic workspace `AGENTS.md` stores durable guidance that matters only to that topic.
 
 Examples:
 
@@ -322,7 +323,7 @@ Examples:
 
 ### 9.4 Separation rule
 
-Topic-specific facts should not be pushed into the global `AGENT.md` unless they truly matter outside that topic.
+Topic-specific facts should not be pushed into the global `AGENTS.md` unless they truly matter outside that topic.
 
 The goal is:
 
@@ -335,22 +336,22 @@ Instead:
 
 - SQLite/session memory remains the runtime continuity layer
 - `workspace/long_memory.md`, `memory/lessons/`, and session short memory remain the current Tele Cli-managed memory mechanism
-- `AGENT.md` files add workspace-local durable context on top of that
+- `AGENTS.md` files add workspace-local durable context on top of that
 
 Important retention rule:
 
 - content under `memory/` is temporary and may be pruned or regenerated by Tele Cli
 - `workspace/long_memory.md` is durable and should be committed
-- `AGENT.md` files are durable and should be committed
+- `AGENTS.md` files are durable and should be committed
 
-## 10. `AGENT.md` Requirements
+## 10. `AGENTS.md` Requirements
 
 ### 10.1 Required files
 
 Tele Cli should ensure these files exist:
 
-- root workspace: `workspace/AGENT.md`
-- topic workspace: `workspace/topics/<topic>/AGENT.md`
+- root workspace: `workspace/AGENTS.md`
+- topic workspace: `workspace/topics/<topic>/AGENTS.md`
 
 ### 10.2 Ownership
 
@@ -358,9 +359,9 @@ These files are Codex-managed workspace memory files.
 
 Rules:
 
-- Tele Cli must not parse, merge, or load `AGENT.md` itself
+- Tele Cli must not parse, merge, or load `AGENTS.md` itself
 - Tele Cli is only responsible for ensuring the files exist at the correct paths
-- Codex's native `AGENT.md` behavior is the intended mechanism for using them
+- Codex's native `AGENTS.md` behavior is the intended mechanism for using them
 - the operator may also edit them directly
 
 ### 10.3 Suggested content structure
@@ -382,7 +383,7 @@ The default template should explain the overall system structure and design clea
 
 ### 10.4 Template ownership
 
-Tele Cli should scaffold the initial `AGENT.md` template, but after that the file is still treated as Codex-managed content.
+Tele Cli should scaffold the initial `AGENTS.md` template, but after that the file is still treated as Codex-managed content.
 
 The template should describe:
 
@@ -390,19 +391,19 @@ The template should describe:
 - the separation between root chat and topic workspaces
 - the Git/submodule model
 - which files are durable versus temporary
-- how existing Tele Cli memory files relate to `AGENT.md`
+- how existing Tele Cli memory files relate to `AGENTS.md`
 
 ### 10.5 Prompt injection policy
 
-Tele Cli does not define custom `AGENT.md` merge semantics.
+Tele Cli does not define custom `AGENTS.md` merge semantics.
 
 Codex's native behavior should be used as-is.
 
 For this spec, that means:
 
-- Tele Cli ensures the root and topic `AGENT.md` files exist
+- Tele Cli ensures the root and topic `AGENTS.md` files exist
 - Codex handles combining them
-- topic `AGENT.md` precedence and weighting are left to Codex native behavior
+- topic `AGENTS.md` precedence and weighting are left to Codex native behavior
 
 ## 11. Session Routing Implications
 
@@ -414,7 +415,7 @@ Required routing outputs:
 - `thread_id`
 - `workspace_kind` such as `root` or `topic`
 - `workspace_relpath`
-- `agent_md_relpath`
+- `agents_md_relpath`
 - visible Telegram topic name where applicable
 
 This should become part of the durable session/workspace mapping in storage.
@@ -429,11 +430,11 @@ At minimum, future runtime state should be able to answer:
 - which workspace belongs to this Telegram topic?
 - what visible Telegram topic name is currently associated with that workspace?
 - what is the relative path for that workspace?
-- what is the relative path for its `AGENT.md`?
+- what is the relative path for its `AGENTS.md`?
 - what is the relative path for its `long_memory.md` where applicable?
 - is the workspace initialized?
 - is its Git repository initialized?
-- is its Git submodule linkage initialized?
+- is its Git linkage metadata initialized?
 
 These should be stored as relative paths under the Tele Cli root.
 
@@ -468,7 +469,8 @@ That later migration must cover:
 - how topic workspaces are named and initialized
 - how current sessions gain workspace metadata
 - how Codex thread creation starts using workspace-derived `cwd`
-- how `AGENT.md` files are bootstrapped
+- how `AGENTS.md` files are bootstrapped
+- how existing installs may lazily backfill workspace mappings as sessions and topics become active
 - how `workspace/long_memory.md` is created or migrated
 - how `memory/lessons/` and `memory/sessions/` move under the temporary-memory subtree
 - how initial commits and best-effort pushes are triggered safely
@@ -479,8 +481,8 @@ The following decisions are now fixed for implementation planning:
 1. The direct-chat workspace lives under `workspace/`, not at the Tele Cli state root.
 2. Topic workspaces live under `workspace/topics/`.
 3. Git repositories receive an automatic initial commit immediately after initialization.
-4. Tele Cli scaffolds an `AGENT.md` template that explains system structure, workspace layout, durable versus temporary memory, and the Git/submodule design.
-5. Tele Cli should attempt a best-effort push after automatic commits whenever a remote is configured.
+4. Tele Cli scaffolds an `AGENTS.md` template that explains system structure, workspace layout, durable versus temporary memory, and the Git/linkage design.
+5. Tele Cli should attempt a best-effort push after automatic commits whenever a remote is configured. If no remote exists, local-only operation is acceptable.
 6. `workspace/long_memory.md` is durable and committed.
 7. `memory/lessons/` and `memory/sessions/` are temporary and do not need to be committed.
 
@@ -492,12 +494,12 @@ This spec is satisfied only if the eventual implementation guarantees:
 - each Telegram topic always resolves to one deterministic topic workspace
 - topic workspaces are recognizable by the Telegram topic names users actually see
 - topic workspaces are isolated from each other
-- each topic workspace is its own Git repository and Git submodule
+- each topic workspace is its own Git repository and is represented in the root workspace with linkage metadata
 - the root workspace is also a Git repository
 - each initialized workspace receives an initial commit automatically
 - Tele Cli attempts a best-effort push after automatic commits when possible
 - Codex `cwd` is resolved from the workspace mapping, not from repo search
-- root and topic `AGENT.md` files exist and are addressable through stable relative paths
+- root and topic `AGENTS.md` files exist and are addressable through stable relative paths
 - `workspace/long_memory.md` exists as committed durable memory
 - the existing Tele Cli memory files remain present and compatible with the new workspace model
 - `memory/` remains disposable temporary storage and does not need to survive Git loss

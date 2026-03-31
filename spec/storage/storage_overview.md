@@ -83,12 +83,12 @@ Recommended structure:
 - `memory/lessons/`
 - `memory/sessions/<session_id>.short_memory.md`
 - `workspace/`
-- `workspace/AGENT.md`
+- `workspace/AGENTS.md`
 - `workspace/long_memory.md`
 - `workspace/.gitignore`
 - `workspace/topics/`
 - `workspace/topics/<topic>/`
-- `workspace/topics/<topic>/AGENT.md`
+- `workspace/topics/<topic>/AGENTS.md`
 - `workspace/topics/<topic>/.gitignore`
 
 Topic directories are durable workspaces, not temporary cache folders.

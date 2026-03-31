@@ -11,6 +11,7 @@ from storage.db import StorageManager
 from storage.payloads import json_dumps, json_loads
 
 from .instructions import session_short_memory_path, session_short_memory_relpath
+from .workspaces import WorkspaceManager
 
 _SESSION_STORE_LOCK = threading.RLock()
 
@@ -31,6 +32,7 @@ class SessionStore:
     def __init__(self, paths: AppPaths):
         self.paths = paths
         self.storage = StorageManager(paths)
+        self.workspace_manager = WorkspaceManager(paths)
 
     @staticmethod
     def _stabilize_session(updated_session: SessionRecord, existing_session: SessionRecord | None = None) -> SessionRecord:
@@ -52,6 +54,12 @@ class SessionStore:
             "transport_chat_id": row["transport_chat_id"],
             "transport_topic_id": row["transport_topic_id"],
             "transport_channel": row["transport_channel"],
+            "workspace_id": row["workspace_id"],
+            "workspace_kind": row["workspace_kind"],
+            "workspace_relpath": row["workspace_relpath"],
+            "agents_md_relpath": row["agents_md_relpath"],
+            "long_memory_relpath": row["long_memory_relpath"],
+            "visible_topic_name": row["visible_topic_name"],
             "attached": bool(row["attached"]),
             "thread_id": row["thread_id"],
             "active_turn_id": row["active_turn_id"],
@@ -93,6 +101,12 @@ class SessionStore:
             session.transport_chat_id,
             session.transport_topic_id,
             session.transport_channel,
+            session.workspace_id,
+            session.workspace_kind,
+            session.workspace_relpath,
+            session.agents_md_relpath,
+            session.long_memory_relpath,
+            session.visible_topic_name,
             1 if session.attached else 0,
             session.status,
             session.thread_id,
@@ -129,6 +143,7 @@ class SessionStore:
             """
             INSERT INTO sessions(
                 session_id, transport, transport_user_id, transport_chat_id, transport_topic_id, transport_channel,
+                workspace_id, workspace_kind, workspace_relpath, agents_md_relpath, long_memory_relpath, visible_topic_name,
                 attached, status, thread_id, active_turn_id, last_completed_turn_id, current_trace_id,
                 instructions_dirty, last_seen_generation, created_at, last_user_message_at, last_agent_message_at,
                 streaming_message_id, streaming_message_ids_json, thinking_message_id, thinking_message_ids_json,
@@ -137,7 +152,7 @@ class SessionStore:
                 thinking_message_text, thinking_history_text, last_thinking_sent_text, pending_output_text,
                 queued_user_input_text, pending_output_updated_at, last_delivered_output_text
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(session_id) DO UPDATE SET
                 transport = excluded.transport,
@@ -145,6 +160,12 @@ class SessionStore:
                 transport_chat_id = excluded.transport_chat_id,
                 transport_topic_id = excluded.transport_topic_id,
                 transport_channel = excluded.transport_channel,
+                workspace_id = excluded.workspace_id,
+                workspace_kind = excluded.workspace_kind,
+                workspace_relpath = excluded.workspace_relpath,
+                agents_md_relpath = excluded.agents_md_relpath,
+                long_memory_relpath = excluded.long_memory_relpath,
+                visible_topic_name = excluded.visible_topic_name,
                 attached = excluded.attached,
                 status = excluded.status,
                 thread_id = excluded.thread_id,
@@ -222,6 +243,7 @@ class SessionStore:
 
     def save(self, state: SessionStoreState) -> None:
         with _SESSION_STORE_LOCK:
+            bound_sessions = [self.workspace_manager.bind_session(session) for session in state.sessions]
             session_ids = {session.session_id for session in state.sessions}
             with self.storage.transaction() as connection:
                 protected_clause = """
@@ -241,9 +263,9 @@ class SessionStore:
                     )
                 else:
                     connection.execute(f"DELETE FROM sessions WHERE 1 = 1 {protected_clause}")
-                for session in state.sessions:
-                    self._upsert_session(connection, session)
-                    self._touch_short_memory(session.session_id, connection)
+                for bound in bound_sessions:
+                    self._upsert_session(connection, bound)
+                    self._touch_short_memory(bound.session_id, connection)
 
     @staticmethod
     def is_writable(session: SessionRecord) -> bool:
@@ -269,14 +291,29 @@ class SessionStore:
     def _matches_local_channel(session: SessionRecord, channel: str) -> bool:
         return session.transport == "local" and session.transport_channel == channel
 
-    def get_or_create_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord:
+    def get_or_create_telegram_session(
+        self,
+        auth: AuthState,
+        topic_id: int | None = None,
+        *,
+        visible_topic_name: str | None = None,
+    ) -> SessionRecord:
+        normalized_visible_name = (visible_topic_name or "").strip() or None
         with _SESSION_STORE_LOCK:
             state = self.load()
             matching = [s for s in state.sessions if self._matches_transport(s, auth, topic_id) and s.attached]
             active = next((s for s in matching if self.is_writable(s)), None)
             if active is not None:
+                if normalized_visible_name and active.visible_topic_name != normalized_visible_name:
+                    active.visible_topic_name = normalized_visible_name
+                    self.save_session(active)
                 return active
             if matching:
+                current = matching[-1]
+                if normalized_visible_name and current.visible_topic_name != normalized_visible_name:
+                    current.visible_topic_name = normalized_visible_name
+                    self.save_session(current)
+                    return current
                 return matching[-1]
             session = SessionRecord(
                 session_id=str(uuid.uuid4()),
@@ -284,8 +321,10 @@ class SessionStore:
                 transport_user_id=auth.telegram_user_id,
                 transport_chat_id=auth.telegram_chat_id,
                 transport_topic_id=topic_id,
+                visible_topic_name=normalized_visible_name,
             )
             self.save_session(session)
+            self.workspace_manager.ensure_session_workspace(session, visible_topic_name=normalized_visible_name)
             self._touch_short_memory(session.session_id)
             return session
 
@@ -293,6 +332,7 @@ class SessionStore:
         with _SESSION_STORE_LOCK:
             existing = self._select_single_session("WHERE session_id = ?", (updated_session.session_id,))
             session = self._stabilize_session(updated_session, existing)
+            session = self.workspace_manager.bind_session(session)
             with self.storage.transaction() as connection:
                 self._upsert_session(connection, session)
                 self._touch_short_memory(session.session_id, connection)
@@ -307,7 +347,14 @@ class SessionStore:
         self.save_session(session)
         return session
 
-    def create_new_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord:
+    def create_new_telegram_session(
+        self,
+        auth: AuthState,
+        topic_id: int | None = None,
+        *,
+        visible_topic_name: str | None = None,
+    ) -> SessionRecord:
+        normalized_visible_name = (visible_topic_name or "").strip() or None
         with _SESSION_STORE_LOCK:
             state = self.load()
             for session in state.sessions:
@@ -320,9 +367,11 @@ class SessionStore:
                 transport_user_id=auth.telegram_user_id,
                 transport_chat_id=auth.telegram_chat_id,
                 transport_topic_id=topic_id,
+                visible_topic_name=normalized_visible_name,
             )
             state.sessions.append(session)
             self.save(state)
+            self.workspace_manager.ensure_session_workspace(session, visible_topic_name=normalized_visible_name)
             self._touch_short_memory(session.session_id)
             return session
 
@@ -346,6 +395,7 @@ class SessionStore:
                 transport_channel=normalized,
             )
             self.save_session(session)
+            self.workspace_manager.ensure_session_workspace(session)
             self._touch_short_memory(session.session_id)
             return session
 
@@ -368,6 +418,7 @@ class SessionStore:
             )
             state.sessions.append(session)
             self.save(state)
+            self.workspace_manager.ensure_session_workspace(session)
             self._touch_short_memory(session.session_id)
             return session
 

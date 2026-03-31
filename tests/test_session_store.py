@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from contextlib import closing
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.models import AuthState, SessionRecord
 from core.paths import build_paths
 from runtime.session_store import SessionStore
+from runtime.workspaces import WorkspaceManager
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -209,6 +213,81 @@ class SessionStoreTests(unittest.TestCase):
             self.assertEqual(len(sessions), 1)
             self.assertEqual(sessions[0].session_id, replacement.session_id)
             self.assertEqual(replacement.transport_channel, "main")
+
+    def test_root_session_is_bound_to_workspace_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = SessionStore(paths)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+
+            session = store.get_or_create_telegram_session(auth)
+
+            self.assertEqual(session.workspace_kind, "root")
+            self.assertEqual(session.workspace_relpath, "workspace")
+            self.assertEqual(session.agents_md_relpath, "workspace/AGENTS.md")
+            self.assertEqual(session.long_memory_relpath, "workspace/long_memory.md")
+
+    def test_topic_workspace_name_is_stable_across_visible_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            manager = WorkspaceManager(paths)
+
+            original = manager.get_or_create_topic_workspace(chat_id=22, topic_id=101, visible_name="Bayonne pump")
+            renamed = manager.get_or_create_topic_workspace(chat_id=22, topic_id=101, visible_name="Bayonne pump urgent")
+
+            self.assertEqual(original.workspace_id, renamed.workspace_id)
+            self.assertEqual(original.relpath, renamed.relpath)
+            self.assertEqual(renamed.visible_name, "Bayonne pump urgent")
+            self.assertIn("Bayonne pump", original.relpath)
+
+    def test_workspace_scaffolding_creates_agent_long_memory_and_git_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            manager = WorkspaceManager(paths)
+
+            root = manager.ensure_workspace_initialized(manager.get_or_create_root_workspace().workspace_id)
+            topic = manager.ensure_workspace_initialized(
+                manager.get_or_create_topic_workspace(chat_id=22, topic_id=101, visible_name="Bayonne pump").workspace_id
+            )
+
+            self.assertTrue((paths.root / root.agents_md_relpath).exists())
+            self.assertTrue((paths.root / root.long_memory_relpath).exists())
+            self.assertTrue((paths.root / root.relpath / ".git").exists())
+            self.assertTrue((paths.root / topic.agents_md_relpath).exists())
+            self.assertTrue((paths.root / topic.relpath / ".git").exists())
+
+    def test_workspace_push_failure_is_logged_when_remote_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            manager = WorkspaceManager(paths)
+            workspace = manager.ensure_workspace_initialized(manager.get_or_create_root_workspace().workspace_id)
+
+            def fake_git(_cwd, *args):
+                if args == ("remote",):
+                    return unittest.mock.Mock(returncode=0, stdout="origin\n", stderr="")
+                if args == ("push",):
+                    return unittest.mock.Mock(returncode=1, stdout="", stderr="push rejected")
+                return original_git(_cwd, *args)
+
+            original_git = manager._git
+            with patch.object(manager, "_git", side_effect=fake_git):
+                self.assertFalse(manager.best_effort_push_workspace(workspace))
+
+            with closing(sqlite3.connect(paths.database)) as connection:
+                row = connection.execute(
+                    """
+                    SELECT event_type, payload_preview
+                    FROM events
+                    WHERE source = 'workspace'
+                    ORDER BY event_id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertEqual(row[0], "workspace.git.push_failed")
+            self.assertIn("push rejected", row[1])
 
 
 if __name__ == "__main__":

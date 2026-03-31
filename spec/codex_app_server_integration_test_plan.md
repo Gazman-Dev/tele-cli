@@ -202,7 +202,7 @@ Tasks:
 - map one Telegram chat/topic to one implicit session
 - resolve a deterministic workspace for each routed session
 - bind direct chat to the root workspace and group topics to topic workspaces
-- ensure topic workspaces, Git submodules, and `AGENT.md` files are bootstrapped on first use
+- ensure topic workspaces, Git linkage metadata, and `AGENTS.md` files are bootstrapped on first use
 - ensure root and topic Git repos get an initial commit and a scaffolded `.gitignore`
 - add `/new` session creation
 
@@ -213,7 +213,7 @@ Tests:
 - resume failure marks session degraded instead of silently replacing the thread
 - direct chat resolves to the root workspace every time
 - a group topic resolves by its visible Telegram topic name to its own stable workspace every time
-- first use of a topic creates its workspace, Git submodule, `.gitignore`, and `AGENT.md`
+- first use of a topic creates its workspace, Git linkage metadata, `.gitignore`, and `AGENTS.md`
 - workspace initialization creates an initial commit
 - `/new` creates a new session and replaces the implicit mapping
 

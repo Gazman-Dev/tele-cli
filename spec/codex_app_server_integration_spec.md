@@ -189,7 +189,7 @@ Workspace and memory companion files remain outside runtime JSON state:
 - `workspace/long_memory.md`
 - `memory/lessons/`
 - `memory/sessions/*.short_memory.md`
-- root and topic `AGENT.md` files under `workspace/`
+- root and topic `AGENTS.md` files under `workspace/`
 
 ### 7.2 Session routing rules
 

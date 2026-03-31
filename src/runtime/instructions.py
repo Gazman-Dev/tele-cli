@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib.resources import files
-import os
 from pathlib import Path
 
 from core.json_store import load_json
@@ -12,7 +11,7 @@ from core.paths import AppPaths
 
 @dataclass(frozen=True)
 class InstructionPaths:
-    repo_root: Path
+    workspace_root: Path
     system_dir: Path
     template: Path
     refresh_template: Path
@@ -20,6 +19,7 @@ class InstructionPaths:
     defaults_dir: Path
     personality: Path
     rules: Path
+    agents_md: Path
     long_memory: Path
     lessons_dir: Path
     session_memory_dir: Path
@@ -45,32 +45,23 @@ RESOURCE_DEFAULT_MAP = {
 SEEDED_MARKER = ".seeded-defaults-v1"
 
 
-def detect_repo_root(fallback: Path) -> Path:
-    configured = os.environ.get("TELE_CLI_REPO_ROOT")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    for candidate in Path(__file__).resolve().parents:
-        if (candidate / "pyproject.toml").exists():
-            return candidate
-    return fallback
-
-
 def build_instruction_paths(paths: AppPaths) -> InstructionPaths:
-    repo_root = detect_repo_root(paths.root)
-    system_dir = repo_root / "system"
+    workspace_root = paths.workspace
+    system_dir = paths.root / "system"
     defaults_dir = system_dir / "defaults"
     return InstructionPaths(
-        repo_root=repo_root,
+        workspace_root=workspace_root,
         system_dir=system_dir,
         template=system_dir / "session_instructions.md",
         refresh_template=system_dir / "refresh_instructions.md",
         sleep_template=system_dir / "sleep_prompt.md",
         defaults_dir=defaults_dir,
-        personality=repo_root / "personality.md",
-        rules=repo_root / "rules.md",
-        long_memory=repo_root / "long_memory.md",
-        lessons_dir=repo_root / "lessons",
-        session_memory_dir=paths.root / "memory" / "sessions",
+        personality=paths.root / "personality.md",
+        rules=paths.root / "rules.md",
+        agents_md=workspace_root / "AGENTS.md",
+        long_memory=workspace_root / "long_memory.md",
+        lessons_dir=paths.lessons,
+        session_memory_dir=paths.session_memory,
     )
 
 
@@ -121,12 +112,13 @@ def _read_resource_text(resource_path: str) -> str:
 
 def ensure_instruction_files(paths: AppPaths) -> InstructionPaths:
     instruction_paths = build_instruction_paths(paths)
+    instruction_paths.workspace_root.mkdir(parents=True, exist_ok=True)
     instruction_paths.system_dir.mkdir(parents=True, exist_ok=True)
     instruction_paths.defaults_dir.mkdir(parents=True, exist_ok=True)
     instruction_paths.session_memory_dir.mkdir(parents=True, exist_ok=True)
     instruction_paths.lessons_dir.mkdir(parents=True, exist_ok=True)
     seeded_marker = instruction_paths.system_dir / SEEDED_MARKER
-    should_seed_state_defaults = instruction_paths.repo_root == paths.root and not seeded_marker.exists()
+    should_seed_state_defaults = not seeded_marker.exists()
     for target_name, resource_name in RESOURCE_TEMPLATE_MAP.items():
         target = instruction_paths.system_dir / target_name
         if target.exists():
@@ -136,7 +128,7 @@ def ensure_instruction_files(paths: AppPaths) -> InstructionPaths:
         default_target = instruction_paths.defaults_dir / target_name
         if not default_target.exists():
             default_target.write_text(_read_resource_text(resource_name), encoding="utf-8")
-        target = instruction_paths.repo_root / target_name
+        target = getattr(instruction_paths, target_name.replace(".md", ""))
         if target.exists() and (not should_seed_state_defaults or target.read_text(encoding="utf-8").strip()):
             continue
         target.write_text(_read_resource_text(resource_name), encoding="utf-8")

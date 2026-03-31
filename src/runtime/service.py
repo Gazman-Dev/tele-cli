@@ -1057,6 +1057,31 @@ def extract_update_topic_id(update: dict) -> int | None:
     return int(topic_id) if isinstance(topic_id, int) else None
 
 
+def extract_update_topic_name(update: dict) -> str | None:
+    message = update.get("message") or {}
+    candidates = [
+        ((message.get("forum_topic_created") or {}).get("name") if isinstance(message.get("forum_topic_created"), dict) else None),
+        ((message.get("forum_topic_edited") or {}).get("name") if isinstance(message.get("forum_topic_edited"), dict) else None),
+        (
+            ((message.get("reply_to_message") or {}).get("forum_topic_created") or {}).get("name")
+            if isinstance((message.get("reply_to_message") or {}).get("forum_topic_created"), dict)
+            else None
+        ),
+        (
+            ((message.get("reply_to_message") or {}).get("forum_topic_edited") or {}).get("name")
+            if isinstance((message.get("reply_to_message") or {}).get("forum_topic_edited"), dict)
+            else None
+        ),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    topic_id = extract_update_topic_id(update)
+    if topic_id is not None:
+        return f"topic-{topic_id}"
+    return None
+
+
 def telegram_media_dir(paths: AppPaths):
     directory = paths.root / "telegram_media"
     directory.mkdir(parents=True, exist_ok=True)
@@ -2577,6 +2602,7 @@ def handle_authorized_message(
     paths: AppPaths | None = None,
     config: Config | None = None,
     source_event_id: str | None = None,
+    visible_topic_name: str | None = None,
 ) -> None:
     if not auth.telegram_chat_id:
         return
@@ -2682,7 +2708,11 @@ def handle_authorized_message(
             )
             return
         prior = session_store.get_current_telegram_session(auth, topic_id)
-        session = session_store.create_new_telegram_session(auth, topic_id)
+        session = session_store.create_new_telegram_session(
+            auth,
+            topic_id,
+            visible_topic_name=visible_topic_name,
+        )
         session.attached = True
         session.thread_id = None
         session.active_turn_id = None
@@ -2946,7 +2976,11 @@ def handle_authorized_message(
     recovered_from_stale_turn = False
     trace_store = TraceStore(paths, run_id=runtime_state.session_id) if paths is not None else None
     if session_store is not None:
-        tracked_session = session_store.get_or_create_telegram_session(auth, topic_id)
+        tracked_session = session_store.get_or_create_telegram_session(
+            auth,
+            topic_id,
+            visible_topic_name=visible_topic_name,
+        )
         if not tracked_session.active_turn_id:
             _clear_streaming_messages(telegram, tracked_session.transport_chat_id or auth.telegram_chat_id, tracked_session)
             tracked_session.pending_output_text = ""
@@ -3011,59 +3045,28 @@ def handle_authorized_message(
             )
         if performance is not None:
             performance.mark_turn_requested(tracked_session, topic_id=topic_id, text=text)
+    send_attempts = [
+        lambda: codex.send(
+            text,
+            topic_id=topic_id,
+            chat_id=auth.telegram_chat_id,
+            user_id=auth.telegram_user_id,
+            visible_topic_name=visible_topic_name,
+        ),
+        lambda: codex.send(text, topic_id=topic_id, chat_id=auth.telegram_chat_id, user_id=auth.telegram_user_id),
+        lambda: codex.send(text, topic_id=topic_id),
+        lambda: codex.send(text),
+    ]
     try:
-        send_result = codex.send(text, topic_id=topic_id, chat_id=auth.telegram_chat_id, user_id=auth.telegram_user_id)
-        recovered_from_stale_turn = bool(send_result)
-    except TypeError:
-        try:
-            send_result = codex.send(text, topic_id=topic_id)
-            recovered_from_stale_turn = bool(send_result)
-        except TypeError:
+        for attempt in send_attempts:
             try:
-                send_result = codex.send(text)
+                send_result = attempt()
                 recovered_from_stale_turn = bool(send_result)
-            except Exception as exc:
-                publish_codex_request_error(
-                    session_store,
-                    auth,
-                    telegram,
-                    topic_id=topic_id,
-                    error_text=str(exc),
-                    performance=performance,
-                )
-                reset_session_after_request_failure(
-                    session_store,
-                    auth,
-                    telegram=telegram,
-                    topic_id=topic_id,
-                    error_text=str(exc),
-                    clear_messages=False,
-                )
-                if performance is not None and session_id is not None:
-                    performance.mark_turn_failed(session_id, error=str(exc))
-                log_request_failure(trace_store, session_store, auth, topic_id, str(exc))
-                return
-        except Exception as exc:
-            publish_codex_request_error(
-                session_store,
-                auth,
-                telegram,
-                topic_id=topic_id,
-                error_text=str(exc),
-                performance=performance,
-            )
-            reset_session_after_request_failure(
-                session_store,
-                auth,
-                telegram=telegram,
-                topic_id=topic_id,
-                error_text=str(exc),
-                clear_messages=False,
-            )
-            if performance is not None and session_id is not None:
-                performance.mark_turn_failed(session_id, error=str(exc))
-            log_request_failure(trace_store, session_store, auth, topic_id, str(exc))
-            return
+                break
+            except TypeError:
+                continue
+        else:
+            raise RuntimeError("Codex runtime does not support a compatible send signature.")
     except Exception as exc:
         publish_codex_request_error(
             session_store,
@@ -3122,6 +3125,7 @@ def process_telegram_update(
     update_id = update.get("update_id")
     trace_store = TraceStore(paths, run_id=runtime_state.session_id)
     topic_id = extract_update_topic_id(update)
+    visible_topic_name = extract_update_topic_name(update)
     message = update.get("message", {}) or {}
     chat_id = message.get("chat", {}).get("id")
     if isinstance(update_id, int):
@@ -3344,6 +3348,7 @@ def process_telegram_update(
             paths=paths,
             config=config,
             source_event_id=source_event_id,
+            visible_topic_name=visible_topic_name,
         )
         return codex
 
@@ -3375,6 +3380,7 @@ def process_telegram_update(
             paths=paths,
             config=config,
             source_event_id=source_event_id,
+            visible_topic_name=visible_topic_name,
         )
     return codex
 

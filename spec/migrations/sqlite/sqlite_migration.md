@@ -20,7 +20,7 @@ This migration covers:
 
 This migration does not require:
 
-- moving user-editable workspace files such as `personality.md`, `rules.md`, `workspace/long_memory.md`, or `AGENT.md`
+- moving user-editable workspace files such as `personality.md`, `rules.md`, `workspace/long_memory.md`, or `AGENTS.md`
 - storing large raw payloads directly in SQLite
 
 ## Required Outcomes

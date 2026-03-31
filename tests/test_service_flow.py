@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from datetime import datetime, timedelta, timezone
 import sqlite3
@@ -111,7 +112,7 @@ class ImmediateDeliveryManager:
 
 
 def load_event_types(paths) -> list[str]:
-    with sqlite3.connect(paths.database) as connection:
+    with closing(sqlite3.connect(paths.database)) as connection:
         rows = connection.execute("SELECT event_type FROM events ORDER BY event_id").fetchall()
     return [str(row[0]) for row in rows]
 
@@ -126,7 +127,7 @@ def load_events(paths, *, event_type: str | None = None) -> list[dict]:
         query += " WHERE event_type = ?"
         params = (event_type,)
     query += " ORDER BY event_id"
-    with sqlite3.connect(paths.database) as connection:
+    with closing(sqlite3.connect(paths.database)) as connection:
         rows = connection.execute(query, params).fetchall()
     events: list[dict] = []
     for row in rows:
@@ -149,7 +150,7 @@ def load_events(paths, *, event_type: str | None = None) -> list[dict]:
 
 
 def load_recovery_messages(paths) -> list[str]:
-    with sqlite3.connect(paths.database) as connection:
+    with closing(sqlite3.connect(paths.database)) as connection:
         rows = connection.execute(
             "SELECT payload_json FROM events WHERE source = 'service' AND event_type = 'service.recovery' ORDER BY event_id"
         ).fetchall()
@@ -220,6 +221,11 @@ class RecoveringCodex(FakeCodex):
 
 
 class ServiceFlowTests(unittest.TestCase):
+    def _register_codex_cleanup(self, codex):
+        if hasattr(codex, "stop"):
+            self.addCleanup(codex.stop)
+        return codex
+
     def setUp(self) -> None:
         self.paths = build_paths(Path.cwd() / ".test_state" / "service_flow" / str(uuid.uuid4()))
         self.config = Config(state_dir=str(self.paths.root))
@@ -1035,7 +1041,7 @@ class ServiceFlowTests(unittest.TestCase):
         server.on("getAccount", lambda payload: {"status": "ready", "accountType": "chatgpt"})
         start_fn = make_app_server_start_fn(self.paths, lambda config, auth: transport)
 
-        codex = bootstrap_paired_codex(
+        codex = self._register_codex_cleanup(bootstrap_paired_codex(
             paths=self.paths,
             config=self.config,
             auth=auth,
@@ -1047,7 +1053,7 @@ class ServiceFlowTests(unittest.TestCase):
             handle_output=lambda source, line: None,
             codex=None,
             start_codex_session_fn=start_fn,
-        )
+        ))
 
         self.assertIsNotNone(codex)
         self.assertEqual(self.runtime_state.codex_state, "RUNNING")
@@ -1068,7 +1074,7 @@ class ServiceFlowTests(unittest.TestCase):
         server.on("login/account", lambda payload: {"type": "chatgpt", "authUrl": "https://example.test/login"})
         start_fn = make_app_server_start_fn(self.paths, lambda config, auth: transport)
 
-        codex = bootstrap_paired_codex(
+        codex = self._register_codex_cleanup(bootstrap_paired_codex(
             paths=self.paths,
             config=self.config,
             auth=auth,
@@ -1080,7 +1086,7 @@ class ServiceFlowTests(unittest.TestCase):
             handle_output=lambda source, line: None,
             codex=None,
             start_codex_session_fn=start_fn,
-        )
+        ))
 
         self.assertIsNotNone(codex)
         self.assertEqual(self.runtime_state.codex_state, "AUTH_REQUIRED")

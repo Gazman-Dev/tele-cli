@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import sqlite3
 import tempfile
@@ -27,7 +28,7 @@ from tests.fakes.fake_telegram import FakeTelegramClient
 
 
 def load_event_records(paths) -> list[dict]:
-    with sqlite3.connect(paths.database) as connection:
+    with closing(sqlite3.connect(paths.database)) as connection:
         rows = connection.execute("SELECT event_type, payload_json FROM events ORDER BY event_id").fetchall()
     return [
         {"event_type": str(row[0]), "payload": json.loads(str(row[1])) if row[1] else None}
@@ -36,6 +37,17 @@ def load_event_records(paths) -> list[dict]:
 
 
 class AppServerRuntimeTests(unittest.TestCase):
+    def _bootstrap_session(self, **kwargs) -> AppServerSession:
+        session = bootstrap_app_server_session(**kwargs)
+        self.addCleanup(session.stop)
+        return session
+
+    def _start_session(self, start_fn, *args, **kwargs):
+        session = start_fn(*args, **kwargs)
+        if session is not None:
+            self.addCleanup(session.stop)
+        return session
+
     def test_build_app_server_command_uses_stdio_mode(self) -> None:
         config = Config(state_dir="/repo", codex_command=["codex"])
         self.assertEqual(build_app_server_command(config), ["codex", "app-server", "--listen", "stdio://"])
@@ -112,7 +124,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
             server.on("getAccount", lambda payload: {"status": "ready", "accountType": "chatgpt"})
 
-            session = bootstrap_app_server_session(
+            session = self._bootstrap_session(
                 paths=paths,
                 auth=AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now"),
                 runtime=runtime,
@@ -152,7 +164,7 @@ class AppServerRuntimeTests(unittest.TestCase):
             server.on("getAccount", lambda payload: {"status": "auth_required"})
             server.on("login/account", lambda payload: {"type": "chatgpt", "authUrl": "https://example.test/login"})
 
-            bootstrap_app_server_session(
+            self._bootstrap_session(
                 paths=paths,
                 auth=AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now"),
                 runtime=runtime,
@@ -206,7 +218,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            session = bootstrap_app_server_session(
+            session = self._bootstrap_session(
                 paths=paths,
                 auth=AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now"),
                 runtime=runtime,
@@ -225,11 +237,11 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(thread_start["params"]["sandbox"], "danger-full-access")
         self.assertEqual(thread_start["params"]["approvalPolicy"], "never")
         self.assertEqual(thread_start["params"]["personality"], "pragmatic")
-        self.assertEqual(thread_start["params"]["cwd"], str(build_instruction_paths(paths).repo_root))
+        self.assertEqual(thread_start["params"]["cwd"], str(build_instruction_paths(paths).workspace_root))
         turn_start = next(payload for payload in server.received if payload["method"] == "turn/start")
         self.assertEqual(turn_start["params"]["approvalPolicy"], "never")
         self.assertEqual(turn_start["params"]["sandboxPolicy"], {"type": "dangerFullAccess"})
-        self.assertEqual(turn_start["params"]["cwd"], str(build_instruction_paths(paths).repo_root))
+        self.assertEqual(turn_start["params"]["cwd"], str(build_instruction_paths(paths).workspace_root))
         self.assertEqual(turn_start["params"]["personality"], "pragmatic")
         first_input = turn_start["params"]["input"][0]["text"]
         self.assertIn("You are Tele Cli, a Telegram-first personal assistant", first_input)
@@ -240,6 +252,41 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(turn_steer["params"]["turnId"], "turn-1")
         self.assertEqual(turn_steer["params"]["expectedTurnId"], "turn-1")
         self.assertEqual(turn_steer["params"]["input"], [{"type": "text", "text": "again"}])
+
+    def test_app_server_session_send_uses_topic_workspace_cwd(self) -> None:
+        transport = InMemoryJsonRpcTransport()
+        server = FakeAppServer(transport)
+        server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
+        server.on("getAccount", lambda payload: {"status": "ready"})
+        server.on("thread/start", lambda payload: {"threadId": "thread-topic"})
+        server.on("turn/start", lambda payload: {"turnId": "turn-topic"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            runtime_state = RuntimeState(
+                session_id="1",
+                service_state="RUNNING",
+                codex_state="STOPPED",
+                telegram_state="RUNNING",
+                recorder_state="RUNNING",
+                debug_state="RUNNING",
+            )
+            runtime = ServiceRuntime(runtime_state)
+            session = self._bootstrap_session(
+                paths=paths,
+                auth=AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now"),
+                runtime=runtime,
+                runtime_state=runtime_state,
+                transport=transport,
+                config=Config(state_dir=str(paths.root)),
+            )
+            session.send("hello", topic_id=77, visible_topic_name="Bayonne pump")
+
+            thread_start = next(payload for payload in server.received if payload["method"] == "thread/start")
+            turn_start = next(payload for payload in server.received if payload["method"] == "turn/start")
+            expected_cwd = paths.workspace / "topics" / "Bayonne pump"
+            self.assertEqual(thread_start["params"]["cwd"], str(expected_cwd))
+            self.assertEqual(turn_start["params"]["cwd"], str(expected_cwd))
 
     def test_app_server_session_send_retries_steer_until_turn_is_active(self) -> None:
         transport = InMemoryJsonRpcTransport()
@@ -269,7 +316,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            session = bootstrap_app_server_session(
+            session = self._bootstrap_session(
                 paths=paths,
                 auth=AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now"),
                 runtime=runtime,
@@ -310,7 +357,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            session = bootstrap_app_server_session(
+            session = self._bootstrap_session(
                 paths=paths,
                 auth=auth,
                 runtime=runtime,
@@ -390,7 +437,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            session = bootstrap_app_server_session(
+            session = self._bootstrap_session(
                 paths=paths,
                 auth=auth,
                 runtime=runtime,
@@ -435,7 +482,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            session = bootstrap_app_server_session(
+            session = self._bootstrap_session(
                 paths=paths,
                 auth=auth,
                 runtime=runtime,
@@ -477,7 +524,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            session = bootstrap_app_server_session(
+            session = self._bootstrap_session(
                 paths=paths,
                 auth=auth,
                 runtime=runtime,
@@ -518,7 +565,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            session = bootstrap_app_server_session(
+            session = self._bootstrap_session(
                 paths=paths,
                 auth=AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now"),
                 runtime=runtime,
@@ -563,7 +610,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime1 = ServiceRuntime(runtime_state1)
-            session1 = bootstrap_app_server_session(
+            session1 = self._bootstrap_session(
                 paths=paths,
                 auth=auth,
                 runtime=runtime1,
@@ -598,7 +645,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime2 = ServiceRuntime(runtime_state2)
-            session2 = bootstrap_app_server_session(
+            session2 = self._bootstrap_session(
                 paths=paths,
                 auth=auth,
                 runtime=runtime2,
@@ -640,7 +687,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            bootstrap_app_server_session(
+            self._bootstrap_session(
                 paths=paths,
                 auth=auth,
                 runtime=runtime,
@@ -684,7 +731,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            bootstrap_app_server_session(
+            self._bootstrap_session(
                 paths=paths,
                 auth=auth,
                 runtime=runtime,
@@ -732,7 +779,8 @@ class AppServerRuntimeTests(unittest.TestCase):
             telegram = FakeTelegramClient()
             start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
 
-            session = start_fn(
+            session = self._start_session(
+                start_fn,
                 Config(state_dir=str(paths.root)),
                 auth,
                 runtime,
@@ -766,7 +814,8 @@ class AppServerRuntimeTests(unittest.TestCase):
             server.on("getAccount", lambda payload: {"status": "ready"})
             start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
 
-            session = start_fn(
+            session = self._start_session(
+                start_fn,
                 Config(state_dir=str(paths.root)),
                 auth,
                 runtime,
@@ -801,7 +850,8 @@ class AppServerRuntimeTests(unittest.TestCase):
             server.on("login/account", lambda payload: {"type": "chatgpt", "authUrl": "https://example.test/login"})
             start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
 
-            session = start_fn(
+            session = self._start_session(
+                start_fn,
                 Config(state_dir=str(paths.root)),
                 auth,
                 runtime,
@@ -840,7 +890,8 @@ class AppServerRuntimeTests(unittest.TestCase):
             server.on("getAccount", lambda payload: {"status": "ready"})
             start_fn = make_app_server_start_fn(paths, lambda config, auth: transport)
 
-            session = start_fn(
+            session = self._start_session(
+                start_fn,
                 Config(state_dir=str(paths.root)),
                 auth,
                 runtime,
@@ -1033,7 +1084,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            session = bootstrap_app_server_session(
+            session = self._bootstrap_session(
                 paths=paths,
                 auth=auth,
                 runtime=runtime,
@@ -1076,7 +1127,7 @@ class AppServerRuntimeTests(unittest.TestCase):
                 debug_state="RUNNING",
             )
             runtime = ServiceRuntime(runtime_state)
-            session = bootstrap_app_server_session(
+            session = self._bootstrap_session(
                 paths=paths,
                 auth=auth,
                 runtime=runtime,

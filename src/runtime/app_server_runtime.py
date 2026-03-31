@@ -11,7 +11,7 @@ from storage.operations import TraceStore
 
 from .app_server_client import AppServerClient
 from .approval_store import ApprovalRecord
-from .instructions import build_instruction_paths, render_session_instructions
+from .instructions import render_session_instructions
 from .app_server_process import SubprocessJsonRpcTransport
 from .jsonrpc import JsonRpcClient, JsonRpcNotification, JsonRpcTransport
 from .performance import PerformanceTracker
@@ -164,7 +164,8 @@ class AppServerSession:
                 time.sleep(0.1)
 
     def _start_or_steer_turn(self, session, text: str) -> bool:
-        workspace_cwd = str(build_instruction_paths(self.session_store.paths).repo_root)
+        session = self.session_store.workspace_manager.ensure_session_workspace(session)
+        workspace_cwd = str(self.session_store.workspace_manager.workspace_path_for_session(session))
         if session.status == "RECOVERING_TURN":
             raise RuntimeError("Session is recovering an in-flight turn.")
         stale_active_turn = bool(session.active_turn_id and is_stale_active_turn(session))
@@ -391,13 +392,21 @@ class AppServerSession:
         *,
         chat_id: int | None = None,
         user_id: int | None = None,
+        visible_topic_name: str | None = None,
     ) -> bool:
         scoped_auth = self._scoped_auth(chat_id=chat_id, user_id=user_id)
-        session = self.session_store.get_or_create_telegram_session(scoped_auth, topic_id)
+        session = self.session_store.get_or_create_telegram_session(
+            scoped_auth,
+            topic_id,
+            visible_topic_name=visible_topic_name,
+        )
         return self._start_or_steer_turn(session, text)
 
-    def send_local(self, channel: str, text: str) -> bool:
+    def send_local(self, channel: str, text: str, *, visible_topic_name: str | None = None) -> bool:
         session = self.session_store.get_or_create_local_session(channel)
+        if visible_topic_name and visible_topic_name.strip():
+            session.visible_topic_name = visible_topic_name.strip()
+            self.session_store.save_session(session)
         return self._start_or_steer_turn(session, text)
 
     def interrupt(self, topic_id: int | None = None, *, chat_id: int | None = None, user_id: int | None = None) -> bool:
@@ -547,78 +556,82 @@ def bootstrap_app_server_session(
     )
     rpc = JsonRpcClient(transport)
     rpc.start()
-    client = client_factory(rpc)
-    initialize_result = normalize_initialize_result(client.initialize())
-    _log_app_server_lifecycle(
-        paths,
-        runtime_state,
-        event_type="app_server.initialize.completed",
-        payload={"transport": transport_name, "protocol_version": initialize_result.get("protocolVersion")},
-    )
-    validate_initialize_result(initialize_result)
-    client.initialized()
-    _log_app_server_lifecycle(
-        paths,
-        runtime_state,
-        event_type="app_server.initialized.completed",
-        payload={"transport": transport_name},
-    )
-    account_result = client.get_account()
-    _log_app_server_lifecycle(
-        paths,
-        runtime_state,
-        event_type="app_server.account.received",
-        payload={"transport": transport_name, "codex_state": derive_codex_state(account_result), "account": account_result},
-    )
-    login_result: dict[str, Any] | None = None
-    if derive_codex_state(account_result) == "AUTH_REQUIRED":
+    try:
+        client = client_factory(rpc)
+        initialize_result = normalize_initialize_result(client.initialize())
         _log_app_server_lifecycle(
             paths,
             runtime_state,
-            event_type="app_server.login.started",
-            payload={"provider": "chatgpt"},
+            event_type="app_server.initialize.completed",
+            payload={"transport": transport_name, "protocol_version": initialize_result.get("protocolVersion")},
         )
-        try:
-            login_result = client.login_account("chatgpt")
-        except Exception as exc:
+        validate_initialize_result(initialize_result)
+        client.initialized()
+        _log_app_server_lifecycle(
+            paths,
+            runtime_state,
+            event_type="app_server.initialized.completed",
+            payload={"transport": transport_name},
+        )
+        account_result = client.get_account()
+        _log_app_server_lifecycle(
+            paths,
+            runtime_state,
+            event_type="app_server.account.received",
+            payload={"transport": transport_name, "codex_state": derive_codex_state(account_result), "account": account_result},
+        )
+        login_result: dict[str, Any] | None = None
+        if derive_codex_state(account_result) == "AUTH_REQUIRED":
             _log_app_server_lifecycle(
                 paths,
                 runtime_state,
-                event_type="app_server.login.failed",
-                payload={"provider": "chatgpt", "error": str(exc)},
+                event_type="app_server.login.started",
+                payload={"provider": "chatgpt"},
             )
-            login_result = None
-        else:
-            _log_app_server_lifecycle(
-                paths,
-                runtime_state,
-                event_type="app_server.login.completed",
-                payload={"provider": "chatgpt", "result": login_result},
-            )
-    session_store = SessionStore(paths)
-    recover_inflight_sessions(client, session_store)
-    _log_app_server_lifecycle(
-        paths,
-        runtime_state,
-        event_type="app_server.recovery.completed",
-        payload={"recovered_sessions": len(session_store.load().sessions)},
-    )
-    codex_server_state = build_codex_server_state(
-        transport=transport_name,
-        initialize_result=initialize_result,
-        account_result=account_result,
-        login_result=login_result,
-    )
-    save_codex_server_state(paths, codex_server_state)
-    runtime.set_codex_state(derive_codex_state(account_result))
-    save_runtime_state(paths, runtime_state)
-    _log_app_server_lifecycle(
-        paths,
-        runtime_state,
-        event_type="app_server.bootstrap.completed",
-        payload={"transport": transport_name, "codex_state": runtime_state.codex_state},
-    )
-    return AppServerSession(client, session_store, auth, config, performance=performance)
+            try:
+                login_result = client.login_account("chatgpt")
+            except Exception as exc:
+                _log_app_server_lifecycle(
+                    paths,
+                    runtime_state,
+                    event_type="app_server.login.failed",
+                    payload={"provider": "chatgpt", "error": str(exc)},
+                )
+                login_result = None
+            else:
+                _log_app_server_lifecycle(
+                    paths,
+                    runtime_state,
+                    event_type="app_server.login.completed",
+                    payload={"provider": "chatgpt", "result": login_result},
+                )
+        session_store = SessionStore(paths)
+        recover_inflight_sessions(client, session_store)
+        _log_app_server_lifecycle(
+            paths,
+            runtime_state,
+            event_type="app_server.recovery.completed",
+            payload={"recovered_sessions": len(session_store.load().sessions)},
+        )
+        codex_server_state = build_codex_server_state(
+            transport=transport_name,
+            initialize_result=initialize_result,
+            account_result=account_result,
+            login_result=login_result,
+        )
+        save_codex_server_state(paths, codex_server_state)
+        runtime.set_codex_state(derive_codex_state(account_result))
+        save_runtime_state(paths, runtime_state)
+        _log_app_server_lifecycle(
+            paths,
+            runtime_state,
+            event_type="app_server.bootstrap.completed",
+            payload={"transport": transport_name, "codex_state": runtime_state.codex_state},
+        )
+        return AppServerSession(client, session_store, auth, config, performance=performance)
+    except Exception:
+        rpc.close()
+        raise
 
 
 def make_app_server_start_fn(

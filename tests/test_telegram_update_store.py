@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -51,7 +52,7 @@ class TelegramUpdateStoreTests(unittest.TestCase):
                 )
             )
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 row = connection.execute(
                     "SELECT chat_id, topic_id, payload_preview, artifact_id FROM telegram_updates WHERE update_id = 404"
                 ).fetchone()
@@ -73,7 +74,7 @@ class TelegramUpdateStoreTests(unittest.TestCase):
                 )
             )
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 row = connection.execute(
                     "SELECT payload_preview, artifact_id FROM telegram_updates WHERE update_id = 505"
                 ).fetchone()
@@ -89,7 +90,7 @@ class TelegramUpdateStoreTests(unittest.TestCase):
             self.assertTrue(store.mark_processed(606, payload={"message": {"text": "x" * 9000}}))
             self.assertFalse(store.mark_processed(606, payload={"message": {"text": "x" * 9000}}))
 
-            with sqlite3.connect(paths.database) as connection:
+            with closing(sqlite3.connect(paths.database)) as connection:
                 artifact_count = connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
                 update_row = connection.execute(
                     "SELECT artifact_id FROM telegram_updates WHERE update_id = 606"

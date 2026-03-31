@@ -34,4 +34,4 @@ This directory is organized by area so runtime behavior, UX behavior, storage de
 - `workspace/topics/` holds topic workspaces.
 - `workspace/long_memory.md` is durable committed memory.
 - `memory/lessons/` and `memory/sessions/*.short_memory.md` are temporary Tele-CLI memory files.
-- `AGENT.md` files are Codex-managed workspace memory files that Tele-CLI only scaffolds.
+- `AGENTS.md` files are Codex-managed workspace memory files that Tele-CLI only scaffolds.

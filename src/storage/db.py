@@ -26,6 +26,7 @@ _REQUIRED_TABLES = (
     "app_state",
     "sessions",
     "session_short_memory",
+    "workspaces",
     "telegram_updates",
     "traces",
     "approvals",
