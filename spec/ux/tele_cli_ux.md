@@ -1,205 +1,527 @@
-# Tele Cli UX Spec
+# Tele-Cli CLI UX Specification
 
-## Status
+## 1. Product Identity
 
-- Status: active working spec
-- Date: March 31, 2026
-- Scope: user-facing behavior across Telegram, local shell, and local chat
+**Tele-Cli** is a lightweight background service that connects:
 
-## Goal
+```
+Telegram ↔ Tele-Cli ↔ Codex
+```
 
-Tele Cli should feel like one personal assistant that happens to expose multiple surfaces, not like separate tools glued together.
+Tele-Cli runs locally and exposes control via Telegram.
 
-The operator should always understand:
+The CLI is only used for:
 
-- where to talk to it
-- what state it is in
-- how to recover when something is broken
+* installation
+* setup
+* status
+* lifecycle control
 
-## Product Identity
+Once configured, the CLI should rarely be opened.
 
-Tele Cli is:
+---
 
-- local-first
-- single-operator
-- Telegram-first for normal use
-- app-shell-first for setup and maintenance
-- direct and low-friction
+# 2. Installation Experience
 
-It is not a generic bot for multiple people.
+Tele-Cli supports two entry paths.
 
-## User Surfaces
+### Method A — Remote Install
+
+```
+curl -s https://github.com/<repo>/install.sh | bash
+```
+
+Installer performs automatically:
+
+1. Download Tele-Cli
+2. Install dependencies
+3. Create config directory
+4. Register `tele-cli` command
+5. Start Tele-Cli service
+6. Launch setup flow if needed
+
+Installer output should be minimal:
+
+```
+Installing Tele-Cli...
+
+Installing dependencies
+Installing Codex
+Creating configuration
+Starting Tele-Cli service
+
+Installation complete.
+```
+
+If setup is required, Tele-Cli launches immediately.
+
+---
+
+### Method B — Local Command
+
+```
+tele-cli
+```
+
+This opens the **main status screen**.
+
+---
+
+# 3. Dependency Handling
+
+Tele-Cli must **never ask permission** for dependencies.
+
+If a dependency is missing:
+
+```
+Checking dependencies...
+
+Installing Codex
+Installing npm
+Installing required Python packages
+```
+
+All required tools are installed automatically.
+
+Failures produce a clear error:
+
+```
+Dependency installation failed: Codex
+
+Check internet connection and run:
+
+tele-cli setup
+```
+
+---
+
+# 4. Tele-Cli Service Behavior
+
+Tele-Cli runs as a **background service**.
+
+On launch it checks:
+
+```
+Is service already running?
+```
+
+Possible outcomes:
+
+### Case 1 — Service running
+
+```
+Tele-Cli service already running.
+```
+
+User enters the status screen.
+
+---
+
+### Case 2 — Service blocked by another instance
+
+Example:
+
+```
+Another Tele-Cli instance detected (PID 8421)
+
+Kill the running instance and start a new one?
+```
+
+Options:
+
+```
+Kill and restart
+Cancel
+```
+
+If confirmed:
+
+```
+Stopping previous instance...
+Starting Tele-Cli...
+```
+
+---
+
+# 5. Main Status Screen
+
+The main screen is a **status dashboard**.
+
+Displayed when running:
+
+```
+tele-cli
+```
+
+Information shown:
+
+```
+Tele-Cli v0.1.0
+────────────────────────
+
+Service: running
+Codex: authenticated / not authenticated
+Telegram: paired / not paired
+
+Status: <one-line error or message>
+```
+
+Examples:
+
+```
+Status: waiting for Telegram commands
+```
+
+or
+
+```
+Status: Telegram connection lost
+```
+
+or
+
+```
+Status: Codex authentication required
+```
+
+---
+
+# 6. Setup Flow
+
+If configuration is missing:
+
+```
+Configuration required
+Launching setup
+```
+
+Setup consists of two screens:
+
+1. Telegram token
+2. Telegram pairing
+
+---
+
+# 7. Consistent Input Screen Pattern
+
+All user input screens share the same structure:
+
+```
+Top section:
+  Explanation
+  Instructions
+  Helpful links
+
+Bottom section:
+  Text input field
+```
+
+Input area always stays at the bottom of the screen.
+
+This creates a **consistent mental model** for entering data.
+
+---
+
+# 8. Telegram Token Setup Screen
+
+Full-screen step.
+
+Top section explains the process clearly.
+
+Example content:
+
+```
+Telegram Bot Setup
+────────────────────────
+
+Tele-Cli requires a Telegram bot token.
+
+Steps to obtain it:
+
+1. Open Telegram
+2. Search for: BotFather
+3. Send: /newbot
+4. Choose a name
+5. Copy the bot token provided
+
+Paste the token below.
+```
+
+Bottom input field:
+
+```
+Bot Token:
+>
+```
+
+Validation occurs immediately after submission.
+
+If invalid:
+
+```
+Invalid Telegram token.
+
+Please paste the token exactly as provided by BotFather.
+```
+
+If valid:
+
+```
+Telegram token saved.
+```
+
+Proceed to pairing.
+
+---
+
+# 9. Pairing Screen
+
+Second full-screen setup step.
+
+Tele-Cli generates a pairing code.
+
+Top section:
+
+```
+Telegram Pairing
+────────────────────────
+
+To connect this machine:
+
+1. Open your Telegram bot
+2. Send the following command:
+
+/pair <code>
+
+Pairing code:
+  738214
+```
+
+Bottom input area shows progress:
+
+```
+Waiting for pairing confirmation...
+```
+
+Once Telegram confirms:
+
+```
+Device successfully paired.
+```
+
+Setup completes.
+
+---
+
+# 10. Setup Completion
+
+After pairing:
+
+```
+Setup complete.
+Starting Tele-Cli service...
+```
+
+User returns automatically to the **main status screen**.
+
+---
+
+# 11. Logging Behavior
+
+Logs are always enabled.
+
+They are **not exposed in the CLI UI**.
+
+Stored automatically in:
+
+```
+~/.tele-cli/logs/
+```
+
+Files:
+
+```
+tele-cli.log
+telegram.log
+codex.log
+```
+
+Logging properties:
+
+* rotation enabled
+* size limits enforced
+* automatic cleanup
+
+Logs are intended for **technical debugging only**.
+
+Users access them via filesystem.
+
+---
+
+# 12. Auto Start Behavior
+
+After installation:
+
+```
+Tele-Cli service automatically starts
+```
+
+On machine restart:
+
+Tele-Cli should automatically start again.
+
+If startup fails due to existing service:
+
+```
+Existing Tele-Cli instance detected.
+
+Kill it and start Tele-Cli?
+```
+
+---
+
+# 13. Status Indicators
+
+The main screen shows three system states:
+
+### Service
+
+```
+running
+stopped
+starting
+```
+
+---
+
+### Codex
+
+```
+authenticated
+not authenticated
+installing
+```
+
+---
 
 ### Telegram
 
-Telegram is the primary day-to-day interface.
+```
+paired
+not paired
+connecting
+```
 
-It should support:
+---
 
-- normal free-form user messages
-- short operational commands
-- attachments
-- short status and recovery replies
+# 14. Uninstall Flow
 
-Final replies sent to Telegram should prefer simple valid MarkdownV2 when formatting helps readability.
+Uninstall must require **intent confirmation**.
 
-### Interactive app shell
+User command:
 
-The app shell is the primary local control surface.
+```
+tele-cli uninstall
+```
 
-It should own:
+Confirmation screen:
 
-- first-run setup
-- token entry and pairing
-- update and reinstall flows
-- uninstall confirmation
-- duplicate service and stale lock recovery
-- high-level health and repair actions
+```
+You are about to remove Tele-Cli.
 
-### Local chat
+This will delete:
 
-Local chat is a direct on-device conversation path that reuses the same session model without depending on Telegram.
+~/.tele-cli
+Tele-Cli service
+tele-cli command
 
-### Scriptable outbound Telegram sends
+Type REMOVE to continue.
+```
 
-The CLI should support proactive outbound messages, images, and files to:
+Input field:
 
-- `main`
-- `current`
-- an explicit chat id
-- an explicit chat/topic pair
+```
+>
+```
 
-## Interaction Principles
+Only the exact word **REMOVE** proceeds.
 
-### Keep normal replies short
+If entered:
 
-Telegram is a messaging surface. Replies should usually be concise unless the task needs detail.
+```
+Stopping Tele-Cli service
+Removing files
+Removing command
 
-### Make system state legible
+Tele-Cli successfully removed.
+```
 
-When Tele Cli talks about setup, login, degraded mode, or recovery, it should say what it found and what the operator can do next.
+---
 
-### Preserve continuity
+# 15. Version Visibility
 
-If a session is still the active conversation for a chat or topic, follow-up messages should continue that session unless the operator explicitly starts a new one.
+Version should appear in:
 
-### Do not hide repair actions
+* startup screen
+* status screen
+* command output
 
-If the product cannot safely resume a turn or reclaim ownership, the operator should see that explicitly.
+Command:
 
-## Telegram Command Contract
+```
+tele-cli --version
+```
 
-Tele Cli should support these baseline commands in Telegram:
+Output:
 
-- `/status`
-- `/sessions`
-- `/new`
-- `/stop`
-- `/abort`
-- `/model <name>`
-- `/reasoning <minimal|low|medium|high|xhigh>`
-- `/approve <request_id>`
-- `/deny <request_id>`
+```
+Tele-Cli 0.1.0
+```
 
-These commands should be short, predictable, and safe to use from a mobile chat.
+---
 
-## Session UX
+# 16. Error Philosophy
 
-### Telegram sessions
+Errors must always appear as a **single line status message** on the main screen.
 
-For each authorized chat or topic:
+Examples:
 
-- one attached session is considered current
-- `/new` detaches the previous session and creates a fresh attached one
-- detached sessions may finish background work, but new unsuffixed user input routes to the current attached session
+```
+Status: waiting for Telegram connection
+```
 
-### Local sessions
+```
+Status: Codex authentication expired
+```
 
-Local chat and outbound session commands should use the same session naming idea:
+```
+Status: service restarting after crash
+```
 
-- `main`
-- `current`
-- named or implicit local channels as needed by the CLI
+This prevents clutter while keeping users informed.
 
-### Session history visibility
+---
 
-The operator should be able to inspect recent sessions without manually dealing with raw Codex thread ids.
+# 17. UX Principles
 
-## App Shell UX Contract
+Tele-Cli CLI design follows these principles:
 
-The app shell should open for interactive runs of:
+### 1. Zero permission friction
 
-- `tele-cli`
-- `tele-cli menu`
-- `tele-cli setup`
-- `tele-cli update`
-- `tele-cli uninstall`
+Dependencies install automatically.
 
-The shell should present:
+### 2. Single responsibility screens
 
-- a splash or startup frame
-- a status screen with service, Codex, and Telegram state
-- clear next actions
-- setup and repair flows when required
+Each screen performs one task.
 
-## Setup UX Contract
+### 3. Clear system state
 
-Interactive setup should happen inside the app shell.
+Service, Codex, and Telegram always visible.
 
-Required steps:
+### 4. Setup once
 
-1. dependency readiness
-2. Telegram bot token entry and validation
-3. Telegram pairing
-4. service readiness confirmation
+After setup, the CLI is rarely needed.
 
-Raw shell prompts are acceptable only for narrow non-interactive fallback paths.
+### 5. Single interactive shell
 
-## Status UX Contract
-
-The home status view should expose at least:
-
-- service state
-- Codex state
-- Telegram state
-- a one-line summary
-- important details such as pairing state, dependency state, and login-required state
-
-The operator should not need to inspect JSON files to answer basic health questions.
-
-## Failure UX Contract
-
-When something fails, Tele Cli should prefer messages like:
-
-- what failed
-- whether Telegram is still reachable
-- whether recovery is automatic or needs the operator
-- what command or action to take next
-
-Examples of user-visible degraded states:
-
-- Telegram token missing
-- Telegram not paired
-- Codex login required
-- duplicate service registration detected
-- stale lock detected
-- session resume failed
-
-## Non-Interactive Behavior
-
-If no TTY is available, interactive shell behavior should not be forced.
-
-Non-interactive flows may:
-
-- print concise status
-- run direct setup, update, or uninstall subcommands
-- return machine-usable errors
-
-## UX Success Criteria
-
-The UX is correct when:
-
-- normal Telegram use feels lightweight
-- the local shell is the obvious place for setup and repair
-- sessions behave consistently across Telegram and local chat
-- failures are understandable without reading code
+Install, setup, update, repair, and uninstall decisions stay in the same app shell.
