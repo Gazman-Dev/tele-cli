@@ -13,6 +13,12 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("cli", modules)
         self.assertIn("app_shell", modules)
         self.assertIn("app_meta", modules)
+        self.assertIn("telegram_command", modules)
+
+    def test_setup_py_includes_top_level_entry_modules(self) -> None:
+        setup_py = (Path(__file__).resolve().parents[1] / "setup.py").read_text(encoding="utf-8")
+
+        self.assertIn('"telegram_command"', setup_py)
 
 
 if __name__ == "__main__":
