@@ -30,6 +30,32 @@ class RateLimitedTelegram(FakeTelegramClient):
         return super().edit_message_text(chat_id, message_id, text, parse_mode=parse_mode)
 
 
+class CallbackTelegram(FakeTelegramClient):
+    def __init__(self, on_send=None) -> None:
+        super().__init__()
+        self._on_send = on_send
+
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        topic_id: int | None = None,
+        parse_mode: str | None = None,
+        disable_notification: bool = False,
+    ) -> dict:
+        if self._on_send is not None:
+            callback = self._on_send
+            self._on_send = None
+            callback()
+        return super().send_message(
+            chat_id,
+            text,
+            topic_id=topic_id,
+            parse_mode=parse_mode,
+            disable_notification=disable_notification,
+        )
+
+
 class TelegramQueueTests(unittest.TestCase):
     def setUp(self) -> None:
         self.paths = build_paths(Path.cwd() / ".test_state" / "telegram_queue" / str(uuid.uuid4()))
@@ -216,6 +242,53 @@ class TelegramQueueTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(telegram.messages, [(123, "I am currently running")])
+
+    def test_in_flight_send_replacement_is_promoted_to_edit(self) -> None:
+        manager: TelegramDeliveryManager | None = None
+
+        def enqueue_replacement() -> None:
+            assert manager is not None
+            manager.enqueue(
+                op_type="send_message",
+                payload={"text": "I’m tightening the queue lifecycle"},
+                chat_id=123,
+                dedupe_key="group:chunk:0",
+                message_group_id="group",
+            )
+
+        telegram = CallbackTelegram(on_send=enqueue_replacement)
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+
+        manager.enqueue(
+            op_type="send_message",
+            payload={"text": "I’m tightening"},
+            chat_id=123,
+            dedupe_key="group:chunk:0",
+            message_group_id="group",
+        )
+
+        self._expire_pause_and_queue()
+        first = manager.process_next()
+        second = manager.process_next()
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertEqual(telegram.messages, [(123, "I’m tightening")])
+        self.assertEqual(telegram.edits, [(123, 1, "I’m tightening the queue lifecycle")])
+
+        with sqlite3.connect(self.paths.database) as connection:
+            rows = connection.execute(
+                """
+                SELECT op_type, telegram_message_id
+                FROM telegram_outbound_queue
+                WHERE dedupe_key = ?
+                ORDER BY created_at ASC
+                """,
+                ("group:chunk:0",),
+            ).fetchall()
+        self.assertEqual([str(row[0]) for row in rows], ["send_message", "edit_message"])
+        self.assertEqual([int(row[1]) for row in rows], [1, 1])
 
 
 if __name__ == "__main__":

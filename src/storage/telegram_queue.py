@@ -170,6 +170,75 @@ class TelegramDeliveryManager:
         self._wake_event.set()
         return queue_id
 
+    def _decode_payload(self, payload_json: str) -> dict[str, Any]:
+        payload = json_loads(payload_json, {})
+        if ArtifactStore.is_reference(payload):
+            resolved = self.artifacts.read_json(payload, {})
+            return resolved if isinstance(resolved, dict) else {}
+        if isinstance(payload, dict) and ArtifactStore.is_reference(payload.get("artifact")):
+            resolved = self.artifacts.read_json(payload["artifact"], {})
+            return resolved if isinstance(resolved, dict) else {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _encode_payload(self, connection: sqlite3.Connection, payload: dict[str, Any]) -> str:
+        payload_json = json_dumps(payload)
+        if len(payload_json.encode("utf-8")) <= QUEUE_PAYLOAD_LIMIT_BYTES:
+            return payload_json
+        artifact_ref = self.artifacts.write_text(
+            kind="telegram_queue_payload",
+            text=payload_json,
+            suffix=".json",
+            connection=connection,
+        )
+        return json_dumps({"artifact": artifact_ref})
+
+    def _promote_pending_send_replacements(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        current_queue_id: str,
+        dedupe_key: str | None,
+        telegram_message_id: int,
+    ) -> None:
+        if not dedupe_key:
+            return
+        rows = connection.execute(
+            """
+            SELECT queue_id, op_type, payload_json
+            FROM telegram_outbound_queue
+            WHERE dedupe_key = ?
+              AND queue_id != ?
+              AND status = 'queued'
+            ORDER BY created_at ASC
+            """,
+            (dedupe_key, current_queue_id),
+        ).fetchall()
+        for queued_row in rows:
+            if str(queued_row["op_type"]) != "send_message":
+                continue
+            payload = self._decode_payload(str(queued_row["payload_json"]))
+            text = str(payload.get("text") or "")
+            parse_mode = payload.get("parse_mode")
+            updated_payload = {
+                "message_id": telegram_message_id,
+                "text": text,
+                "parse_mode": parse_mode,
+            }
+            connection.execute(
+                """
+                UPDATE telegram_outbound_queue
+                SET op_type = 'edit_message',
+                    telegram_message_id = ?,
+                    payload_json = ?
+                WHERE queue_id = ?
+                """,
+                (
+                    telegram_message_id,
+                    self._encode_payload(connection, updated_payload),
+                    str(queued_row["queue_id"]),
+                ),
+            )
+
     def _initial_available_at(self, paused_until: str | None) -> str:
         now = datetime.now(timezone.utc)
         available_at = now + timedelta(seconds=_QUEUE_THROTTLE_SECONDS)
@@ -345,6 +414,13 @@ class TelegramDeliveryManager:
                     """,
                     (utc_now(), message_id, row["queue_id"]),
                 )
+                if message_id is not None and str(row["op_type"]) == "send_message":
+                    self._promote_pending_send_replacements(
+                        connection,
+                        current_queue_id=str(row["queue_id"]),
+                        dedupe_key=str(row["dedupe_key"]) if row["dedupe_key"] is not None else None,
+                        telegram_message_id=message_id,
+                    )
                 self._clear_global_pause(connection)
             if (
                 message_id is not None
