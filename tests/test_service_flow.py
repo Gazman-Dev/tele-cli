@@ -3123,7 +3123,7 @@ class ServiceFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(text, "Searching: latest codex releases")
+        self.assertEqual(text, "latest codex releases")
 
     def test_extract_activity_text_from_web_search_item(self) -> None:
         text = extract_activity_text(
@@ -3143,7 +3143,59 @@ class ServiceFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(text, "Searching: openWakeWord GitHub official docs")
+        self.assertEqual(
+            text,
+            "Searching:\n• openWakeWord GitHub official docs\n• Porcupine official docs",
+        )
+
+    def test_extract_activity_text_from_site_search_renders_preformatted_query(self) -> None:
+        text = extract_activity_text(
+            "item/completed",
+            {
+                "item": {
+                    "type": "webSearch",
+                    "query": "site:homedepot.com Bayonne NJ Home Depot Jersey City route 440",
+                }
+            },
+        )
+
+        self.assertEqual(
+            text,
+            "<pre><code>homedepot.com Bayonne NJ Home Depot Jersey City route 440</code></pre>",
+        )
+
+    def test_extract_activity_text_from_multiple_site_searches_renders_bullets(self) -> None:
+        text = extract_activity_text(
+            "item/completed",
+            {
+                "item": {
+                    "type": "webSearch",
+                    "action": {
+                        "type": "search",
+                        "queries": [
+                            "site:homedepot.com Bayonne NJ Home Depot Jersey City route 440",
+                            "site:lowes.com Bayonne NJ Lowe's Jersey City fountain pump",
+                        ],
+                    },
+                }
+            },
+        )
+
+        self.assertEqual(
+            text,
+            "<pre><code>• homedepot.com Bayonne NJ Home Depot Jersey City route 440\n"
+            "• lowes.com Bayonne NJ Lowe's Jersey City fountain pump</code></pre>",
+        )
+
+    def test_render_telegram_progress_html_preserves_search_html(self) -> None:
+        rendered = render_telegram_progress_html(
+            "<pre><code>homedepot.com Bayonne NJ Home Depot Jersey City route 440</code></pre>"
+        )
+
+        self.assertEqual(
+            rendered,
+            "<pre><code>homedepot.com Bayonne NJ Home Depot Jersey City route 440</code></pre>",
+        )
 
     def test_extract_activity_text_unwraps_shell_command_wrapper(self) -> None:
         text = extract_activity_text(

@@ -1164,14 +1164,81 @@ def _humanize_status_label(value: str) -> str:
     return " ".join(word.capitalize() for word in words)
 
 
-def _extract_search_hint(arguments: object) -> str | None:
+def _extract_search_hint(arguments: object, *, limit: int = 60) -> str | None:
     if not isinstance(arguments, dict):
         return None
     for key in ("query", "q", "searchTerm", "term", "prompt"):
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():
-            return _shorten_activity_text(value.strip(), limit=60)
+            return _shorten_activity_text(value.strip(), limit=limit)
     return None
+
+
+def _is_site_search_query(query: str) -> bool:
+    return query.lstrip().lower().startswith("site:")
+
+
+def _strip_site_search_prefix(query: str) -> str:
+    compact = " ".join(query.split()).strip()
+    if not compact:
+        return ""
+    if _is_site_search_query(compact):
+        return compact.split(":", 1)[1].lstrip()
+    return compact
+
+
+def _extract_search_queries(value: object) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    queries: list[str] = []
+    action = value.get("action")
+    if isinstance(action, dict):
+        action_queries = action.get("queries")
+        if isinstance(action_queries, list):
+            for candidate in action_queries:
+                if isinstance(candidate, str) and candidate.strip():
+                    queries.append(" ".join(candidate.split()).strip())
+    if not queries:
+        query = _extract_search_hint(value, limit=512)
+        if query:
+            queries.append(query)
+        elif isinstance(action, dict):
+            query = _extract_search_hint(action, limit=512)
+            if query:
+                queries.append(query)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for query in queries:
+        if query and query not in seen:
+            seen.add(query)
+            unique.append(query)
+    return unique
+
+
+def _render_search_query(query: str, *, multiline: bool = False) -> str:
+    compact = " ".join(query.split()).strip()
+    if not compact:
+        return ""
+    if _is_site_search_query(compact):
+        site_query = _strip_site_search_prefix(compact)
+        if multiline:
+            return f"• {site_query}"
+        return f"<pre><code>{escape_telegram_html(site_query)}</code></pre>"
+    if multiline:
+        return f"• {escape_telegram_html(compact)}"
+    return escape_telegram_html(compact)
+
+
+def _render_search_activity(queries: list[str]) -> str:
+    if not queries:
+        return ""
+    if len(queries) == 1:
+        return _render_search_query(queries[0])
+    if all(_is_site_search_query(query) for query in queries):
+        body = "\n".join(_render_search_query(query, multiline=True) for query in queries if query.strip())
+        return f"<pre><code>{escape_telegram_html(body)}</code></pre>" if body else ""
+    body = "\n".join(_render_search_query(query, multiline=True) for query in queries if query.strip())
+    return f"Searching:\n{body}" if body else ""
 
 
 def _extract_delta_text(params: dict, *, limit: int = 80) -> str | None:
@@ -1258,9 +1325,9 @@ def extract_activity_text(method: str, params: dict) -> str | None:
         arguments = item.get("arguments")
         if isinstance(tool, str) and tool:
             lowered = tool.lower()
-            hint = _extract_search_hint(arguments)
+            hint = _extract_search_hint(arguments, limit=512)
             if "search" in lowered and hint:
-                return f"Searching: {hint}"
+                return _render_search_activity([hint])
             if hint:
                 return f"Tool: {tool} ({hint})"
             return f"Tool: {tool}"
@@ -1280,25 +1347,15 @@ def extract_activity_text(method: str, params: dict) -> str | None:
     if item_type == "plan":
         return "Planning next steps"
     if item_type == "search":
-        query = _extract_search_hint(item)
-        if query:
-            return f"Searching: {query}"
-        return "Searching"
+        queries = _extract_search_queries(item)
+        if queries:
+            return _render_search_activity(queries)
+        return "🌐"
     if item_type == "webSearch":
-        query = _extract_search_hint(item)
-        action = item.get("action")
-        if not query and isinstance(action, dict):
-            query = _extract_search_hint(action)
-            if not query:
-                queries = action.get("queries")
-                if isinstance(queries, list):
-                    for candidate in queries:
-                        if isinstance(candidate, str) and candidate.strip():
-                            query = candidate.strip()
-                            break
-        if query:
-            return f"Searching: {query}"
-        return "Searching"
+        queries = _extract_search_queries(item)
+        if queries:
+            return _render_search_activity(queries)
+        return "🌐"
     return None
 
 

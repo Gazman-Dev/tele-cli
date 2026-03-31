@@ -204,6 +204,8 @@ def render_telegram_progress_html(text: str | None) -> str:
         if output.strip():
             rendered = f"{rendered}\n\n{to_telegram_html(output)}"
         return rendered
+    if looks_like_telegram_html(body):
+        return repair_partial_telegram_html(body)
     return to_telegram_html(body)
 
 
