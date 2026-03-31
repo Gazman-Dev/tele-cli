@@ -155,6 +155,18 @@ Suggested rule:
 - Codex is the source of truth for what happened inside the thread.
 - at any moment, a Telegram chat or group topic has exactly one implicit active session mapping
 
+### 6.3 Workspace binding
+
+Session routing should also resolve a deterministic workspace, not only a `thread_id`.
+
+Direction:
+
+- the direct 1:1 operator chat binds to the root workspace
+- each Telegram group topic binds to its own dedicated topic workspace
+- Codex `cwd` for a turn should come from that workspace mapping
+
+See `spec/runtime/workspace_and_topic_memory.md` for the filesystem, Git, and topic-memory contract.
+
 ## 7. State Design
 
 Replace the current single-session runtime state with separate stores.

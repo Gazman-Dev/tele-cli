@@ -7,6 +7,7 @@ This directory is organized by domain so runtime behavior, UX behavior, and stor
 - `runtime/codex_app_server_integration.md`
 - `runtime/codex_app_server_integration_test_plan.md`
 - `runtime/services_and_lifecycle.md`
+- `runtime/workspace_and_topic_memory.md`
 
 ## UX
 

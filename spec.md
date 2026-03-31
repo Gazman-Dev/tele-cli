@@ -34,6 +34,25 @@ No multi-user roles!
 
 ---
 
+# Workspace Model
+
+Tele-Cli should use a deterministic workspace layout for Codex work.
+
+Rules:
+
+* the direct 1:1 chat works in `workspace/`
+* each Telegram topic works in its own folder under `workspace/topics/`
+* each topic folder is its own Git repository and Git submodule
+* durable workspace memory lives in committed files such as:
+  * `workspace/long_memory.md`
+  * `workspace/AGENT.md`
+  * `workspace/topics/<topic>/AGENT.md`
+* temporary Tele-Cli memory stays under `memory/` and does not need to be committed
+
+`/new` creates a fresh session, not a fresh workspace.
+
+---
+
 # OS Support
 
 ## Supported

@@ -20,7 +20,7 @@ This migration covers:
 
 This migration does not require:
 
-- moving user-editable root files such as `personality.md`, `rules.md`, `long_memory.md`
+- moving user-editable workspace files such as `personality.md`, `rules.md`, `workspace/long_memory.md`, or `AGENT.md`
 - storing large raw payloads directly in SQLite
 
 ## Required Outcomes

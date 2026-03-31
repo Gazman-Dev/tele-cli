@@ -23,6 +23,7 @@ SQLite holds:
 - trace and event metadata
 - message identity mapping
 - migration state
+- workspace metadata and relative paths
 
 Artifact files hold:
 
@@ -67,11 +68,33 @@ Under the state directory:
 
 - `tele_cli.db`
 - `artifacts/`
+- `memory/`
+- `workspace/`
 - `artifacts/app_server/`
 - `artifacts/telegram/`
 - `artifacts/command_output/`
 - `artifacts/media/`
 - `artifacts/traces/`
+
+The workspace tree is separate from the artifact tree.
+
+Recommended structure:
+
+- `memory/lessons/`
+- `memory/sessions/<session_id>.short_memory.md`
+- `workspace/`
+- `workspace/AGENT.md`
+- `workspace/long_memory.md`
+- `workspace/.gitignore`
+- `workspace/topics/`
+- `workspace/topics/<topic>/`
+- `workspace/topics/<topic>/AGENT.md`
+- `workspace/topics/<topic>/.gitignore`
+
+Topic directories are durable workspaces, not temporary cache folders.
+The existing Tele Cli memory files remain part of the system alongside the new workspace tree.
+Everything under `memory/` is temporary working memory and does not need to be committed.
+Durable workspace memory belongs under `workspace/`.
 
 ## SQLite Responsibilities
 
