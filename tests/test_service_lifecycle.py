@@ -286,7 +286,7 @@ class ServiceLifecycleTests(unittest.TestCase):
         handle_authorized_message("hello", auth, runtime_state, codex, telegram, recorder)
 
         self.assertEqual(recorder.records, [])
-        self.assertEqual(telegram.messages, [(22, "Codex request failed: boom")])
+        self.assertEqual(telegram.messages, [(22, "boom")])
 
 
 if __name__ == "__main__":

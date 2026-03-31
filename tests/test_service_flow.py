@@ -499,6 +499,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIn("Checking logs", edited)
         self.assertIn("<pre><code>", edited)
         self.assertIn("Invalid request: missing field `threadId`", edited)
+        self.assertNotIn("Codex request failed:", edited)
         updated = store.get_or_create_telegram_session(auth)
         self.assertIsNone(updated.streaming_message_id)
         self.assertEqual(updated.streaming_message_ids, [])
@@ -560,7 +561,7 @@ class ServiceFlowTests(unittest.TestCase):
 
         delivered_texts = [text for _, _, text in telegram.edits] + [text for _, text in telegram.messages]
         self.assertEqual(len(delivered_texts), 1)
-        self.assertIn("Quota exceeded. Check your plan and billing details.", delivered_texts[0])
+        self.assertEqual(delivered_texts[0], "Quota exceeded. Check your plan and billing details.")
         updated = store.get_or_create_telegram_session(auth)
         self.assertEqual(updated.status, "ACTIVE")
         self.assertIsNone(updated.active_turn_id)
@@ -783,7 +784,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(refreshed.status, "ACTIVE")
         self.assertEqual(
             telegram.messages,
-            [(22, "Codex request failed: {'code': -32600, 'message': 'Invalid request: missing field `threadId`'}", 77)],
+            [(22, "Invalid request: missing field `threadId`", 77)],
         )
 
     def test_regular_update_is_blocked_while_session_is_recovering(self) -> None:

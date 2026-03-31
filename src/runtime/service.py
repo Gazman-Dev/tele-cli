@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import inspect
 import json
+import ast
 import mimetypes
 import queue
 import time
@@ -1000,7 +1001,7 @@ def log_request_failure(
 def _render_codex_error_html(error_text: str) -> str:
     return (
         "<pre><code>"
-        f"{escape_telegram_html(f'Codex request failed: {error_text}')}"
+        f"{escape_telegram_html(render_codex_error_message(error_text))}"
         "</code></pre>"
     )
 
@@ -1036,6 +1037,26 @@ def turn_completed_with_error(params: dict) -> bool:
         return False
     status = str(turn.get("status") or "").strip().lower()
     return status == "failed"
+
+
+def render_codex_error_message(error_text: str) -> str:
+    normalized = str(error_text or "").strip()
+    if not normalized:
+        return "The request failed."
+    try:
+        payload = ast.literal_eval(normalized)
+    except (SyntaxError, ValueError):
+        payload = None
+    if isinstance(payload, dict):
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        inner = payload.get("error")
+        if isinstance(inner, dict):
+            message = inner.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+    return normalized
 
 
 def publish_codex_request_error(
@@ -1079,7 +1100,7 @@ def publish_codex_request_error(
     send_telegram_message(
         telegram,
         target_chat_id,
-        f"Codex request failed: {error_text}",
+        render_codex_error_message(error_text),
         topic_id=session.transport_topic_id if session is not None else topic_id,
         performance=performance,
         category="error",
