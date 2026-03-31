@@ -34,7 +34,7 @@ This is a better fit than the current design in this repo, which assumes:
 - one Codex child process
 - one active Codex session
 
-That current assumption appears in [README.md](/C:/git/MiniC/README.md), [docs/wiki/Architecture.md](/C:/git/MiniC/docs/wiki/Architecture.md), and the runtime modules under [src/runtime](/C:/git/MiniC/src/runtime).
+That current assumption appears in `README.md`, `docs/wiki/Architecture.md`, and the runtime modules under `src/runtime`.
 
 ## 4. Research Summary
 
@@ -155,6 +155,18 @@ Suggested rule:
 - Codex is the source of truth for what happened inside the thread.
 - at any moment, a Telegram chat or group topic has exactly one implicit active session mapping
 
+### 6.3 Workspace binding
+
+Session routing should also resolve a deterministic workspace, not only a `thread_id`.
+
+Direction:
+
+- the direct 1:1 operator chat binds to the root workspace
+- each Telegram group topic binds to its own dedicated topic workspace
+- Codex `cwd` for a turn should come from that workspace mapping
+
+See `spec/workspace_and_topic_memory.md` for the filesystem, Git, and topic-memory contract.
+
 ## 7. State Design
 
 Replace the current single-session runtime state with separate stores.
@@ -171,6 +183,13 @@ Replace the current single-session runtime state with separate stores.
   - pending approval requests from Codex, keyed by request id
 - `codex_server.json`
   - app-server pid, transport, protocol version, initialized state, account state
+
+Workspace and memory companion files remain outside runtime JSON state:
+
+- `workspace/long_memory.md`
+- `memory/lessons/`
+- `memory/sessions/*.short_memory.md`
+- root and topic `AGENT.md` files under `workspace/`
 
 ### 7.2 Session routing rules
 
@@ -382,13 +401,13 @@ Required behavior:
 
 Current code paths that will need major refactoring:
 
-- [src/runtime/codex_runtime.py](/C:/git/MiniC/src/runtime/codex_runtime.py)
+- `src/runtime/codex_runtime.py`
   - today this models a single subprocess terminal session
-- [src/runtime/service.py](/C:/git/MiniC/src/runtime/service.py)
+- `src/runtime/service.py`
   - today this assumes one active Codex child and streams raw output
-- [src/runtime/control.py](/C:/git/MiniC/src/runtime/control.py)
+- `src/runtime/control.py`
   - today this handles lock ownership for a single child pid
-- [src/core/models.py](/C:/git/MiniC/src/core/models.py)
+- `src/core/models.py`
   - runtime models are single-session oriented
 
 New modules likely needed:

@@ -4,7 +4,7 @@
 
 - Status: draft
 - Date: March 14, 2026
-- Parent spec: [spec/codex_app_server_integration_spec.md](/C:/git/MiniC/spec/codex_app_server_integration_spec.md)
+- Parent spec: `spec/codex_app_server_integration_spec.md`
 - Purpose: turn the integration spec into a testing-first implementation backlog with concrete test coverage targets
 
 ## 2. Approach
@@ -200,6 +200,10 @@ Tasks:
 - add session router
 - implement `thread/start` and `thread/resume`
 - map one Telegram chat/topic to one implicit session
+- resolve a deterministic workspace for each routed session
+- bind direct chat to the root workspace and group topics to topic workspaces
+- ensure topic workspaces, Git submodules, and `AGENT.md` files are bootstrapped on first use
+- ensure root and topic Git repos get an initial commit and a scaffolded `.gitignore`
 - add `/new` session creation
 
 Tests:
@@ -207,6 +211,10 @@ Tests:
 - first user message creates a session and thread mapping
 - restart reuses stored `thread_id` via `thread/resume`
 - resume failure marks session degraded instead of silently replacing the thread
+- direct chat resolves to the root workspace every time
+- a group topic resolves by its visible Telegram topic name to its own stable workspace every time
+- first use of a topic creates its workspace, Git submodule, `.gitignore`, and `AGENT.md`
+- workspace initialization creates an initial commit
 - `/new` creates a new session and replaces the implicit mapping
 
 ### 5.5 Phase E: Turn lifecycle and delivery
@@ -385,15 +393,17 @@ Tests:
 These should be written before major runtime edits because they define the contract for the refactor.
 
 1. `session_store` round-trip and implicit-session routing tests.
-2. JSON-RPC transport test for interleaved notifications and responses.
-3. service ownership test: second owner for the same state directory exits or degrades without split-brain takeover.
-4. degraded-operation test: Telegram `/status` remains available while Codex is unavailable or auth-blocked.
-5. service-level integration test: inbound Telegram message creates session, starts thread, starts turn, and sends final Telegram reply.
-6. service restart test: persisted session resumes the same `thread_id`.
-7. approval flow test: approval request persists, operator allows, turn completes.
-8. pause-flush timing test: assistant delta output flushes after 3 seconds of idle time and not before.
-9. simulated reboot test: service auto-start restores Telegram polling and Codex supervision.
-10. duplicate-install repair test: installer/service-manager logic preserves one canonical service registration.
+2. workspace routing test: direct chat uses root workspace and each visible Telegram topic gets a stable topic workspace.
+3. workspace bootstrap test: root/topic repos get initial commit, `.gitignore`, and durable memory files in the right locations.
+4. JSON-RPC transport test for interleaved notifications and responses.
+5. service ownership test: second owner for the same state directory exits or degrades without split-brain takeover.
+6. degraded-operation test: Telegram `/status` remains available while Codex is unavailable or auth-blocked.
+7. service-level integration test: inbound Telegram message creates session, starts thread, starts turn, and sends final Telegram reply.
+8. service restart test: persisted session resumes the same `thread_id`.
+9. approval flow test: approval request persists, operator allows, turn completes.
+10. pause-flush timing test: assistant delta output flushes after 3 seconds of idle time and not before.
+11. simulated reboot test: service auto-start restores Telegram polling and Codex supervision.
+12. duplicate-install repair test: installer/service-manager logic preserves one canonical service registration.
 
 ## 8. Expected Test File Layout
 
@@ -402,6 +412,7 @@ Suggested additions:
 - `tests/test_jsonrpc.py`
 - `tests/test_app_server_client.py`
 - `tests/test_session_store.py`
+- `tests/test_workspace_router.py`
 - `tests/test_approval_store.py`
 - `tests/test_session_router.py`
 - `tests/test_service_app_server_flow.py`
