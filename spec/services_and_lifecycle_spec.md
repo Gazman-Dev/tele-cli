@@ -391,6 +391,17 @@ If Telegram is down but Codex is healthy:
 - active Codex work may continue if already started
 - final delivery may need buffering until Telegram recovers or an operator-visible degraded state is recorded
 
+Telegram `429 Too Many Requests` responses are a special case of transient delivery failure and must not be treated as fatal service errors.
+
+Required behavior for `429`:
+
+- do not crash the service
+- do not surface a generic system-error reply solely because Telegram asked for rate limiting
+- pause the outbound Telegram delivery queue before sending the next message or edit
+- use exponential backoff across the whole queue, for example `1s`, `2s`, `4s`, `8s`, `16s`, capped by configuration
+- honor Telegram `retry_after` values when present, but never shorten the current exponential pause because of them
+- once the pause expires, resume queued work in order
+
 ## 15. Auth Lifecycle
 
 Telegram auth and Codex account auth are separate and must remain separate operationally.

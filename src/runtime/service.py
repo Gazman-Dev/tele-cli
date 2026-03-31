@@ -80,7 +80,7 @@ _COMMAND_ACTIVITY_PREFIX = "__tele_cli_command__:"
 MIN_LIVE_THINKING_LENGTH = 12
 CODEX_NOTIFICATION_QUEUE_MAX_SIZE = 128
 CODEX_NOTIFICATION_POLL_IDLE_SECONDS = 0.02
-SERVICE_LOOP_YIELD_SECONDS = 0.005
+SERVICE_LOOP_YIELD_SECONDS = 0.01
 SERVICE_STARTUP_WAIT_SECONDS = 0.01
 SERVICE_THREAD_JOIN_TIMEOUT_SECONDS = 0.05
 
@@ -410,7 +410,6 @@ def _sync_telegram_message_chunks(
         existing_ids = _stored_streaming_message_ids(paths, session=session, logical_role="live_progress")
     kept_ids: list[int] = []
     delivery_manager = active_delivery_manager()
-    allow_paused_return = delivery_manager.is_paused() if delivery_manager is not None else False
 
     for index, chunk in enumerate(rendered_chunks):
         if parse_mode == TELEGRAM_PARSE_MODE:
@@ -431,6 +430,7 @@ def _sync_telegram_message_chunks(
                     **context,
                 )
             else:
+                allow_paused_return = delivery_manager.is_paused() if delivery_manager is not None else False
                 edit_telegram_message(
                     telegram,
                     chat_id,
@@ -458,6 +458,7 @@ def _sync_telegram_message_chunks(
             if isinstance(message_id, int):
                 kept_ids.append(message_id)
         else:
+            allow_paused_return = delivery_manager.is_paused() if delivery_manager is not None else False
             message_id = send_telegram_message(
                 telegram,
                 chat_id,
@@ -484,6 +485,7 @@ def _sync_telegram_message_chunks(
                     **context,
                 )
             else:
+                allow_paused_return = delivery_manager.is_paused() if delivery_manager is not None else False
                 delete_telegram_message(
                     telegram,
                     chat_id,
@@ -703,7 +705,7 @@ def start_telegram_polling_thread(
                 continue
             except Exception as exc:
                 telegram_failures += 1
-                delay = telegram_retry_delay(config, telegram_failures)
+                delay = telegram_unexpected_retry_delay(config, telegram_failures)
                 next_poll_at = time.monotonic() + delay
                 runtime_state.telegram_state = "BACKOFF"
                 save_runtime_state(paths, runtime_state)
@@ -2529,6 +2531,12 @@ def telegram_retry_delay(config: Config, failure_count: int) -> float:
         return 0.0
     exponent = max(failure_count - 1, 0)
     return min(base * (2**exponent), maximum)
+
+
+def telegram_unexpected_retry_delay(config: Config, failure_count: int) -> float:
+    if failure_count <= 1:
+        return 0.0
+    return telegram_retry_delay(config, failure_count - 1)
 
 
 def maintain_codex_runtime(

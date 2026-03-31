@@ -30,12 +30,9 @@ class TelegramClient:
         self._outbound_worker.start()
 
     @staticmethod
-    def _retry_delay_from_error(exc: Exception) -> float | None:
-        message = str(exc)
+    def _retry_delay_from_error_text(message: str) -> float | None:
         if "429" in message and "Too Many Requests" in message:
             return 1.0
-        if not isinstance(exc, TelegramError):
-            return None
         try:
             payload = ast.literal_eval(message)
         except (ValueError, SyntaxError):
@@ -48,6 +45,15 @@ class TelegramClient:
             if isinstance(retry_after, (int, float)) and retry_after > 0:
                 return float(retry_after)
         return 1.0
+
+    @staticmethod
+    def _retry_delay_from_error(exc: Exception) -> float | None:
+        message = str(exc)
+        if "429" in message and "Too Many Requests" in message:
+            return 1.0
+        if not isinstance(exc, TelegramError):
+            return None
+        return TelegramClient._retry_delay_from_error_text(message)
 
     def _run_outbound_worker(self) -> None:
         while True:

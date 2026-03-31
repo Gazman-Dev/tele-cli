@@ -37,6 +37,31 @@ class BareHttp429Telegram(FakeTelegramClient):
         raise TelegramError("HTTP Error 429: Too Many Requests")
 
 
+class SendRateLimitedTelegram(FakeTelegramClient):
+    def __init__(self, *, send_failures: int = 0) -> None:
+        super().__init__()
+        self._remaining_send_failures = send_failures
+
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        topic_id: int | None = None,
+        parse_mode: str | None = None,
+        disable_notification: bool = False,
+    ) -> dict:
+        if self._remaining_send_failures > 0:
+            self._remaining_send_failures -= 1
+            raise TelegramError("{'ok': False, 'error_code': 429, 'parameters': {'retry_after': 1}}")
+        return super().send_message(
+            chat_id,
+            text,
+            topic_id=topic_id,
+            parse_mode=parse_mode,
+            disable_notification=disable_notification,
+        )
+
+
 class CallbackTelegram(FakeTelegramClient):
     def __init__(self, on_send=None) -> None:
         super().__init__()
@@ -230,6 +255,23 @@ class TelegramQueueTests(unittest.TestCase):
         result = manager.process_next()
 
         self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "queued")
+        state = self._read_app_state(_RATE_LIMIT_STATE_KEY)
+        self.assertEqual(state["backoff_seconds"], 2)
+
+    def test_first_rate_limited_send_returns_queued_without_preexisting_pause(self) -> None:
+        telegram = SendRateLimitedTelegram(send_failures=1)
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+        manager.start()
+        self.addCleanup(manager.stop)
+
+        result = manager.enqueue_and_wait(
+            op_type="send_message",
+            payload={"text": "hello"},
+            chat_id=321,
+        )
+
         self.assertEqual(result["status"], "queued")
         state = self._read_app_state(_RATE_LIMIT_STATE_KEY)
         self.assertEqual(state["backoff_seconds"], 2)

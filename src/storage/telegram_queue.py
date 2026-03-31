@@ -267,9 +267,14 @@ class TelegramDeliveryManager:
                 return None
             if row["status"] == "failed":
                 raise RuntimeError(str(row["last_error"] or "Telegram queue operation failed."))
-            if allow_paused_return and row["status"] == "queued":
+            if row["status"] == "queued":
                 available_at = self._parse_timestamp(row["available_at"])
-                if available_at is not None and available_at > datetime.now(timezone.utc):
+                queued_due_to_rate_limit = TelegramClient._retry_delay_from_error_text(str(row["last_error"] or "")) is not None
+                if (
+                    available_at is not None
+                    and available_at > datetime.now(timezone.utc)
+                    and (allow_paused_return or queued_due_to_rate_limit)
+                ):
                     return {"queue_id": target_queue_id, "status": "queued"}
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Timed out waiting for Telegram queue item {target_queue_id}.")
@@ -491,6 +496,7 @@ class TelegramDeliveryManager:
             telegram_message_id=row["telegram_message_id"],
             payload={"queue_id": row["queue_id"], "op_type": row["op_type"], "error": error_text},
         )
+        self._wake_event.set()
         return {
             "queue_id": row["queue_id"],
             "status": final_status,
