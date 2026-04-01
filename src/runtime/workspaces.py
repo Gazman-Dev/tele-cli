@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.resources import files
 import re
 import subprocess
 import uuid
@@ -18,6 +19,9 @@ _ROOT_WORKSPACE_RELPATH = "workspace"
 _ROOT_AGENTS_RELPATH = "workspace/AGENTS.md"
 _ROOT_LONG_MEMORY_RELPATH = "workspace/long_memory.md"
 _TOPICS_RELPATH = "workspace/topics"
+_RESOURCE_PACKAGE = "runtime.resources"
+_ROOT_AGENTS_TEMPLATE = "defaults/default_agents.md"
+_TOPIC_AGENTS_TEMPLATE = "defaults/default_topic_agents.md"
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,13 @@ def default_topic_name(topic_id: int | None) -> str:
     if topic_id is None:
         return "topic"
     return f"topic-{topic_id}"
+
+
+def _read_resource_text(resource_path: str) -> str:
+    resource = files(_RESOURCE_PACKAGE)
+    for part in resource_path.split("/"):
+        resource = resource.joinpath(part)
+    return resource.read_text(encoding="utf-8")
 
 
 def workspace_topic_name(session: SessionRecord, visible_name: str | None = None) -> str | None:
@@ -375,35 +386,17 @@ class WorkspaceManager:
 
     def _render_agent_template(self, workspace: WorkspaceRecord) -> str:
         if workspace.workspace_kind == "root":
-            return (
-                "# AGENTS.md instructions for this workspace\n\n"
-                "## Workspace layout\n\n"
-                "- This root workspace maps to the direct 1:1 operator chat.\n"
-                "- Topic workspaces live under `topics/` and are isolated from each other.\n"
-                "- Durable shared memory lives in `long_memory.md` and this `AGENTS.md`.\n"
-                "- Temporary Tele Cli memory lives outside this repo under `../memory/`.\n\n"
-                "## Git model\n\n"
-                "- This directory is the parent workspace repository.\n"
-                "- Each topic directory under `topics/` is its own Git repository.\n"
-                "- Tele Cli may register topics in the parent repo as submodule-style gitlinks.\n\n"
-                "## Constraints\n\n"
-                "- Keep changes scoped to the active workspace.\n"
-                "- Do not assume memory files under `../memory/` are durable or committed.\n"
-            )
+            return _read_resource_text(_ROOT_AGENTS_TEMPLATE)
         topic_name = workspace.visible_name or default_topic_name(workspace.transport_topic_id)
-        return (
-            f"# AGENTS.md instructions for {topic_name}\n\n"
-            "## Workspace role\n\n"
-            "- This directory maps to one Telegram topic workstream.\n"
-            "- Treat this workspace as isolated from sibling topics.\n"
-            "- Put durable topic guidance in this file.\n\n"
-            "## Git model\n\n"
-            "- This directory is its own Git repository.\n"
-            "- The parent `../..` workspace may track it as a submodule-style entry.\n\n"
-            "## Topic details\n\n"
-            f"- Visible topic name: `{topic_name}`\n"
-            f"- Telegram chat id: `{workspace.transport_chat_id}`\n"
-            f"- Telegram topic id: `{workspace.transport_topic_id}`\n"
+        return _read_resource_text(_TOPIC_AGENTS_TEMPLATE).replace(
+            "{{topic_name}}",
+            topic_name,
+        ).replace(
+            "{{transport_chat_id}}",
+            str(workspace.transport_chat_id),
+        ).replace(
+            "{{transport_topic_id}}",
+            str(workspace.transport_topic_id),
         )
 
     def _gitignore_template(self, workspace: WorkspaceRecord) -> str:

@@ -255,6 +255,10 @@ class SessionStoreTests(unittest.TestCase):
             self.assertTrue((paths.root / root.relpath / ".git").exists())
             self.assertTrue((paths.root / topic.agents_md_relpath).exists())
             self.assertTrue((paths.root / topic.relpath / ".git").exists())
+            self.assertIn("This root workspace maps to the direct 1:1 operator chat.", (paths.root / root.agents_md_relpath).read_text(encoding="utf-8"))
+            topic_agents = (paths.root / topic.agents_md_relpath).read_text(encoding="utf-8")
+            self.assertIn("Visible topic name: `Bayonne pump`", topic_agents)
+            self.assertIn("Telegram topic id: `101`", topic_agents)
 
     def test_workspace_push_failure_is_logged_when_remote_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

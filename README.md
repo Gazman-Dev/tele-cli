@@ -2,68 +2,52 @@
 
 `Tele Cli` is a single-operator terminal bridge for Codex and Telegram.
 
-It is designed for Linux and macOS and focuses on one local operator, one Telegram bot, one authorized Telegram chat, one Codex session, and explicit recovery behavior when stale or conflicting runtime state is detected.
+It is designed for macOS and Linux and centers on one local operator, one Telegram bot, one authorized Telegram identity, one managed background service, and explicit recovery when setup or runtime state becomes stale or conflicting.
 
-## Features
+## Current Capabilities
 
-- Guided first-run setup for npm, Codex, and Telegram bot validation
-- Separate setup and service conflict handling with recovery prompts
-- Single-instance protection with runtime metadata and stale lock detection
-- Single-controller Telegram pairing with local `reset-auth` support
-- Telegram channel commands for sending text, images, and files from scripts or services
-- Telegram attachment intake for inbound photos and documents
-- Telegram MarkdownV2 formatting on final assistant chat replies with plain-text fallback
-- Terminal recording and local runtime output mirroring
-- Docker-based Linux validation harness
-
-## Project Layout
-
-```text
-src/
-  cli.py
-  app_shell.py
-  core/
-  integrations/
-  runtime/
-  setup/
-  demo_ui/
-tests/
-docs/
-scripts/
-Dockerfile.linux-test
-```
+- Interactive full-screen app shell for setup, update, repair, restart, uninstall, and status
+- One-line installer that bootstraps Tele Cli and launches the same shell-driven setup flow
+- Managed background service lifecycle with lock recovery and stale-process healing
+- Telegram pairing flow with chat-delivered pairing codes and in-shell confirmation
+- Telegram bot control surface for sessions, approvals, model selection, reasoning level, and turn control
+- Telegram outbound channel commands for scripts and services to send text, images, and files
+- Telegram inbound attachment intake for photos and documents
+- Codex App Server integration with durable thread/session routing
+- Root workspace plus per-topic workspaces with deterministic `cwd` routing for Codex turns
+- Scaffolded root and topic `AGENTS.md` files plus committed `workspace/long_memory.md`
+- Topic workspaces stored as independent Git repos with parent root linkage metadata
+- Sleep flow that updates durable root memory and commits it into workspace Git history
+- Clearer user-visible Codex failure messages, including auth-required and quota errors
+- Telegram queue pause and retry behavior for delivery rate limits
+- Local terminal recording, debug mirroring, performance logging, and runtime event storage
+- Docker-based Linux validation harness plus unittest coverage for setup, service, Telegram, Codex app-server, storage, and UI flows
 
 ## Requirements
 
-- Python 3.9+
-- Linux or macOS for actual runtime use
-- Docker Desktop or Docker Engine for Linux container validation
+- Python `3.9+`
+- macOS or Linux for normal runtime use
+- A Telegram bot token
+- Codex CLI/App Server available on the target machine
+- Docker Desktop or Docker Engine if you want to run the Linux validation harness
 
 ## Install
+
+Editable install:
 
 ```bash
 python -m pip install -e .
 ```
 
-One-line setup:
+One-line install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bas
+curl -fsSL https://raw.githubusercontent.com/Gazman-Dev/tele-cli/master/install.sh | bash
 ```
 
-The setup script now:
+The public installer fetches `setup.sh` with cache-busting query parameters, installs or updates Tele Cli, then launches the interactive app shell. If Tele Cli is already installed, running the installer again returns to the same shell-driven update and repair flow instead of branching into a different path.
 
-- installs or updates Tele Cli
-- bootstraps only enough to launch `tele-cli`
-- opens the full-screen app shell for interactive installs and reinstalls
-- keeps non-interactive setup/service installation as a fallback path
-- avoids duplicate service ownership through the service manager and runtime lock checks
-
-The public `install.sh` wrapper fetches `setup.sh` with cache-busting query parameters so installer updates are not blocked by stale raw-file caches.
-
-If `Tele Cli` is already installed, running `setup.sh` again now relaunches the same app shell after bootstrap so update, repair, restart, or uninstall decisions stay in one place.
-
-## Commands
+## Main Commands
 
 ```bash
 tele-cli
@@ -75,13 +59,13 @@ tele-cli uninstall
 tele-cli reset-auth
 tele-cli complete-pairing
 tele-cli telegram channel message --channel main "hello"
-tele-cli telegram channel image --channel current ./image.png --caption "look"
+tele-cli telegram channel image --channel current ./image.png --caption "preview"
 tele-cli telegram channel file --channel -100123456/77 ./report.pdf --caption "report"
 ```
 
-`tele-cli` and `tele-cli menu` open the interactive app shell. In an interactive terminal, `setup`, `update`, and `uninstall` also route through the app shell; the direct subcommands remain available for non-interactive use.
+`tele-cli` and `tele-cli menu` open the interactive shell. In an interactive terminal, `setup`, `update`, and `uninstall` route back through that shell so the UX stays consistent. Direct non-interactive execution remains available when no TTY is present.
 
-## Telegram Commands
+## Telegram Chat Commands
 
 Once the bot is paired, the authorized Telegram chat can use:
 
@@ -97,6 +81,29 @@ Once the bot is paired, the authorized Telegram chat can use:
 /deny <request_id>
 ```
 
+If Codex authentication is required, Tele Cli now sends the login URL back to Telegram and accepts the localhost callback URL pasted into chat to complete sign-in. Manual device login on the host is also still supported.
+
+## Workspaces And Memory
+
+Tele Cli keeps durable operator context under a workspace tree inside the state directory:
+
+```text
+~/.tele-cli/
+  workspace/
+    AGENTS.md
+    long_memory.md
+    topics/
+      <topic>/
+        AGENTS.md
+```
+
+- `workspace/` is the root workspace for the direct 1:1 operator chat
+- `workspace/topics/<topic>/` is the dedicated workspace for one Telegram topic
+- each topic workspace has its own Git repository
+- `workspace/long_memory.md` is durable committed memory managed by Tele Cli
+- `AGENTS.md` files are scaffolded defaults for Codex-native workspace guidance
+- temporary lessons and short-memory files stay under `memory/` and are not treated as workspace durable memory
+
 ## Telegram Channels
 
 For outbound scriptable Telegram sends:
@@ -110,14 +117,40 @@ tele-cli telegram channel file --channel -100123456/77 ./report.pdf --caption "R
 
 Channel formats:
 
-- `main`: the default one-to-one paired chat
-- `current`: the most recently active attached Telegram session/topic
+- `main`: the default paired chat
+- `current`: the most recently active attached Telegram session or topic
 - `<chat_id>`: an explicit Telegram chat id
 - `<chat_id>/<topic_id>`: an explicit Telegram topic inside a group chat
 
+## State Layout
+
+Tele Cli stores state under `~/.tele-cli` by default. The exact contents evolve over time, but the main files and directories include:
+
+- `auth.json`
+- `config.json`
+- `tele_cli.db`
+- `app.lock`
+- `setup.lock`
+- `terminal.log`
+- `performance.log`
+- `workspace/`
+- `memory/`
+- `system/`
+
+The SQLite database now holds runtime state, sessions, events, approvals, Telegram queue data, and workspace metadata.
+
+## Codex Runtime Defaults
+
+By default, Tele Cli starts Codex App Server threads in full-access mode through `config.json`:
+
+- `sandbox_mode = "danger-full-access"`
+- `approval_policy = "never"`
+
+Override those values in `config.json` if you want stricter behavior.
+
 ## UX Demo
 
-To review the proposed CLI UX before implementing it in the production flow:
+To review the mock CLI UX before or alongside production changes:
 
 ```bash
 python ux_demo.py
@@ -129,11 +162,17 @@ If installed as a package:
 tele-cli-ux-demo
 ```
 
-The demo is a mock TUI for the UX spec in `spec/ux_spec.md`. It includes the setup screens, status dashboard, update flow, and uninstall confirmation, but it does not touch the real service or Telegram integration.
+The demo mirrors the setup, dashboard, update, and uninstall flows without touching the real service or Telegram integration.
 
-Use `--state-dir` if you want state files somewhere other than `~/.tele-cli`.
+## Tests
 
-## Docker Linux Test
+Run the unittest suite:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+Run the Linux Docker validation harness:
 
 ```bash
 ./scripts/run_docker_tests.sh
@@ -145,32 +184,15 @@ PowerShell:
 powershell -File scripts/run_docker_tests.ps1
 ```
 
-## State Files
+## Specs
 
-`Tele Cli` stores runtime state under `~/.tele-cli` by default:
+The main design docs live under [`spec/`](spec/README.md), including:
 
-- `app.lock`
-- `setup.lock`
-- `runtime.json`
-- `auth.json`
-- `config.json`
-- `sessions.json`
-- `telegram_updates.json`
-- `approvals.json`
-- `codex_server.json`
-- `recovery.log`
-- `terminal.log`
-- `performance.log`
-- `app_server_notifications.log`
-
-## Codex Mode
-
-Tele Cli now starts Codex App Server threads in full-access mode by default through `config.json`:
-
-- `sandbox_mode = "danger-full-access"`
-- `approval_policy = "never"`
-
-That means Codex threads are created without local sandboxing and without approval prompts unless you override those values in `config.json`.
+- Codex app-server integration
+- services and lifecycle behavior
+- workspace and topic memory
+- UI migration plans
+- storage layout and SQLite migration notes
 
 ## License
 

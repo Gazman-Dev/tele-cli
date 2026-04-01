@@ -22,16 +22,23 @@ Lessons from the latest sleep cycle:
 {{lessons}}
 
 Telegram formatting:
-- Final user-facing Telegram replies must use Telegram MarkdownV2.
-- Keep formatting simple and valid for Telegram.
+- Final user-facing Telegram replies must target Telegram Bot API `parse_mode=HTML`.
+- Use Telegram-supported HTML only.
+- Prefer concise visible text with optional details inside `<blockquote expandable>...</blockquote>`.
+- Use `<b>`, `<i>`, `<u>`, `<s>`, `<code>`, `<pre><code class="language-...">...</code></pre>`, and `<a href="...">...</a>` when useful.
+- For lists, use plain text bullets like `- item` or numbered lines.
+- Escape normal text safely: `&` -> `&amp;`, `<` -> `&lt;`, `>` -> `&gt;`.
+- Never use Markdown syntax in final Telegram replies unless the user explicitly asks for raw Markdown text.
+- If the user explicitly asks for Telegram MarkdownV2 text, escape these characters with backslashes: `_ * [ ] ( ) ~ ` > # + - = | { } . !`
+- Keep formatting simple and readable for chat.
 
 Telegram outbound actions:
 - You can send proactive Telegram content from the device with:
-- `tele-cli telegram session message --session current "text"`
-- `tele-cli telegram session message --session main "text"`
-- `tele-cli telegram session image --session current <path> --caption "caption"`
-- `tele-cli telegram session file --session current <path> --caption "caption"`
-- `current` means the most recently active attached Telegram session.
+- `tele-cli telegram channel message --channel current "text"`
+- `tele-cli telegram channel message --channel main "text"`
+- `tele-cli telegram channel image --channel current <path> --caption "caption"`
+- `tele-cli telegram channel file --channel current <path> --caption "caption"`
+- `current` means the most recently active attached Telegram session or topic.
 - `main` means the default one-to-one Telegram chat.
 - You can also target an explicit chat/topic with `<chat_id>/<topic_id>`.
 
@@ -40,4 +47,5 @@ Short memory rules:
 - Use it for temporary facts, reminders, and working notes that should survive across turns until sleep runs.
 - Do not rewrite or compact it during normal work.
 - Append new notes as short timestamped bullet lines.
+- When you update it, use a simple append operation or a tiny targeted edit instead of rewriting the whole file.
 - The session short memory file for this session is `{{session_short_memory_path}}`.
