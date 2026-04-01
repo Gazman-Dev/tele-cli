@@ -20,6 +20,10 @@ class TelegramError(RuntimeError):
     pass
 
 
+def is_topic_closed_error(exc: Exception) -> bool:
+    return "TOPIC_CLOSED" in str(exc)
+
+
 class TelegramClient:
     def __init__(self, token: str):
         self.token = token

@@ -18,9 +18,11 @@ from demo_ui.state import Colors, DemoExit, MenuItem
 from demo_ui.ui import TerminalUI
 from integrations.telegram import (
     TelegramClient,
+    TelegramError,
     confirm_pairing_code,
     describe_pairing,
     has_pending_pairing,
+    is_topic_closed_error,
     is_auth_paired,
     register_pairing_request,
 )
@@ -358,11 +360,21 @@ class DefaultAppShellBackend:
         save_json(paths.auth, auth.to_dict())
         bot = TelegramClient(auth.bot_token)
         assert auth.telegram_chat_id is not None
-        bot.send_message(
-            auth.telegram_chat_id,
-            "Pairing complete. Tele Cli is now authorized for this chat.",
-            topic_id=topic_id,
-        )
+        try:
+            bot.send_message(
+                auth.telegram_chat_id,
+                "Pairing complete. Tele Cli is now authorized for this chat.",
+                topic_id=topic_id,
+            )
+        except TelegramError as exc:
+            if not topic_id or not is_topic_closed_error(exc):
+                raise
+            auth.telegram_topic_id = None
+            save_json(paths.auth, auth.to_dict())
+            bot.send_message(
+                auth.telegram_chat_id,
+                "Pairing complete. Tele Cli is now authorized for this chat.",
+            )
         log_recovery_event(paths, f"telegram paired chat_id={auth.telegram_chat_id} user_id={auth.telegram_user_id}")
         TraceStore(paths).log_event(
             source="telegram_inbound",

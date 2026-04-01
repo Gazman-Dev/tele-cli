@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app_shell import AppShell, DefaultAppShellBackend
-from core.json_store import save_json
+from core.json_store import load_json, save_json
 from core.models import AuthState, CodexServerState, Config, LockMetadata, RuntimeState, SetupState
 from core.paths import build_paths
 from demo_ui.state import DemoExit
@@ -307,6 +307,48 @@ class AppShellTests(unittest.TestCase):
             self.assertEqual(status, "code-issued")
             self.assertIsNotNone(payload)
             self.assertEqual(sent, [(22, f"Pairing code: {payload}. Enter this code in the local Tele Cli setup terminal.", 99)])
+
+    def test_default_backend_confirm_pairing_falls_back_when_topic_is_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(
+                paths.auth,
+                AuthState(
+                    bot_token="token",
+                    pairing_code="12345",
+                    pending_user_id=11,
+                    pending_chat_id=22,
+                    pending_topic_id=99,
+                ).to_dict(),
+            )
+            backend = DefaultAppShellBackend()
+            sent: list[tuple[int, str, int | None]] = []
+
+            class TopicClosingTelegram:
+                def __init__(self, token: str) -> None:
+                    self.token = token
+
+                def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode=None):
+                    sent.append((chat_id, text, topic_id))
+                    if topic_id is not None:
+                        raise TelegramError("{'ok': False, 'error_code': 400, 'description': 'Bad Request: TOPIC_CLOSED'}")
+                    return {"message_id": 1}
+
+            with patch("app_shell.TelegramClient", TopicClosingTelegram):
+                ok, message = backend.confirm_pairing(paths, "12345")
+
+            self.assertTrue(ok)
+            self.assertIsNone(message)
+            self.assertEqual(
+                sent,
+                [
+                    (22, "Pairing complete. Tele Cli is now authorized for this chat.", 99),
+                    (22, "Pairing complete. Tele Cli is now authorized for this chat.", None),
+                ],
+            )
+            saved = load_json(paths.auth, AuthState.from_dict)
+            self.assertIsNotNone(saved)
+            self.assertIsNone(saved.telegram_topic_id)
     def test_default_backend_includes_pending_pairing_menu_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
