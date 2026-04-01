@@ -936,13 +936,15 @@ def reset_session_after_request_failure(
     auth: AuthState,
     *,
     telegram: TelegramClient | None = None,
+    session=None,
     topic_id: int | None,
     error_text: str,
     clear_messages: bool = True,
 ) -> None:
     if session_store is None:
         return
-    session = session_store.get_current_telegram_session(auth, topic_id)
+    if session is None:
+        session = session_store.get_current_telegram_session(auth, topic_id)
     if session is None:
         return
     if clear_messages:
@@ -979,10 +981,14 @@ def log_request_failure(
     auth: AuthState,
     topic_id: int | None,
     error_text: str,
+    *,
+    session=None,
 ) -> None:
     if trace_store is None or session_store is None:
         return
-    failed_session = session_store.get_current_telegram_session(auth, topic_id)
+    failed_session = session
+    if failed_session is None:
+        failed_session = session_store.get_current_telegram_session(auth, topic_id)
     if failed_session is None or not getattr(failed_session, "current_trace_id", None):
         return
     trace_store.log_event(
@@ -1004,6 +1010,39 @@ def _render_codex_error_html(error_text: str) -> str:
         f"{escape_telegram_html(render_codex_error_message(error_text))}"
         "</code></pre>"
     )
+
+
+def codex_login_required(error_text: str, codex_state: CodexServerState | None = None) -> bool:
+    if codex_state is not None and codex_state.auth_required:
+        return True
+    normalized = render_codex_error_message(error_text).lower()
+    return "401 unauthorized" in normalized or "missing bearer or basic authentication" in normalized
+
+
+def build_codex_login_required_message(codex_state: CodexServerState | None = None) -> str:
+    lines = ["Codex login is required before I can reply."]
+    if codex_state is not None and codex_state.login_url:
+        lines.extend(
+            [
+                "",
+                "Open this URL and finish sign-in:",
+                codex_state.login_url,
+                "",
+                "When the browser lands on a localhost callback URL, paste that full URL into this chat to finish login.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "Or log in manually on the device with:",
+            "codex login --device-auth",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _render_codex_auth_required_html(codex_state: CodexServerState | None = None) -> str:
+    return escape_telegram_html(build_codex_login_required_message(codex_state))
 
 
 def extract_codex_error_text(params: dict) -> str | None:
@@ -1064,16 +1103,30 @@ def publish_codex_request_error(
     auth: AuthState,
     telegram: TelegramClient,
     *,
+    session=None,
     topic_id: int | None,
     error_text: str,
     performance: PerformanceTracker | None = None,
 ) -> None:
-    session = session_store.get_current_telegram_session(auth, topic_id) if session_store is not None else None
+    if session is None and session_store is not None:
+        session = session_store.get_current_telegram_session(auth, topic_id)
     target_chat_id = session.transport_chat_id if session is not None else auth.telegram_chat_id
     if target_chat_id is None:
         target_chat_id = auth.telegram_chat_id
     if not target_chat_id:
         return
+    codex_state = load_codex_server_state(session_store.paths) if session_store is not None else None
+    login_required = codex_login_required(error_text, codex_state)
+    rendered_error_html = (
+        _render_codex_auth_required_html(codex_state)
+        if login_required
+        else _render_codex_error_html(error_text)
+    )
+    rendered_error_text = (
+        build_codex_login_required_message(codex_state)
+        if login_required
+        else render_codex_error_message(error_text)
+    )
     live_html = _render_live_thinking_html(session).strip() if session is not None else ""
     context = {
         "performance": performance,
@@ -1083,7 +1136,7 @@ def publish_codex_request_error(
         "turn_id": session.active_turn_id if session is not None else None,
     }
     if session is not None and _streaming_message_ids(session) and live_html:
-        rendered_html = f"{live_html}\n\n{_render_codex_error_html(error_text)}"
+        rendered_html = f"{live_html}\n\n{rendered_error_html}"
         _sync_telegram_message_chunks(
             session_store.paths,
             telegram,
@@ -1100,7 +1153,7 @@ def publish_codex_request_error(
     send_telegram_message(
         telegram,
         target_chat_id,
-        render_codex_error_message(error_text),
+        rendered_error_text,
         topic_id=session.transport_topic_id if session is not None else topic_id,
         performance=performance,
         category="error",
@@ -2728,6 +2781,17 @@ def handle_authorized_message(
                 category="status",
             )
         return
+    if runtime_state.codex_state == "AUTH_REQUIRED":
+        codex_state = load_codex_server_state(paths) if paths is not None else None
+        send_telegram_message(
+            telegram,
+            auth.telegram_chat_id,
+            build_codex_login_required_message(codex_state),
+            topic_id=topic_id,
+            performance=performance,
+            category="status",
+        )
+        return
     if text == "/status":
         model, reasoning = read_codex_cli_preferences()
         send_telegram_message(
@@ -3139,6 +3203,7 @@ def handle_authorized_message(
             session_store,
             auth,
             telegram,
+            session=tracked_session if session_store is not None else None,
             topic_id=topic_id,
             error_text=str(exc),
             performance=performance,
@@ -3147,13 +3212,14 @@ def handle_authorized_message(
             session_store,
             auth,
             telegram=telegram,
+            session=tracked_session if session_store is not None else None,
             topic_id=topic_id,
             error_text=str(exc),
             clear_messages=False,
         )
         if performance is not None and session_id is not None:
             performance.mark_turn_failed(session_id, error=str(exc))
-        log_request_failure(trace_store, session_store, auth, topic_id, str(exc))
+        log_request_failure(trace_store, session_store, auth, topic_id, str(exc), session=tracked_session)
         return
     if recovered_from_stale_turn:
         send_telegram_message(
@@ -3813,6 +3879,7 @@ def drain_codex_notifications(
                     session_store,
                     auth,
                     telegram,
+                    session=session,
                     topic_id=session.transport_topic_id,
                     error_text=error_text,
                     performance=performance,
@@ -3821,6 +3888,7 @@ def drain_codex_notifications(
                     session_store,
                     auth,
                     telegram=telegram,
+                    session=session,
                     topic_id=session.transport_topic_id,
                     error_text=error_text,
                     clear_messages=False,

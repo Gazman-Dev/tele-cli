@@ -293,6 +293,53 @@ class ServiceFlowTests(unittest.TestCase):
 
         self.assertIsNone(codex)
 
+    def test_process_telegram_update_surfaces_codex_login_required_to_current_chat(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=8221289202,
+            telegram_chat_id=-1003820636505,
+            paired_at="now",
+        )
+        save_codex_server_state(
+            self.paths,
+            CodexServerState(
+                transport="stdio://",
+                initialized=True,
+                auth_required=True,
+                login_type="chatgpt",
+                login_url="https://auth.example.test/login",
+                capabilities={"threads": True},
+            ),
+        )
+        self.runtime_state.codex_state = "AUTH_REQUIRED"
+        telegram = FakeTelegramClient()
+        update = {"update_id": 1, "message": {"chat": {"id": 8221289202}, "from": {"id": 8221289202}, "text": "hi"}}
+
+        with patch("runtime.service.save_json"):
+            codex = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=None,
+                handle_output=lambda source, line: None,
+                start_codex_session_fn=lambda *args, **kwargs: None,
+            )
+
+        self.assertIsNone(codex)
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertEqual(telegram.messages[0][0], 8221289202)
+        self.assertIn("Codex login is required before I can reply.", telegram.messages[0][1])
+        self.assertIn("https://auth.example.test/login", telegram.messages[0][1])
+        self.assertIn("paste that full URL into this chat", telegram.messages[0][1])
+        self.assertIn("codex login --device-auth", telegram.messages[0][1])
+
     def test_process_telegram_update_notifies_user_when_stale_turn_is_recovered(self) -> None:
         auth = AuthState(
             bot_token="token",
@@ -566,6 +613,72 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.status, "ACTIVE")
         self.assertIsNone(updated.active_turn_id)
         self.assertEqual(updated.streaming_message_ids, [])
+
+    def test_turn_completed_failed_routes_error_to_session_chat_not_paired_default(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=-1003820636505,
+            paired_at="now",
+        )
+        save_codex_server_state(
+            self.paths,
+            CodexServerState(
+                transport="stdio://",
+                initialized=True,
+                auth_required=True,
+                login_type="chatgpt",
+                login_url="https://auth.example.test/login",
+                capabilities={"threads": True},
+            ),
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.transport_chat_id = 8221289202
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification(
+                "turn/completed",
+                {
+                    "threadId": "thread-1",
+                    "turn": {
+                        "id": "turn-1",
+                        "status": "failed",
+                        "error": {
+                            "message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header",
+                        },
+                        "items": [],
+                    },
+                },
+            )
+        )
+
+        drain_codex_notifications(
+            self.paths,
+            auth,
+            telegram,
+            self.recorder,
+            codex,
+            self.runtime,
+            self.runtime_state,
+            self.config,
+        )
+
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertEqual(telegram.messages[0][0], 8221289202)
+        self.assertIn("Codex login is required before I can reply.", telegram.messages[0][1])
+        self.assertIn("https://auth.example.test/login", telegram.messages[0][1])
 
     def test_regular_update_starts_codex_and_forwards_message(self) -> None:
         auth = AuthState(
