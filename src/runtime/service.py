@@ -536,6 +536,16 @@ def _has_completed_visible_answer(session) -> bool:
     return bool(delivered and streaming and delivered == streaming and session.streaming_phase == "answer")
 
 
+def _has_preservable_visible_answer(session) -> bool:
+    if _has_completed_visible_answer(session):
+        return True
+    if session.status != "DELIVERING_FINAL":
+        return False
+    if not _streaming_message_ids(session):
+        return False
+    return bool((session.streaming_output_text or "").strip() or (session.pending_output_text or "").strip())
+
+
 def _build_final_rendered_chunks(*, answer_html: str, thinking_html: str) -> list[str]:
     answer_chunks = _split_telegram_html_text(answer_html)
     if not thinking_html:
@@ -3125,7 +3135,7 @@ def handle_authorized_message(
             visible_topic_name=visible_topic_name,
         )
         if not tracked_session.active_turn_id:
-            if _has_completed_visible_answer(tracked_session):
+            if _has_preservable_visible_answer(tracked_session):
                 _set_streaming_message_ids(tracked_session, [])
             else:
                 _clear_streaming_messages(telegram, tracked_session.transport_chat_id or auth.telegram_chat_id, tracked_session)
