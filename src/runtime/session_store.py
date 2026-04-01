@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -14,6 +15,9 @@ from .instructions import session_short_memory_path, session_short_memory_relpat
 from .workspaces import WorkspaceManager
 
 _SESSION_STORE_LOCK = threading.RLock()
+_SHORT_MEMORY_ENTRY_MAX_CHARS = 400
+_SHORT_MEMORY_RECENT_MAX_CHARS = 3000
+_SHORT_MEMORY_RECENT_MAX_LINES = 20
 
 
 @dataclass
@@ -447,6 +451,45 @@ class SessionStore:
 
     def short_memory_path(self, session_id: str) -> Path:
         return session_short_memory_path(self.paths, session_id)
+
+    @staticmethod
+    def _normalize_short_memory_text(text: str, *, max_chars: int = _SHORT_MEMORY_ENTRY_MAX_CHARS) -> str:
+        normalized = re.sub(r"\s+", " ", (text or "").strip())
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max_chars - 3].rstrip() + "..."
+
+    def append_short_memory_entry(self, session_id: str, role: str, text: str) -> None:
+        normalized = self._normalize_short_memory_text(text)
+        if not normalized:
+            return
+        path = self.short_memory_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = f"- {utc_now()} {role}: {normalized}\n"
+        with _SESSION_STORE_LOCK:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(entry)
+
+    def recent_short_memory_text(
+        self,
+        session_id: str,
+        *,
+        max_chars: int = _SHORT_MEMORY_RECENT_MAX_CHARS,
+        max_lines: int = _SHORT_MEMORY_RECENT_MAX_LINES,
+    ) -> str:
+        path = self.short_memory_path(session_id)
+        if not path.exists():
+            return ""
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return ""
+        lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+        if max_lines > 0 and len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        trimmed = "\n".join(lines).strip()
+        if len(trimmed) <= max_chars:
+            return trimmed
+        return "...\n" + trimmed[-(max_chars - 4) :].lstrip()
 
     def list_telegram_sessions(self, auth: AuthState, topic_id: int | None = None) -> list[SessionRecord]:
         return self._select_sessions(

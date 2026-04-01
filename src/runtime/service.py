@@ -3901,6 +3901,8 @@ def drain_codex_notifications(
                     clear_messages=False,
                 )
                 continue
+            if assistant_text and assistant_text.strip():
+                session_store.append_short_memory_entry(session.session_id, "assistant", assistant_text)
             if not session.pending_output_text.strip():
                 final_stream_text = session.streaming_output_text.strip()
                 should_finalize_existing_delivery = bool(_streaming_message_ids(session)) and bool(
