@@ -499,59 +499,9 @@ class AppServerRuntimeTests(unittest.TestCase):
             self.assertEqual(refreshed.thread_id, "thread-2")
             self.assertEqual(refreshed.active_turn_id, "turn-2")
 
-    def test_new_turn_includes_recent_short_memory_context(self) -> None:
-        transport = InMemoryJsonRpcTransport()
-        server = FakeAppServer(transport)
-        server.on("initialize", lambda payload: {"protocolVersion": "1.0", "capabilities": {"threads": True}})
-        server.on("getAccount", lambda payload: {"status": "ready"})
-        turn_counter = {"count": 0}
-        server.on("thread/start", lambda payload: {"threadId": "thread-1"})
-
-        def handle_turn_start(payload):
-            turn_counter["count"] += 1
-            return {"turnId": f"turn-{turn_counter['count']}"}
-
-        server.on("turn/start", handle_turn_start)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = build_paths(Path(tmp))
-            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
-            from runtime.session_store import SessionStore
-
-            store = SessionStore(paths)
-            runtime_state = RuntimeState(
-                session_id="1",
-                service_state="RUNNING",
-                codex_state="STOPPED",
-                telegram_state="RUNNING",
-                recorder_state="RUNNING",
-                debug_state="RUNNING",
-            )
-            runtime = ServiceRuntime(runtime_state)
-            session = self._bootstrap_session(
-                paths=paths,
-                auth=auth,
-                runtime=runtime,
-                runtime_state=runtime_state,
-                transport=transport,
-                config=Config(state_dir=str(paths.root)),
-            )
-
-            session.send("Count with me to 10. When I say a number, say the next number.")
-            updated = store.get_current_telegram_session(auth)
-            assert updated is not None
-            updated.active_turn_id = None
-            updated.status = "ACTIVE"
-            store.save_session(updated)
-
-            session.send("Also, for each number you say, pick a random file name on device.")
-
-            turn_starts = [payload for payload in server.received if payload["method"] == "turn/start"]
-            self.assertEqual(len(turn_starts), 2)
-            second_input = turn_starts[1]["params"]["input"][0]["text"]
-            self.assertIn("Recent session short memory:", second_input)
-            self.assertIn("user: Count with me to 10. When I say a number, say the next number.", second_input)
-            self.assertIn("User request:\nAlso, for each number you say, pick a random file name on device.", second_input)
+        methods = [payload["method"] for payload in server.received]
+        self.assertIn("thread/resume", methods)
+        self.assertIn("thread/start", methods)
 
     def test_interrupt_clears_active_turn_and_marks_session_interrupted(self) -> None:
         transport = InMemoryJsonRpcTransport()

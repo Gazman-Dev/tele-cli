@@ -1876,8 +1876,6 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIsNotNone(updated.last_agent_message_at)
         self.assertEqual(telegram.messages, [(22, "Final answer from Codex")])
         self.assertEqual(self.recorder.records, [("assistant", "Final answer from Codex")])
-        short_memory = store.short_memory_path(session.session_id).read_text(encoding="utf-8")
-        self.assertIn("assistant: Final answer from Codex", short_memory)
 
     def test_performance_log_tracks_agent_and_telegram_timing(self) -> None:
         auth = AuthState(

@@ -131,20 +131,18 @@ class AppServerSession:
                 "---\n\n"
                 f"{text}"
             )
-        short_memory = self.session_store.recent_short_memory_text(session.session_id)
-        short_memory_block = f"Recent session short memory:\n{short_memory}\n\n" if short_memory else ""
         if not session.instructions_dirty:
-            return f"{short_memory_block}User request:\n{user_request}".strip() if short_memory_block else user_request
+            return user_request
         if not session.thread_id:
             instructions = render_session_instructions(self.session_store.paths, session, refresh_reason="session_start")
             if not instructions:
-                return f"{short_memory_block}User request:\n{user_request}".strip() if short_memory_block else user_request
-            return f"{instructions}\n\n{short_memory_block}User request:\n{user_request}".strip()
+                return user_request
+            return f"{instructions}\n\nUser request:\n{user_request}"
         refresh, generation = build_refresh_instructions(self.session_store.paths, session)
         if refresh:
             session.last_seen_generation = generation
-            return f"{refresh}\n\n{short_memory_block}User request:\n{user_request}".strip()
-        return f"{short_memory_block}User request:\n{user_request}".strip() if short_memory_block else user_request
+            return f"{refresh}\n\nUser request:\n{user_request}"
+        return user_request
 
     def _scoped_auth(self, *, chat_id: int | None = None, user_id: int | None = None) -> AuthState:
         scoped = AuthState.from_dict(self.auth.to_dict())
@@ -256,7 +254,6 @@ class AppServerSession:
                         self.performance.mark_turn_registered(session)
                     return False
         turn_input = self._build_turn_input(session, text, recovered_from_error=recovered_from_error)
-        self.session_store.append_short_memory_entry(session.session_id, "user", text)
         if thread_id:
             if thread_id not in self._resumed_threads:
                 try:
