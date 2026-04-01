@@ -53,10 +53,12 @@ class AuthState:
     bot_token: str
     telegram_user_id: Optional[int] = None
     telegram_chat_id: Optional[int] = None
+    telegram_topic_id: Optional[int] = None
     pairing_code: Optional[str] = None
     paired_at: Optional[str] = None
     pending_user_id: Optional[int] = None
     pending_chat_id: Optional[int] = None
+    pending_topic_id: Optional[int] = None
     pending_issued_at: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:

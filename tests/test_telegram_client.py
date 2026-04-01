@@ -3,8 +3,11 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from io import BytesIO
+from unittest.mock import patch
+import urllib.error
 
-from integrations.telegram import TelegramClient
+from integrations.telegram import TelegramClient, TelegramError
 
 
 class TelegramClientTests(unittest.TestCase):
@@ -49,6 +52,22 @@ class TelegramClientTests(unittest.TestCase):
         first_method, second_method = ordered_methods
 
         self.assertGreaterEqual(start_times[second_method], end_times[first_method] - 0.005)
+
+    def test_http_error_includes_telegram_response_body(self) -> None:
+        client = TelegramClient("token")
+        error = urllib.error.HTTPError(
+            url="https://api.telegram.org/bottoken/sendMessage",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=BytesIO(b'{"ok": false, "error_code": 400, "description": "Bad Request: chat not found"}'),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaises(TelegramError) as raised:
+                client.send_message(1, "hello")
+
+        self.assertIn("chat not found", str(raised.exception))
 
 
 if __name__ == "__main__":

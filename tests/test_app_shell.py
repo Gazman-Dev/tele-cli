@@ -10,6 +10,7 @@ from core.json_store import save_json
 from core.models import AuthState, CodexServerState, Config, LockMetadata, RuntimeState, SetupState
 from core.paths import build_paths
 from demo_ui.state import DemoExit
+from integrations.telegram import TelegramError
 from storage.runtime_state_store import save_codex_server_state, save_runtime_state
 
 
@@ -241,6 +242,71 @@ class FakeBackend:
 
 
 class AppShellTests(unittest.TestCase):
+    def test_default_backend_pairing_poll_surfaces_send_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.auth, AuthState(bot_token="token").to_dict())
+            backend = DefaultAppShellBackend()
+
+            class FailingTelegram:
+                def __init__(self, token: str) -> None:
+                    self.token = token
+
+                def get_updates(self, offset=None, timeout: int = 20) -> list[dict]:
+                    return [
+                        {
+                            "update_id": 7,
+                            "message": {
+                                "chat": {"id": 22},
+                                "from": {"id": 11},
+                            },
+                        }
+                    ]
+
+                def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode=None):
+                    raise TelegramError("{'ok': False, 'error_code': 400, 'description': 'Bad Request: chat not found'}")
+
+            with patch("app_shell.TelegramClient", FailingTelegram):
+                offset, status, payload = backend.poll_pairing_request(paths, None)
+
+            self.assertEqual(offset, 8)
+            self.assertEqual(status, "error")
+            self.assertIn("chat not found", payload or "")
+
+    def test_default_backend_pairing_poll_replies_in_message_topic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.auth, AuthState(bot_token="token").to_dict())
+            backend = DefaultAppShellBackend()
+            sent: list[tuple[int, str, int | None]] = []
+
+            class TopicTelegram:
+                def __init__(self, token: str) -> None:
+                    self.token = token
+
+                def get_updates(self, offset=None, timeout: int = 20) -> list[dict]:
+                    return [
+                        {
+                            "update_id": 7,
+                            "message": {
+                                "chat": {"id": 22},
+                                "from": {"id": 11},
+                                "message_thread_id": 99,
+                            },
+                        }
+                    ]
+
+                def send_message(self, chat_id: int, text: str, topic_id: int | None = None, parse_mode=None):
+                    sent.append((chat_id, text, topic_id))
+                    return {"message_id": 1}
+
+            with patch("app_shell.TelegramClient", TopicTelegram):
+                offset, status, payload = backend.poll_pairing_request(paths, None)
+
+            self.assertEqual(offset, 8)
+            self.assertEqual(status, "code-issued")
+            self.assertIsNotNone(payload)
+            self.assertEqual(sent, [(22, f"Pairing code: {payload}. Enter this code in the local Tele Cli setup terminal.", 99)])
     def test_default_backend_includes_pending_pairing_menu_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))

@@ -99,6 +99,19 @@ class TelegramClient:
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            response_text = ""
+            if exc.fp is not None:
+                try:
+                    response_text = exc.read().decode("utf-8", errors="replace")
+                except Exception:
+                    response_text = ""
+            if response_text:
+                try:
+                    response_payload = json.loads(response_text)
+                except json.JSONDecodeError:
+                    raise TelegramError(response_text) from exc
+                raise TelegramError(str(response_payload)) from exc
         except urllib.error.URLError as exc:
             raise TelegramError(str(exc)) from exc
         if not payload.get("ok"):
@@ -290,6 +303,7 @@ def register_pairing_request(auth: AuthState, update: dict) -> tuple[bool, str]:
     chat = message.get("chat") or {}
     user_id = from_user.get("id")
     chat_id = chat.get("id")
+    topic_id = message.get("message_thread_id")
     if is_auth_paired(auth):
         if auth.telegram_user_id != user_id:
             return False, "already-paired"
@@ -302,14 +316,17 @@ def register_pairing_request(auth: AuthState, update: dict) -> tuple[bool, str]:
         issue_pairing_code(auth)
         auth.pending_chat_id = int(chat_id)
         auth.pending_user_id = int(user_id)
+        auth.pending_topic_id = int(topic_id) if isinstance(topic_id, int) else None
         return False, "code-issued"
 
     if auth.pending_chat_id != int(chat_id) or auth.pending_user_id != int(user_id):
         issue_pairing_code(auth)
         auth.pending_chat_id = int(chat_id)
         auth.pending_user_id = int(user_id)
+        auth.pending_topic_id = int(topic_id) if isinstance(topic_id, int) else None
         return False, "code-issued"
 
+    auth.pending_topic_id = int(topic_id) if isinstance(topic_id, int) else None
     return False, "code-issued"
 
 
@@ -321,9 +338,11 @@ def confirm_pairing_code(auth: AuthState, code: str) -> bool:
 
     auth.telegram_user_id = auth.pending_user_id
     auth.telegram_chat_id = auth.pending_chat_id
+    auth.telegram_topic_id = auth.pending_topic_id
     auth.paired_at = utc_now()
     auth.pairing_code = None
     auth.pending_chat_id = None
     auth.pending_user_id = None
+    auth.pending_topic_id = None
     auth.pending_issued_at = None
     return True

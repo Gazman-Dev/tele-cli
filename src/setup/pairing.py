@@ -35,8 +35,9 @@ def pair_authorized_operator(paths: AppPaths, auth: AuthState, bot: TelegramClie
             save_json(paths.auth, auth.to_dict())
             if status == "already-paired":
                 chat_id = update.get("message", {}).get("chat", {}).get("id")
+                topic_id = update.get("message", {}).get("message_thread_id")
                 if chat_id:
-                    bot.send_message(chat_id, "This bot is already paired to another chat.")
+                    bot.send_message(chat_id, "This bot is already paired to another chat.", topic_id=topic_id)
                 continue
             if status == "authorized":
                 return
@@ -44,6 +45,7 @@ def pair_authorized_operator(paths: AppPaths, auth: AuthState, bot: TelegramClie
                 bot.send_message(
                     auth.pending_chat_id,
                     f"Pairing code: {auth.pairing_code}. Enter this code in the local Tele Cli setup terminal.",
+                    topic_id=auth.pending_topic_id,
                 )
                 print(
                     "Pairing request received. "
@@ -71,9 +73,14 @@ def complete_pending_pairing(
         code = ask_text(prompt)
         if allow_empty and not code.strip():
             return False
+        topic_id = auth.pending_topic_id
         if confirm_pairing_code(auth, code):
             save_json(paths.auth, auth.to_dict())
-            bot.send_message(auth.telegram_chat_id, "Pairing complete. Tele Cli is now authorized for this chat.")
+            bot.send_message(
+                auth.telegram_chat_id,
+                "Pairing complete. Tele Cli is now authorized for this chat.",
+                topic_id=topic_id,
+            )
             log_recovery_event(paths, f"telegram paired chat_id={auth.telegram_chat_id} user_id={auth.telegram_user_id}")
             TraceStore(paths).log_event(
                 source="telegram_inbound",

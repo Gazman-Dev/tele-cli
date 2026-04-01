@@ -318,16 +318,24 @@ class DefaultAppShellBackend:
             save_json(paths.auth, auth.to_dict())
             if status == "already-paired":
                 chat_id = update.get("message", {}).get("chat", {}).get("id")
+                topic_id = update.get("message", {}).get("message_thread_id")
                 if chat_id:
-                    bot.send_message(chat_id, "This bot is already paired to another chat.")
+                    try:
+                        bot.send_message(chat_id, "This bot is already paired to another chat.", topic_id=topic_id)
+                    except Exception as exc:
+                        return next_offset, "error", str(exc)
                 continue
             if status == "authorized":
                 return next_offset, "paired", None
             if status == "code-issued" and auth.pending_chat_id and auth.pairing_code:
-                bot.send_message(
-                    auth.pending_chat_id,
-                    f"Pairing code: {auth.pairing_code}. Enter this code in the local Tele Cli setup terminal.",
-                )
+                try:
+                    bot.send_message(
+                        auth.pending_chat_id,
+                        f"Pairing code: {auth.pairing_code}. Enter this code in the local Tele Cli setup terminal.",
+                        topic_id=auth.pending_topic_id,
+                    )
+                except Exception as exc:
+                    return next_offset, "error", str(exc)
                 return next_offset, "code-issued", auth.pairing_code
             if ok:
                 return next_offset, "paired", None
@@ -343,13 +351,18 @@ class DefaultAppShellBackend:
             return False, "Telegram bot token is not configured."
         if not has_pending_pairing(auth):
             return False, "No pending Telegram pairing request was found."
+        topic_id = auth.pending_topic_id
         if not confirm_pairing_code(auth, code):
             return False, "Invalid pairing code. Enter the current code from Telegram."
 
         save_json(paths.auth, auth.to_dict())
         bot = TelegramClient(auth.bot_token)
         assert auth.telegram_chat_id is not None
-        bot.send_message(auth.telegram_chat_id, "Pairing complete. Tele Cli is now authorized for this chat.")
+        bot.send_message(
+            auth.telegram_chat_id,
+            "Pairing complete. Tele Cli is now authorized for this chat.",
+            topic_id=topic_id,
+        )
         log_recovery_event(paths, f"telegram paired chat_id={auth.telegram_chat_id} user_id={auth.telegram_user_id}")
         TraceStore(paths).log_event(
             source="telegram_inbound",
