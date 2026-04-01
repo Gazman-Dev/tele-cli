@@ -2051,6 +2051,60 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(self.runtime_state.codex_state, "RUNNING")
         self.assertEqual(telegram.messages, [])
 
+    def test_drain_codex_notifications_marks_auth_ready_after_account_login_completed(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        persisted = CodexServerState(
+            transport="stdio://",
+            initialized=True,
+            account_status="auth_required",
+            auth_required=True,
+            login_type="chatgpt",
+            login_url="https://example.test/login",
+        )
+        save_codex_server_state(self.paths, persisted)
+        self.runtime_state.codex_state = "AUTH_REQUIRED"
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.append(
+            Notification("account/login/completed", {"success": True, "loginId": "login-1", "error": None})
+        )
+        codex.pending_notifications.append(
+            Notification("account/updated", {"authMode": "chatgpt", "planType": "plus"})
+        )
+
+        drain_codex_notifications(
+            self.paths,
+            auth,
+            telegram,
+            self.recorder,
+            codex,
+            self.runtime,
+            self.runtime_state,
+        )
+
+        updated = load_codex_server_state(self.paths)
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertFalse(updated.auth_required)
+        self.assertEqual(updated.account_status, "ready")
+        self.assertEqual(updated.account_type, "chatgpt")
+        self.assertIsNone(updated.login_url)
+        self.assertIsNone(updated.login_type)
+        self.assertEqual(self.runtime_state.codex_state, "RUNNING")
+        self.assertEqual(telegram.messages, [])
+
     def test_drain_codex_notifications_flushes_partial_buffer_on_partial_event(self) -> None:
         auth = AuthState(
             bot_token="token",

@@ -2112,7 +2112,7 @@ def extract_account_payload(params: dict) -> dict | None:
         candidate = params.get(key)
         if isinstance(candidate, dict):
             return candidate
-    if "status" in params or "state" in params:
+    if any(key in params for key in ("status", "state", "success", "authMode", "planType", "accountType", "type")):
         return params
     return None
 
@@ -2154,19 +2154,26 @@ def update_codex_auth_state(
     if persisted is None:
         persisted = CodexServerState(transport="stdio://", initialized=True)
     account_info = account_payload.get("account") if isinstance(account_payload.get("account"), dict) else {}
-    persisted.account_status = account_payload.get("status") or account_payload.get("state")
+    next_state = derive_codex_state(account_payload)
+    if account_payload.get("success") is True and next_state == "AUTH_REQUIRED":
+        next_state = "RUNNING"
+    persisted.account_status = (
+        account_payload.get("status")
+        or account_payload.get("state")
+        or ("ready" if next_state == "RUNNING" else None)
+    )
     persisted.account_type = (
         account_payload.get("accountType")
         or account_payload.get("type")
+        or account_payload.get("authMode")
         or account_info.get("accountType")
         or account_info.get("type")
     )
-    persisted.auth_required = derive_codex_state(account_payload) == "AUTH_REQUIRED"
+    persisted.auth_required = next_state == "AUTH_REQUIRED"
     if not persisted.auth_required:
         persisted.login_url = None
         persisted.login_type = None
     save_codex_server_state(paths, persisted)
-    next_state = derive_codex_state(account_payload)
     if runtime is not None and runtime_state is not None:
         runtime.set_codex_state(next_state)
         save_runtime_state(paths, runtime_state)
@@ -3764,7 +3771,7 @@ def drain_codex_notifications(
                     source_key=status_source_key,
                     performance=performance,
                 )
-        if method in {"account/updated", "account/ready", "login/completed"}:
+        if method in {"account/updated", "account/ready", "login/completed", "account/login/completed"}:
             account_payload = extract_account_payload(params)
             if account_payload is None:
                 continue
