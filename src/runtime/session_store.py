@@ -269,11 +269,11 @@ class SessionStore:
 
     @staticmethod
     def is_writable(session: SessionRecord) -> bool:
-        return session.attached and session.status in {"ACTIVE", "RUNNING_TURN", "INTERRUPTED"}
+        return session.attached and session.status in {"ACTIVE", "RUNNING_TURN", "INTERRUPTED", "DELIVERING_FINAL"}
 
     @staticmethod
     def is_recoverable(session: SessionRecord) -> bool:
-        return session.status in {"ACTIVE", "RUNNING_TURN", "INTERRUPTED", "RECOVERING_TURN"}
+        return session.status in {"ACTIVE", "RUNNING_TURN", "INTERRUPTED", "RECOVERING_TURN", "DELIVERING_FINAL"}
 
     @staticmethod
     def is_prunable_detached(session: SessionRecord) -> bool:

@@ -2418,7 +2418,6 @@ def flush_buffer(
         session.streaming_output_text = text
         session.streaming_phase = "finalizing"
         session.status = "DELIVERING_FINAL"
-        session.attached = False
         session_store.save_session(session)
         return
     recorder.record("assistant", text)

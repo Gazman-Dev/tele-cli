@@ -2451,6 +2451,44 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.edits, [])
         self.assertEqual(self.recorder.records, [])
 
+    def test_queue_only_final_delivery_keeps_session_attached_and_reusable(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.pending_output_text = "Final answer from Codex"
+        session.streaming_output_text = "Final answer from Codex"
+        session.status = "ACTIVE"
+        store.save_session(session)
+
+        with patch("runtime.service.delivery_manager_supports_background_queue", return_value=True), patch(
+            "runtime.service._sync_telegram_message_chunks",
+            return_value=None,
+        ):
+            flush_buffer(
+                session.session_id,
+                auth,
+                FakeTelegramClient(),
+                self.recorder,
+                store,
+                mark_agent=True,
+                queue_only=True,
+            )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.session_id, session.session_id)
+        self.assertTrue(updated.attached)
+        self.assertEqual(updated.status, "DELIVERING_FINAL")
+        current = store.get_current_telegram_session(auth)
+        self.assertIsNotNone(current)
+        assert current is not None
+        self.assertEqual(current.session_id, session.session_id)
+
     def test_duplicate_partial_flush_with_same_text_is_ignored(self) -> None:
         auth = AuthState(
             bot_token="token",
