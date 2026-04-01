@@ -450,6 +450,47 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIsNone(updated.streaming_message_id)
         self.assertEqual(telegram.deletes, [(22, 7)])
 
+    def test_process_telegram_update_keeps_previous_completed_visible_answer(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.last_delivered_output_text = "Final answer"
+        session.streaming_output_text = "Final answer"
+        session.streaming_phase = "answer"
+        session.streaming_message_id = 7
+        session.streaming_message_ids = [7]
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        update = {"update_id": 10, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "next request"}}
+
+        process_telegram_update(
+            update,
+            paths=self.paths,
+            config=self.config,
+            auth=auth,
+            runtime=self.runtime,
+            runtime_state=self.runtime_state,
+            metadata=self.metadata,
+            app_lock=self.app_lock,
+            telegram=telegram,
+            recorder=self.recorder,
+            codex=codex,
+            handle_output=lambda source, line: None,
+        )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_delivered_output_text, "Final answer")
+        self.assertEqual(updated.streaming_message_ids, [])
+        self.assertIsNone(updated.streaming_message_id)
+        self.assertEqual(telegram.deletes, [])
+
     def test_turn_completed_without_new_output_does_not_reuse_previous_answer(self) -> None:
         auth = AuthState(
             bot_token="token",

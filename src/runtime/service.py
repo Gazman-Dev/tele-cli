@@ -530,6 +530,12 @@ def _clear_streaming_messages(telegram: TelegramClient | None, chat_id: int | No
     _set_streaming_message_ids(session, [])
 
 
+def _has_completed_visible_answer(session) -> bool:
+    delivered = (session.last_delivered_output_text or "").strip()
+    streaming = (session.streaming_output_text or "").strip()
+    return bool(delivered and streaming and delivered == streaming and session.streaming_phase == "answer")
+
+
 def _build_final_rendered_chunks(*, answer_html: str, thinking_html: str) -> list[str]:
     answer_chunks = _split_telegram_html_text(answer_html)
     if not thinking_html:
@@ -3119,7 +3125,10 @@ def handle_authorized_message(
             visible_topic_name=visible_topic_name,
         )
         if not tracked_session.active_turn_id:
-            _clear_streaming_messages(telegram, tracked_session.transport_chat_id or auth.telegram_chat_id, tracked_session)
+            if _has_completed_visible_answer(tracked_session):
+                _set_streaming_message_ids(tracked_session, [])
+            else:
+                _clear_streaming_messages(telegram, tracked_session.transport_chat_id or auth.telegram_chat_id, tracked_session)
             tracked_session.pending_output_text = ""
             tracked_session.pending_output_updated_at = None
             tracked_session.streaming_output_text = ""
@@ -3919,7 +3928,10 @@ def drain_codex_notifications(
                         session_store.mark_delivered_output(session, final_stream_text)
                         recorder.record("assistant", final_stream_text)
                     clear_thinking_message(auth, telegram, session_store, session, performance=performance)
-                    _clear_streaming_messages(telegram, session.transport_chat_id or auth.telegram_chat_id, session)
+                    if final_stream_text and final_stream_text != session.last_delivered_output_text:
+                        _set_streaming_message_ids(session, [])
+                    else:
+                        _clear_streaming_messages(telegram, session.transport_chat_id or auth.telegram_chat_id, session)
                     session.streaming_output_text = ""
                     session.streaming_phase = ""
                     session.thinking_message_text = ""
