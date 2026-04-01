@@ -61,7 +61,7 @@ def _remove_service(paths: AppPaths) -> None:
 
 
 def _run_package_update() -> None:
-    subprocess.run(
+    result = subprocess.run(
         [
             sys.executable,
             "-m",
@@ -74,8 +74,16 @@ def _run_package_update() -> None:
             "--no-cache-dir",
             f"git+{REPO_URL}",
         ],
-        check=True,
+        check=False,
+        capture_output=True,
+        text=True,
     )
+    if result.returncode == 0:
+        return
+    details = (result.stderr or result.stdout or "").strip()
+    if details:
+        raise RuntimeError(details)
+    raise RuntimeError(f"pip install exited with status {result.returncode}")
 
 
 def _remove_launchd_service() -> None:

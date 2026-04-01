@@ -866,17 +866,31 @@ class AppShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
             backend = FakeBackend()
-            ui = FakeUi(keys=["down", "enter"])
+            ui = FakeUi(keys=["enter", "down", "enter"])
 
             with patch("app_shell.time.sleep", return_value=None):
                 AppShell(paths, backend=backend, ui=ui).run(startup_action="update")
 
             self.assertEqual(backend.update_calls, 1)
             self.assertNotIn("update", backend.actions)
-            self.assertEqual(ui.spinners, [("Updating Tele Cli", 0.5)])
+            self.assertEqual(ui.pause_messages, [])
             rendered_text = "\n".join("\n".join(lines) for lines in ui.renders)
             self.assertIn("Updating Tele Cli", rendered_text)
             self.assertIn("Update complete.", rendered_text)
+            self.assertIn("Choose what to do next:", rendered_text)
+            self.assertIn("PANEL Next", rendered_text)
+
+    def test_shell_update_flow_can_exit_after_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            backend = FakeBackend()
+            ui = FakeUi(keys=["down", "enter"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run(startup_action="update")
+
+            self.assertEqual(backend.update_calls, 1)
+            self.assertEqual(backend.actions, [])
 
     def test_shell_shows_update_failure_in_shell(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

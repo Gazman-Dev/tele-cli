@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
 from dataclasses import dataclass
 import io
 from contextlib import redirect_stdout
@@ -840,33 +841,73 @@ class AppShell:
             error = message or "Invalid pairing code."
 
     def _run_update_flow(self) -> str | None:
-        self.ui.render(
-            self.ui.print_header()
-            + self.ui.panel(
-                "Updating Tele Cli",
-                [
-                    "Preparing package refresh and service restart.",
-                    "",
-                    f"{Colors.muted}The interactive shell will stay open and return to status when finished.{Colors.reset}",
-                ],
-                width=76,
-                align="center",
-            )
-        )
-        self.ui.spinner("Updating Tele Cli", 0.5)
-        ok, message = self.backend.perform_update(self.paths)
-        if ok:
+        result: dict[str, object] = {"done": False, "ok": False, "message": None}
+
+        def run_update_job() -> None:
+            ok, message = self.backend.perform_update(self.paths)
+            result["ok"] = ok
+            result["message"] = message
+            result["done"] = True
+
+        worker = threading.Thread(target=run_update_job, name="app-shell-update", daemon=True)
+        worker.start()
+        frames = ["Syncing package", "Reinstalling Tele Cli", "Refreshing service registration", "Starting service"]
+        frame_index = 0
+        while not bool(result["done"]):
+            lines = [
+                "Preparing package refresh and service restart.",
+                "",
+                f"{Colors.muted}Please wait while Tele Cli updates in the background.{Colors.reset}",
+                "",
+                f"{Colors.cyan}{frames[frame_index % len(frames)]}...{Colors.reset}",
+            ]
             self.ui.render(
                 self.ui.print_header()
                 + self.ui.panel(
                     "Updating Tele Cli",
-                    [f"{Colors.green}{Colors.bold}Update complete.{Colors.reset}"],
+                    lines,
                     width=76,
                     align="center",
                 )
             )
-            time.sleep(0.6)
-            return None
+            frame_index += 1
+            self.ui.timed_keypress(0.12)
+
+        ok = bool(result["ok"])
+        message = result["message"] if isinstance(result["message"], str) else None
+        if ok:
+            selection = 0
+            options = [("Back to Menu", None), ("Exit", "exit")]
+            while True:
+                menu_lines: list[str] = []
+                for index, (label, _) in enumerate(options):
+                    prefix = ">" if index == selection else " "
+                    if index == selection:
+                        menu_lines.append(f"{Colors.chip_focus} {prefix} {label.ljust(20)} {Colors.reset}")
+                    else:
+                        menu_lines.append(f"  {label.ljust(21)}")
+                self.ui.render(
+                    self.ui.print_header()
+                    + self.ui.panel(
+                        "Updating Tele Cli",
+                        [f"{Colors.green}{Colors.bold}Update complete.{Colors.reset}", "", "Choose what to do next:"],
+                        width=76,
+                        align="center",
+                    )
+                    + [""]
+                    + self.ui.panel("Next", menu_lines, width=34)
+                )
+                key = self.ui.read_key()
+                if key == "up":
+                    selection = (selection - 1) % len(options)
+                elif key == "down":
+                    selection = (selection + 1) % len(options)
+                elif key in {"b"}:
+                    return None
+                elif key in {"e", "q", "esc"}:
+                    return "exit"
+                elif key == "enter":
+                    return options[selection][1]
 
         self.ui.render(
             self.ui.print_header()
