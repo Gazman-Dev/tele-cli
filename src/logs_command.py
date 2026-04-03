@@ -155,6 +155,49 @@ def _run_queue(paths: AppPaths, *, limit: int, status: str | None) -> None:
             print(f"  {row['last_error']}")
 
 
+def _run_session(paths: AppPaths, *, session_id: str, limit: int) -> None:
+    rows = _read_rows(
+        paths,
+        """
+        SELECT received_at, source, event_type, trace_id, session_id, payload_json, payload_preview
+        FROM events
+        WHERE session_id = ?
+        ORDER BY event_id DESC
+        LIMIT ?
+        """,
+        (session_id, int(limit)),
+    )
+    _print_event_rows(list(reversed(rows)))
+
+
+def _run_chat(paths: AppPaths, *, chat_id: int, topic_id: int | None, limit: int) -> None:
+    if topic_id is None:
+        rows = _read_rows(
+            paths,
+            """
+            SELECT received_at, source, event_type, trace_id, session_id, payload_json, payload_preview
+            FROM events
+            WHERE chat_id = ?
+            ORDER BY event_id DESC
+            LIMIT ?
+            """,
+            (int(chat_id), int(limit)),
+        )
+    else:
+        rows = _read_rows(
+            paths,
+            """
+            SELECT received_at, source, event_type, trace_id, session_id, payload_json, payload_preview
+            FROM events
+            WHERE chat_id = ? AND topic_id IS ?
+            ORDER BY event_id DESC
+            LIMIT ?
+            """,
+            (int(chat_id), topic_id, int(limit)),
+        )
+    _print_event_rows(list(reversed(rows)))
+
+
 def run_logs_command(paths: AppPaths, args) -> None:
     action = args.logs_target
     if action == "recent":
@@ -168,5 +211,11 @@ def run_logs_command(paths: AppPaths, args) -> None:
         return
     if action == "queue":
         _run_queue(paths, limit=args.limit, status=args.status)
+        return
+    if action == "session":
+        _run_session(paths, session_id=args.session_id, limit=args.limit)
+        return
+    if action == "chat":
+        _run_chat(paths, chat_id=args.chat_id, topic_id=args.topic_id, limit=args.limit)
         return
     raise SystemExit(f"Unsupported logs target: {action}")

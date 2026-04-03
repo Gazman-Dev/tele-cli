@@ -40,6 +40,15 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.command, "logs")
         self.assertEqual(args.logs_target, "recent")
 
+        args = parser.parse_args(["logs", "session", "session-1"])
+        self.assertEqual(args.logs_target, "session")
+        self.assertEqual(args.session_id, "session-1")
+
+        args = parser.parse_args(["logs", "chat", "22", "--topic-id", "7"])
+        self.assertEqual(args.logs_target, "chat")
+        self.assertEqual(args.chat_id, 22)
+        self.assertEqual(args.topic_id, 7)
+
         args = parser.parse_args(["chat"])
         self.assertEqual(args.command, "chat")
         self.assertEqual(args.session_name, "main")

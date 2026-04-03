@@ -32,8 +32,17 @@ class Recorder:
                 payload={"source": source, "line": line},
             )
         if self.mirror_to_file:
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(f"{utc_now()} [{source}] {line}\n")
+            try:
+                with self.path.open("a", encoding="utf-8") as handle:
+                    handle.write(f"{utc_now()} [{source}] {line}\n")
+            except OSError as exc:
+                if self.trace_store is None:
+                    raise
+                self.trace_store.log_event(
+                    source="storage",
+                    event_type="logging.mirror_write_failed",
+                    payload={"mirror": self.path.name, "error": str(exc)},
+                )
 
     def stop(self) -> None:
         self.state = "STOPPED"

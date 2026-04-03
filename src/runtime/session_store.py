@@ -8,6 +8,7 @@ from pathlib import Path
 from core.models import AuthState, SessionRecord, utc_now
 from core.paths import AppPaths
 from storage.db import StorageManager
+from storage.operations import TraceStore
 from storage.payloads import json_dumps, json_loads
 
 from .instructions import session_short_memory_path, session_short_memory_relpath
@@ -33,6 +34,40 @@ class SessionStore:
         self.paths = paths
         self.storage = StorageManager(paths)
         self.workspace_manager = WorkspaceManager(paths)
+        self.trace_store = TraceStore(paths)
+
+    def _log_session_event(self, event_type: str, session: SessionRecord, *, payload: dict | None = None) -> None:
+        self.trace_store.log_event(
+            source="session",
+            event_type=event_type,
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.active_turn_id or session.last_completed_turn_id,
+            chat_id=session.transport_chat_id,
+            topic_id=session.transport_topic_id,
+            payload=payload
+            or {
+                "transport": session.transport,
+                "status": session.status,
+                "attached": session.attached,
+                "channel": session.transport_channel,
+            },
+        )
+
+    def _log_detached_session_event(self, session: SessionRecord, *, reason: str) -> None:
+        self.trace_store.log_event(
+            source="session",
+            event_type="session.detached",
+            chat_id=session.transport_chat_id,
+            topic_id=session.transport_topic_id,
+            payload={
+                "reason": reason,
+                "detached_session_id": session.session_id,
+                "transport": session.transport,
+                "status": session.status,
+                "channel": session.transport_channel,
+            },
+        )
 
     @staticmethod
     def _stabilize_session(updated_session: SessionRecord, existing_session: SessionRecord | None = None) -> SessionRecord:
@@ -307,14 +342,15 @@ class SessionStore:
                 if normalized_visible_name and active.visible_topic_name != normalized_visible_name:
                     active.visible_topic_name = normalized_visible_name
                     self.save_session(active)
+                self._log_session_event("session.reused", active)
                 return active
             if matching:
                 current = matching[-1]
                 if normalized_visible_name and current.visible_topic_name != normalized_visible_name:
                     current.visible_topic_name = normalized_visible_name
                     self.save_session(current)
-                    return current
-                return matching[-1]
+                self._log_session_event("session.reused", current, payload={"reason": "attached_non_writable", "status": current.status})
+                return current
             session = SessionRecord(
                 session_id=str(uuid.uuid4()),
                 transport="telegram",
@@ -326,6 +362,7 @@ class SessionStore:
             self.save_session(session)
             self.workspace_manager.ensure_session_workspace(session, visible_topic_name=normalized_visible_name)
             self._touch_short_memory(session.session_id)
+            self._log_session_event("session.created", session)
             return session
 
     def save_session(self, updated_session: SessionRecord) -> None:
@@ -360,7 +397,10 @@ class SessionStore:
             for session in state.sessions:
                 if self._matches_transport(session, auth, topic_id):
                     session.attached = False
-            state.sessions = [s for s in state.sessions if not self.is_prunable_detached(s)]
+                    self.save_session(session)
+                    self._log_detached_session_event(session, reason="new_session_requested")
+            refreshed = self.load()
+            self._delete_prunable_session_ids([s.session_id for s in refreshed.sessions if self.is_prunable_detached(s)])
             session = SessionRecord(
                 session_id=str(uuid.uuid4()),
                 transport="telegram",
@@ -369,10 +409,10 @@ class SessionStore:
                 transport_topic_id=topic_id,
                 visible_topic_name=normalized_visible_name,
             )
-            state.sessions.append(session)
-            self.save(state)
+            self.save_session(session)
             self.workspace_manager.ensure_session_workspace(session, visible_topic_name=normalized_visible_name)
             self._touch_short_memory(session.session_id)
+            self._log_session_event("session.created", session, payload={"reason": "explicit_new"})
             return session
 
     def get_or_create_local_session(self, channel: str) -> SessionRecord:
@@ -384,9 +424,12 @@ class SessionStore:
             matching = [s for s in state.sessions if self._matches_local_channel(s, normalized) and s.attached]
             active = next((s for s in matching if self.is_writable(s)), None)
             if active is not None:
+                self._log_session_event("session.reused", active)
                 return active
             if matching:
-                return matching[-1]
+                current = matching[-1]
+                self._log_session_event("session.reused", current, payload={"reason": "attached_non_writable", "status": current.status})
+                return current
             session = SessionRecord(
                 session_id=str(uuid.uuid4()),
                 transport="local",
@@ -397,6 +440,7 @@ class SessionStore:
             self.save_session(session)
             self.workspace_manager.ensure_session_workspace(session)
             self._touch_short_memory(session.session_id)
+            self._log_session_event("session.created", session)
             return session
 
     def create_new_local_session(self, channel: str) -> SessionRecord:
@@ -408,7 +452,10 @@ class SessionStore:
             for session in state.sessions:
                 if self._matches_local_channel(session, normalized):
                     session.attached = False
-            state.sessions = [s for s in state.sessions if not self.is_prunable_detached(s)]
+                    self.save_session(session)
+                    self._log_detached_session_event(session, reason="new_session_requested")
+            refreshed = self.load()
+            self._delete_prunable_session_ids([s.session_id for s in refreshed.sessions if self.is_prunable_detached(s)])
             session = SessionRecord(
                 session_id=str(uuid.uuid4()),
                 transport="local",
@@ -416,10 +463,10 @@ class SessionStore:
                 transport_chat_id=None,
                 transport_channel=normalized,
             )
-            state.sessions.append(session)
-            self.save(state)
+            self.save_session(session)
             self.workspace_manager.ensure_session_workspace(session)
             self._touch_short_memory(session.session_id)
+            self._log_session_event("session.created", session, payload={"reason": "explicit_new"})
             return session
 
     def list_local_sessions(self, channel: str) -> list[SessionRecord]:
@@ -510,6 +557,36 @@ class SessionStore:
         after = len(self.load().sessions)
         return max(before - after, 0)
 
+    def _delete_prunable_session_ids(self, session_ids: list[str]) -> None:
+        if not session_ids:
+            return
+        placeholders = ",".join("?" for _ in session_ids)
+        params = tuple(session_ids)
+        with self.storage.transaction() as connection:
+            connection.execute(
+                f"""
+                UPDATE events
+                SET session_id = NULL
+                WHERE session_id IN ({placeholders})
+                  AND source = 'session'
+                """,
+                params,
+            )
+            connection.execute(
+                f"""
+                DELETE FROM sessions
+                WHERE session_id IN ({placeholders})
+                  AND NOT EXISTS (SELECT 1 FROM approvals WHERE approvals.session_id = sessions.session_id)
+                  AND NOT EXISTS (SELECT 1 FROM traces WHERE traces.session_id = sessions.session_id)
+                  AND NOT EXISTS (SELECT 1 FROM events WHERE events.session_id = sessions.session_id)
+                  AND NOT EXISTS (
+                        SELECT 1 FROM telegram_message_groups
+                        WHERE telegram_message_groups.session_id = sessions.session_id
+                    )
+                """,
+                params,
+            )
+
     def mark_recovering_turns(self) -> list[SessionRecord]:
         state = self.load()
         recovering: list[SessionRecord] = []
@@ -521,4 +598,6 @@ class SessionStore:
                 changed = True
         if changed:
             self.save(state)
+            for session in recovering:
+                self._log_session_event("session.recovered", session, payload={"reason": "startup_recovery"})
         return recovering

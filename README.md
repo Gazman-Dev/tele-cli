@@ -59,6 +59,8 @@ tele-cli logs recent
 tele-cli logs failures
 tele-cli logs trace <trace_id>
 tele-cli logs queue --status failed
+tele-cli logs session <session_id>
+tele-cli logs chat <chat_id> --topic-id <topic_id>
 tele-cli uninstall
 tele-cli reset-auth
 tele-cli complete-pairing
@@ -150,6 +152,8 @@ tele-cli logs recent
 tele-cli logs failures
 tele-cli logs trace <trace_id>
 tele-cli logs queue --status failed
+tele-cli logs session <session_id>
+tele-cli logs chat <chat_id> --topic-id <topic_id>
 ```
 
 ## Codex Runtime Defaults

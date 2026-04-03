@@ -2720,6 +2720,11 @@ def maintain_codex_runtime(
         )
         if restarted is not None:
             append_recovery_event(paths, "codex restart succeeded", run_id=runtime_state.session_id)
+            TraceStore(paths, run_id=runtime_state.session_id).log_event(
+                source="service",
+                event_type="service.recovered",
+                payload={"reason": "codex_restart_succeeded"},
+            )
             return restarted, 0, 0.0
         restart_failures += 1
         delay = codex_restart_delay(config, restart_failures)
@@ -4104,6 +4109,7 @@ def run_service(
     run_store.start(run_id=runtime_state.session_id, pid=getattr(metadata, "pid", None))
     prune_logs(paths, run_id=runtime_state.session_id)
     log_trace_store = TraceStore(paths, run_id=runtime_state.session_id)
+    log_trace_store.log_event(source="service", event_type="service.starting")
     recorder = Recorder(paths.terminal_log, trace_store=log_trace_store)
     performance = PerformanceTracker(paths.performance_log, trace_store=log_trace_store)
     debug = DebugMirror()
@@ -4161,6 +4167,7 @@ def run_service(
         f"service started session_id={runtime_state.session_id}",
         run_id=runtime_state.session_id,
     )
+    log_trace_store.log_event(source="service", event_type="service.started")
     telegram_thread = start_telegram_polling_thread(
         paths=paths,
         config=config,
@@ -4390,6 +4397,7 @@ def run_service(
             time.sleep(service_tick_seconds(config))
     finally:
         threading.Event().wait(SERVICE_LOOP_YIELD_SECONDS)
+        log_trace_store.log_event(source="service", event_type="service.stopping")
         stop_event.set()
         poll_gate.set()
         telegram_thread.join(timeout=SERVICE_THREAD_JOIN_TIMEOUT_SECONDS)
@@ -4403,3 +4411,4 @@ def run_service(
         uninstall_delivery_manager()
         run_store.stop(run_id=runtime_state.session_id, exit_reason="service_stopped")
         append_recovery_event(paths, "service stopped", run_id=runtime_state.session_id)
+        log_trace_store.log_event(source="service", event_type="service.stopped")

@@ -41,9 +41,18 @@ class PerformanceTracker:
                 payload=fields,
             )
         if self.mirror_to_file:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps({"timestamp": utc_now(), "event": event, **fields}, sort_keys=True) + "\n")
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with self.path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"timestamp": utc_now(), "event": event, **fields}, sort_keys=True) + "\n")
+            except OSError as exc:
+                if self.trace_store is None:
+                    raise
+                self.trace_store.log_event(
+                    source="storage",
+                    event_type="logging.mirror_write_failed",
+                    payload={"mirror": self.path.name, "error": str(exc), "event": event},
+                )
 
     def mark_notification_received(self, method: str, params: dict[str, Any]) -> None:
         item = params.get("item") if isinstance(params.get("item"), dict) else {}

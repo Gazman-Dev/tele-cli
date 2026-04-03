@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.json_store import save_json
-from core.models import CodexServerState, RuntimeState
+from core.models import AuthState, CodexServerState, RuntimeState
 from core.paths import build_paths
 from runtime.performance import PerformanceTracker
 from runtime.recorder import Recorder
@@ -267,6 +267,27 @@ class SqliteMigrationTests(unittest.TestCase):
             self.assertIn("hello from terminal mirror", row[2])
             self.assertIn("hello from terminal mirror", paths.terminal_log.read_text(encoding="utf-8"))
 
+    def test_recorder_continues_when_terminal_mirror_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            paths.terminal_log.parent.mkdir(parents=True, exist_ok=True)
+            paths.terminal_log.mkdir()
+            recorder = Recorder(paths.terminal_log, trace_store=TraceStore(paths))
+
+            recorder.start()
+            recorder.record("assistant", "still captured")
+            recorder.stop()
+
+            with closing(sqlite3.connect(paths.database)) as connection:
+                rows = connection.execute(
+                    "SELECT source, event_type, payload_json FROM events WHERE event_type IN ('terminal.assistant', 'logging.mirror_write_failed') ORDER BY event_id ASC"
+                ).fetchall()
+
+            self.assertEqual(rows[0][0], "terminal")
+            self.assertEqual(rows[0][1], "terminal.assistant")
+            self.assertEqual(rows[1][0], "storage")
+            self.assertEqual(rows[1][1], "logging.mirror_write_failed")
+
     def test_performance_tracker_mirrors_records_into_sqlite_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))
@@ -283,6 +304,51 @@ class SqliteMigrationTests(unittest.TestCase):
             self.assertEqual(row[1], "telegram_send_completed")
             self.assertIn('"duration_ms":12.5', row[2])
             self.assertIn("telegram_send_completed", paths.performance_log.read_text(encoding="utf-8"))
+
+    def test_performance_tracker_continues_when_mirror_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            paths.performance_log.parent.mkdir(parents=True, exist_ok=True)
+            paths.performance_log.mkdir()
+            performance = PerformanceTracker(paths.performance_log, trace_store=TraceStore(paths))
+
+            performance.log("telegram_send_completed", session_id="session-1", duration_ms=12.5)
+
+            with closing(sqlite3.connect(paths.database)) as connection:
+                rows = connection.execute(
+                    "SELECT source, event_type FROM events WHERE event_type IN ('telegram_send_completed', 'logging.mirror_write_failed') ORDER BY event_id ASC"
+                ).fetchall()
+
+            self.assertEqual(rows[0], ("performance", "telegram_send_completed"))
+            self.assertEqual(rows[1], ("storage", "logging.mirror_write_failed"))
+
+    def test_session_store_logs_session_lifecycle_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            store = SessionStore(paths)
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+
+            first = store.get_or_create_telegram_session(auth, 7)
+            second = store.get_or_create_telegram_session(auth, 7)
+            replacement = store.create_new_telegram_session(auth, 7)
+
+            self.assertEqual(first.session_id, second.session_id)
+            self.assertNotEqual(first.session_id, replacement.session_id)
+
+            with closing(sqlite3.connect(paths.database)) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT source, event_type, session_id, payload_json
+                    FROM events
+                    WHERE source = 'session'
+                    ORDER BY event_id ASC
+                    """
+                ).fetchall()
+
+            event_types = [str(row[1]) for row in rows]
+            self.assertIn("session.created", event_types)
+            self.assertIn("session.reused", event_types)
+            self.assertIn("session.detached", event_types)
 
     def test_prune_logs_deletes_old_completed_event_data_and_rotates_mirrors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
