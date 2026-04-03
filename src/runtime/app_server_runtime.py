@@ -249,6 +249,7 @@ class AppServerSession:
                             turn_id=session.active_turn_id,
                             chat_id=session.transport_chat_id,
                             topic_id=session.transport_topic_id,
+                            payload={"text_preview": text[:160]},
                         )
                     if self.performance is not None:
                         self.performance.mark_turn_registered(session)

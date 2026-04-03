@@ -19,6 +19,7 @@ from runtime.performance import PerformanceTracker
 from runtime.runtime import ServiceRuntime
 from runtime.service import (
     bootstrap_paired_codex,
+    clear_thinking_message,
     dispatch_queued_user_inputs,
     drain_codex_approvals,
     drain_codex_notifications,
@@ -3481,6 +3482,78 @@ class ServiceFlowTests(unittest.TestCase):
         updated = store.get_or_create_telegram_session(auth)
         self.assertEqual(telegram.edits, [])
         self.assertEqual(updated.thinking_message_text, "Thinking")
+
+    def test_process_telegram_update_archives_visible_thinking_before_steer(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_message_id = 9
+        session.streaming_message_ids = [9]
+        session.thinking_message_text = "Checking repo"
+        session.thinking_live_texts = {"commentary:current": "Checking repo"}
+        session.thinking_sent_texts = {"commentary:current": "Checking repo"}
+        session.thinking_history_order = ["commentary:current"]
+        session.thinking_history_by_source = {"commentary:current": "Checking repo"}
+        session.last_user_message_at = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        update = {"update_id": 88, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "Signing it its fine"}}
+
+        with patch("runtime.service.save_json"):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=codex,
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIs(returned, codex)
+        self.assertEqual(codex.sent, ["Signing it its fine"])
+        refreshed = store.get_current_telegram_session(auth)
+        assert refreshed is not None
+        self.assertEqual(refreshed.streaming_message_ids, [])
+        self.assertEqual(refreshed.thinking_message_ids, [9])
+        self.assertEqual(refreshed.thinking_live_texts, {})
+        self.assertTrue(refreshed.thinking_message_text.startswith("Thinking"))
+        history_entries = list(refreshed.thinking_history_by_source.values())
+        self.assertIn("Checking repo", history_entries)
+
+    def test_clear_thinking_message_deletes_archived_pre_steer_messages(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thinking_message_ids = [7, 8]
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        clear_thinking_message(auth, telegram, store, session)
+
+        refreshed = store.get_current_telegram_session(auth)
+        assert refreshed is not None
+        self.assertEqual(telegram.deletes, [(22, 7), (22, 8)])
+        self.assertEqual(refreshed.thinking_message_ids, [])
 
     def test_drain_codex_notifications_surfaces_reasoning_text_before_answer(self) -> None:
         auth = AuthState(

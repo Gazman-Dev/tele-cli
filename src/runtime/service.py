@@ -590,9 +590,21 @@ def _logical_role_from_context(context: dict | None) -> str:
     return "final_output"
 
 
+def _live_progress_trace_token(session) -> str:
+    base = getattr(session, "current_trace_id", None) or session.active_turn_id or session.last_completed_turn_id or "session"
+    timestamp = (session.last_user_message_at or "").strip()
+    if not timestamp:
+        return str(base)
+    return f"{base}:{timestamp}"
+
+
 def _message_group_id_for_session(session, context: dict | None) -> str:
     logical_role = _logical_role_from_context(context)
-    trace_token = getattr(session, "current_trace_id", None) or session.active_turn_id or session.last_completed_turn_id or "session"
+    trace_token = (
+        _live_progress_trace_token(session)
+        if logical_role == "live_progress"
+        else getattr(session, "current_trace_id", None) or session.active_turn_id or session.last_completed_turn_id or "session"
+    )
     return f"{session.session_id}:{logical_role}:{trace_token}"
 
 
@@ -601,7 +613,11 @@ def _message_chunk_dedupe_key(message_group_id: str, chunk_index: int) -> str:
 
 
 def _message_group_id_for_role(session, logical_role: str) -> str:
-    trace_token = getattr(session, "current_trace_id", None) or session.active_turn_id or session.last_completed_turn_id or "session"
+    trace_token = (
+        _live_progress_trace_token(session)
+        if logical_role == "live_progress"
+        else getattr(session, "current_trace_id", None) or session.active_turn_id or session.last_completed_turn_id or "session"
+    )
     return f"{session.session_id}:{logical_role}:{trace_token}"
 
 
@@ -1931,6 +1947,21 @@ def _current_live_thinking_entries(session) -> list[str]:
     return ordered
 
 
+def _current_live_thinking_source_entries(session) -> list[tuple[str, str]]:
+    ordered: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for source_key in session.thinking_history_order:
+        text = session.thinking_live_texts.get(source_key, "").strip()
+        if text:
+            ordered.append((source_key, text))
+            seen.add(source_key)
+    for source_key, text in session.thinking_live_texts.items():
+        normalized = text.strip()
+        if normalized and source_key not in seen:
+            ordered.append((source_key, normalized))
+    return ordered
+
+
 def _render_live_thinking_html(session) -> str:
     entries = _current_live_thinking_entries(session)
     if not entries:
@@ -1948,6 +1979,64 @@ def _record_thinking_history(session, source_key: str, text: str) -> None:
         session.thinking_history_order.append(source_key)
     session.thinking_history_by_source[source_key] = normalized
     session.thinking_history_text = "\n".join(_thinking_history_entries(session))
+
+
+def _archive_visible_thinking_segment(session) -> None:
+    live_entries = _current_live_thinking_source_entries(session)
+    if not live_entries and not _streaming_message_ids(session):
+        return
+    segment_token = utc_now()
+    for source_key, text in live_entries:
+        if source_key in session.thinking_history_by_source:
+            session.thinking_history_by_source.pop(source_key, None)
+        session.thinking_history_order = [entry for entry in session.thinking_history_order if entry != source_key]
+        archive_key = f"segment:{segment_token}:{len(session.thinking_history_order)}"
+        session.thinking_history_order.append(archive_key)
+        session.thinking_history_by_source[archive_key] = text
+    session.thinking_history_text = "\n".join(_thinking_history_entries(session))
+    archived_ids = [message_id for message_id in session.thinking_message_ids if isinstance(message_id, int)]
+    for message_id in _streaming_message_ids(session):
+        if message_id not in archived_ids:
+            archived_ids.append(message_id)
+    session.thinking_message_ids = archived_ids
+    _set_streaming_message_ids(session, [])
+    session.thinking_message_text = ""
+    session.last_thinking_sent_text = ""
+    session.thinking_live_texts = {}
+    session.thinking_sent_texts = {}
+    session.thinking_live_message_ids = {}
+
+
+def _capture_thinking_segment_snapshot(session) -> dict[str, object]:
+    return {
+        "streaming_message_id": session.streaming_message_id,
+        "streaming_message_ids": list(session.streaming_message_ids),
+        "thinking_message_id": session.thinking_message_id,
+        "thinking_message_ids": list(session.thinking_message_ids),
+        "thinking_live_message_ids": dict(session.thinking_live_message_ids),
+        "thinking_live_texts": dict(session.thinking_live_texts),
+        "thinking_sent_texts": dict(session.thinking_sent_texts),
+        "thinking_message_text": session.thinking_message_text,
+        "thinking_history_text": session.thinking_history_text,
+        "thinking_history_order": list(session.thinking_history_order),
+        "thinking_history_by_source": dict(session.thinking_history_by_source),
+        "last_thinking_sent_text": session.last_thinking_sent_text,
+    }
+
+
+def _restore_thinking_segment_snapshot(session, snapshot: dict[str, object]) -> None:
+    session.streaming_message_id = snapshot["streaming_message_id"]
+    session.streaming_message_ids = list(snapshot["streaming_message_ids"])
+    session.thinking_message_id = snapshot["thinking_message_id"]
+    session.thinking_message_ids = list(snapshot["thinking_message_ids"])
+    session.thinking_live_message_ids = dict(snapshot["thinking_live_message_ids"])
+    session.thinking_live_texts = dict(snapshot["thinking_live_texts"])
+    session.thinking_sent_texts = dict(snapshot["thinking_sent_texts"])
+    session.thinking_message_text = str(snapshot["thinking_message_text"])
+    session.thinking_history_text = str(snapshot["thinking_history_text"])
+    session.thinking_history_order = list(snapshot["thinking_history_order"])
+    session.thinking_history_by_source = dict(snapshot["thinking_history_by_source"])
+    session.last_thinking_sent_text = str(snapshot["last_thinking_sent_text"])
 
 
 def derive_thinking_source_key(
@@ -2091,6 +2180,20 @@ def clear_thinking_message(
     prefix = f"{session.session_id}:"
     for key in [key for key in _THINKING_SOURCE_LAST_SENT_AT if key.startswith(prefix)]:
         _THINKING_SOURCE_LAST_SENT_AT.pop(key, None)
+    target_chat_id = session.transport_chat_id or auth.telegram_chat_id
+    if target_chat_id:
+        archived_ids = [message_id for message_id in session.thinking_message_ids if isinstance(message_id, int)]
+        for message_id in archived_ids:
+            try:
+                delete_telegram_message(
+                    telegram,
+                    target_chat_id,
+                    message_id,
+                    allow_paused_return=True,
+                    performance=performance,
+                )
+            except Exception:
+                pass
     session.thinking_message_id = None
     session.thinking_message_ids = []
     session.thinking_live_message_ids = {}
@@ -3214,6 +3317,7 @@ def handle_authorized_message(
     tracked_session = None
     session_id: str | None = None
     recovered_from_stale_turn = False
+    thinking_segment_snapshot: dict[str, object] | None = None
     trace_store = TraceStore(paths, run_id=runtime_state.session_id) if paths is not None else None
     if session_store is not None:
         tracked_session = session_store.get_or_create_telegram_session(
@@ -3238,6 +3342,9 @@ def handle_authorized_message(
                     payload={"text_preview": text[:160], "reason": "active_turn_finishing"},
                 )
             return
+        if tracked_session.active_turn_id and tracked_session.thread_id and not is_stale_active_turn(tracked_session):
+            thinking_segment_snapshot = _capture_thinking_segment_snapshot(tracked_session)
+            _archive_visible_thinking_segment(tracked_session)
         if not tracked_session.active_turn_id:
             if _has_preservable_visible_answer(tracked_session):
                 _set_streaming_message_ids(tracked_session, [])
@@ -3328,6 +3435,10 @@ def handle_authorized_message(
         else:
             raise RuntimeError("Codex runtime does not support a compatible send signature.")
     except Exception as exc:
+        if tracked_session is not None and thinking_segment_snapshot is not None:
+            _restore_thinking_segment_snapshot(tracked_session, thinking_segment_snapshot)
+            if session_store is not None:
+                session_store.save_session(tracked_session)
         publish_codex_request_error(
             session_store,
             auth,
