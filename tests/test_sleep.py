@@ -30,9 +30,28 @@ class SleepTests(unittest.TestCase):
             self.assertEqual(instruction_paths.workspace_root, paths.workspace)
             self.assertTrue(instruction_paths.template.exists())
             self.assertIn("Telegram-first personal assistant", instruction_paths.template.read_text(encoding="utf-8"))
-            self.assertIn("best friend", instruction_paths.personality.read_text(encoding="utf-8"))
+            self.assertIn("friendly technical partner", instruction_paths.personality.read_text(encoding="utf-8"))
             self.assertIn("session short memory file", instruction_paths.rules.read_text(encoding="utf-8"))
             self.assertIn("Durable preferences", instruction_paths.long_memory.read_text(encoding="utf-8"))
+
+    def test_ensure_instruction_files_refreshes_managed_prompts_but_preserves_long_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            instruction_paths = ensure_instruction_files(paths)
+            instruction_paths.template.write_text("stale template", encoding="utf-8")
+            instruction_paths.rules.write_text("stale rules", encoding="utf-8")
+            instruction_paths.personality.write_text("stale personality", encoding="utf-8")
+            instruction_paths.long_memory.write_text("# Long Memory\n\n- Personal durable fact", encoding="utf-8")
+
+            ensure_instruction_files(paths)
+
+            self.assertIn("Telegram-first personal assistant", instruction_paths.template.read_text(encoding="utf-8"))
+            self.assertIn("tele-cli telegram channel", instruction_paths.rules.read_text(encoding="utf-8"))
+            self.assertIn("friendly technical partner", instruction_paths.personality.read_text(encoding="utf-8"))
+            self.assertEqual(
+                instruction_paths.long_memory.read_text(encoding="utf-8"),
+                "# Long Memory\n\n- Personal durable fact",
+            )
 
     def test_sleep_uses_ai_output_clears_short_memory_and_marks_sessions_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

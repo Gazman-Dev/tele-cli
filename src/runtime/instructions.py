@@ -42,9 +42,6 @@ RESOURCE_DEFAULT_MAP = {
     "rules.md": "defaults/rules.md",
     "long_memory.md": "defaults/long_memory.md",
 }
-SEEDED_MARKER = ".seeded-defaults-v1"
-
-
 def build_instruction_paths(paths: AppPaths) -> InstructionPaths:
     workspace_root = paths.workspace
     system_dir = paths.root / "system"
@@ -117,23 +114,19 @@ def ensure_instruction_files(paths: AppPaths) -> InstructionPaths:
     instruction_paths.defaults_dir.mkdir(parents=True, exist_ok=True)
     instruction_paths.session_memory_dir.mkdir(parents=True, exist_ok=True)
     instruction_paths.lessons_dir.mkdir(parents=True, exist_ok=True)
-    seeded_marker = instruction_paths.system_dir / SEEDED_MARKER
-    should_seed_state_defaults = not seeded_marker.exists()
     for target_name, resource_name in RESOURCE_TEMPLATE_MAP.items():
         target = instruction_paths.system_dir / target_name
-        if target.exists():
-            continue
         target.write_text(_read_resource_text(resource_name), encoding="utf-8")
     for target_name, resource_name in RESOURCE_DEFAULT_MAP.items():
         default_target = instruction_paths.defaults_dir / target_name
-        if not default_target.exists():
-            default_target.write_text(_read_resource_text(resource_name), encoding="utf-8")
+        resource_text = _read_resource_text(resource_name)
+        default_target.write_text(resource_text, encoding="utf-8")
         target = getattr(instruction_paths, target_name.replace(".md", ""))
-        if target.exists() and (not should_seed_state_defaults or target.read_text(encoding="utf-8").strip()):
+        if target_name == "long_memory.md":
+            if not target.exists():
+                target.write_text(resource_text, encoding="utf-8")
             continue
-        target.write_text(_read_resource_text(resource_name), encoding="utf-8")
-    if should_seed_state_defaults:
-        seeded_marker.write_text("seeded\n", encoding="utf-8")
+        target.write_text(resource_text, encoding="utf-8")
     return instruction_paths
 
 
