@@ -19,6 +19,7 @@ from runtime.performance import PerformanceTracker
 from runtime.runtime import ServiceRuntime
 from runtime.service import (
     bootstrap_paired_codex,
+    dispatch_queued_user_inputs,
     drain_codex_approvals,
     drain_codex_notifications,
     ensure_thinking_message,
@@ -534,6 +535,85 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.streaming_message_ids, [])
         self.assertIsNone(updated.streaming_message_id)
         self.assertEqual(telegram.deletes, [])
+
+    def test_process_telegram_update_queues_follow_up_when_active_turn_is_finishing(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.streaming_phase = "answer"
+        session.streaming_output_text = "partial answer"
+        session.streaming_message_id = 91
+        session.streaming_message_ids = [91]
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        update = {"update_id": 77, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "follow up"}}
+
+        with patch("runtime.service.save_json"):
+            returned = process_telegram_update(
+                update,
+                paths=self.paths,
+                config=self.config,
+                auth=auth,
+                runtime=self.runtime,
+                runtime_state=self.runtime_state,
+                metadata=self.metadata,
+                app_lock=self.app_lock,
+                telegram=telegram,
+                recorder=self.recorder,
+                codex=codex,
+                handle_output=lambda source, line: None,
+            )
+
+        self.assertIs(returned, codex)
+        self.assertEqual(codex.sent, [])
+        updated = store.get_current_telegram_session(auth)
+        assert updated is not None
+        self.assertEqual(updated.queued_user_input_text, "follow up")
+        self.assertEqual(telegram.messages, [])
+
+    def test_dispatch_queued_user_inputs_starts_next_turn_after_final_delivery(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.status = "ACTIVE"
+        session.active_turn_id = None
+        session.queued_user_input_text = "follow up"
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+
+        with patch("runtime.service.save_json"):
+            dispatch_queued_user_inputs(
+                self.paths,
+                auth,
+                self.runtime_state,
+                telegram,
+                self.recorder,
+                store,
+                codex,
+                config=self.config,
+                performance=None,
+            )
+
+        self.assertEqual(codex.sent, ["follow up"])
+        refreshed = store.get_current_telegram_session(auth)
+        assert refreshed is not None
+        self.assertEqual(refreshed.queued_user_input_text, "")
 
     def test_turn_completed_without_new_output_does_not_reuse_previous_answer(self) -> None:
         auth = AuthState(

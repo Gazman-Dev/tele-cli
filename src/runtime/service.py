@@ -548,6 +548,28 @@ def _has_preservable_visible_answer(session) -> bool:
     return bool((session.streaming_output_text or "").strip() or (session.pending_output_text or "").strip())
 
 
+def _should_queue_follow_up_user_message(session) -> bool:
+    if not session.active_turn_id:
+        return False
+    if is_stale_active_turn(session):
+        return False
+    if session.status == "DELIVERING_FINAL":
+        return True
+    if session.streaming_phase in {"answer", "finalizing"}:
+        return True
+    return False
+
+
+def _queue_follow_up_user_message(session_store: SessionStore, session, text: str) -> None:
+    queued = text.strip()
+    if not queued:
+        return
+    existing = session.queued_user_input_text.strip()
+    session.queued_user_input_text = f"{existing}\n\n{queued}" if existing else queued
+    session.last_user_message_at = utc_now()
+    session_store.save_session(session)
+
+
 def _build_final_rendered_chunks(*, answer_html: str, thinking_html: str) -> list[str]:
     answer_chunks = _split_telegram_html_text(answer_html)
     if not thinking_html:
@@ -672,6 +694,61 @@ def reconcile_pending_final_deliveries(
         pruned = session_store.prune_detached_sessions()
         if pruned:
             append_recovery_event(paths, f"detached_sessions_pruned count={pruned}")
+
+
+def dispatch_queued_user_inputs(
+    paths: AppPaths,
+    auth: AuthState,
+    runtime_state: RuntimeState,
+    telegram: TelegramClient,
+    recorder: Recorder,
+    session_store: SessionStore,
+    codex,
+    *,
+    config: Config | None = None,
+    performance: PerformanceTracker | None = None,
+) -> None:
+    if codex is None:
+        return
+    for session in session_store.list_telegram_sessions(auth):
+        queued_text = session.queued_user_input_text.strip()
+        if not queued_text:
+            continue
+        if not session.attached or session.status != "ACTIVE" or session.active_turn_id:
+            continue
+        session.queued_user_input_text = ""
+        session_store.save_session(session)
+        append_structured_event(
+            paths,
+            run_id=runtime_state.session_id,
+            source="service",
+            event_type="ai.request.dequeued",
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            turn_id=session.last_completed_turn_id,
+            chat_id=session.transport_chat_id or auth.telegram_chat_id,
+            topic_id=session.transport_topic_id,
+            payload={"text_preview": queued_text[:160]},
+        )
+        handle_authorized_message(
+            queued_text,
+            scoped_auth_for_update(
+                auth,
+                chat_id=session.transport_chat_id,
+                user_id=session.transport_user_id,
+            ),
+            runtime_state,
+            codex,
+            telegram,
+            recorder,
+            session_store,
+            session.transport_topic_id,
+            performance,
+            paths=paths,
+            config=config,
+            source_event_id=None,
+            visible_topic_name=session.visible_topic_name,
+        )
 
 
 def start_telegram_polling_thread(
@@ -3144,6 +3221,23 @@ def handle_authorized_message(
             topic_id,
             visible_topic_name=visible_topic_name,
         )
+        if _should_queue_follow_up_user_message(tracked_session):
+            _queue_follow_up_user_message(session_store, tracked_session, text)
+            if paths is not None:
+                append_structured_event(
+                    paths,
+                    run_id=runtime_state.session_id,
+                    source="service",
+                    event_type="ai.request.queued",
+                    session_id=tracked_session.session_id,
+                    thread_id=tracked_session.thread_id,
+                    turn_id=tracked_session.active_turn_id,
+                    source_event_id=source_event_id,
+                    chat_id=tracked_session.transport_chat_id or auth.telegram_chat_id,
+                    topic_id=tracked_session.transport_topic_id,
+                    payload={"text_preview": text[:160], "reason": "active_turn_finishing"},
+                )
+            return
         if not tracked_session.active_turn_id:
             if _has_preservable_visible_answer(tracked_session):
                 _set_streaming_message_ids(tracked_session, [])
@@ -4280,6 +4374,17 @@ def run_service(
                     session_store,
                     performance=performance,
                 )
+                dispatch_queued_user_inputs(
+                    paths,
+                    auth,
+                    runtime_state,
+                    telegram,
+                    recorder,
+                    session_store,
+                    codex,
+                    config=config,
+                    performance=performance,
+                )
                 last_typing_sent_at = maybe_send_typing_indicator(
                     paths,
                     auth,
@@ -4360,6 +4465,17 @@ def run_service(
                 auth,
                 recorder,
                 session_store,
+                performance=performance,
+            )
+            dispatch_queued_user_inputs(
+                paths,
+                auth,
+                runtime_state,
+                telegram,
+                recorder,
+                session_store,
+                codex,
+                config=config,
                 performance=performance,
             )
             last_typing_sent_at = maybe_send_typing_indicator(
