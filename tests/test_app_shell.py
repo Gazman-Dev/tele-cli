@@ -169,6 +169,9 @@ class FakeBackend:
         self.uninstall_calls += 1
         return "exit"
 
+    def build_logs_view(self, paths, view: str, *, limit: int = 20) -> list[str]:
+        return [f"log-view={view}", f"limit={limit}"]
+
     def ensure_dependencies(self, paths) -> tuple[list[str], str | None]:
         return list(self.dependency_steps), self.dependency_error
 
@@ -386,6 +389,15 @@ class AppShellTests(unittest.TestCase):
             items = DefaultAppShellBackend().build_menu_items(paths)
 
             self.assertIn("Log In Codex", [item.label for item in items])
+
+    def test_default_backend_includes_view_logs_menu_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            save_json(paths.config, Config(state_dir=str(paths.root)).to_dict())
+
+            items = DefaultAppShellBackend().build_menu_items(paths)
+
+            self.assertIn("View logs", [item.label for item in items])
 
     def test_default_backend_status_uses_runtime_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -694,6 +706,26 @@ class AppShellTests(unittest.TestCase):
             rendered_text = "\n".join(ui.renders[-1])
             self.assertIn("PANEL Status", rendered_text)
             self.assertIn("PANEL Menu", rendered_text)
+
+    def test_shell_opens_logs_view_and_returns_to_status_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+
+            class LogsBackend(FakeBackend):
+                def build_menu_items(self, paths):
+                    from demo_ui.state import MenuItem
+
+                    return [MenuItem("View logs", "logs"), MenuItem("Exit", "exit")]
+
+            backend = LogsBackend()
+            ui = FakeUi(keys=["enter", "q", "down", "enter"])
+
+            with patch("app_shell.time.sleep", return_value=None):
+                AppShell(paths, backend=backend, ui=ui).run()
+
+            rendered = ["\n".join(frame) for frame in ui.renders]
+            self.assertTrue(any("Logs: Recent Events" in frame for frame in rendered))
+            self.assertTrue(any("log-view=recent" in frame for frame in rendered))
 
     def test_shell_runs_codex_login_action_inside_shell_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

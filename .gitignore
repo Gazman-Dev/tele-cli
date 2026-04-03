@@ -7,6 +7,7 @@ __pycache__/
 .coverage
 dist/
 build/
+*.egg-info/
 artifacts
 .test_state
 .schema_local

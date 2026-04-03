@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 import io
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 from typing import Protocol
 
 from core.json_store import load_json, save_json
@@ -28,8 +29,10 @@ from integrations.telegram import (
     register_pairing_request,
 )
 from local_chat import run_local_chat
+from logs_command import run_logs_command
 from runtime.service import reset_auth
 from storage.diagnostics import log_recovery_event
+from storage.logging_health import load_logging_health
 from storage.operations import TraceStore
 from storage.runtime_state_store import load_codex_server_state, load_runtime_state
 from setup.admin import run_uninstall, run_update
@@ -111,6 +114,8 @@ class AppShellBackend(Protocol):
 
     def perform_uninstall(self, paths: AppPaths) -> str | None: ...
 
+    def build_logs_view(self, paths: AppPaths, view: str, *, limit: int = 20) -> list[str]: ...
+
     def ensure_dependencies(self, paths: AppPaths) -> tuple[list[str], str | None]: ...
 
     def validate_and_save_token(self, paths: AppPaths, token: str) -> tuple[bool, str | None]: ...
@@ -167,6 +172,7 @@ class DefaultAppShellBackend:
             codex_state = "auth required"
             if service_state == "running":
                 status_line = "AI Service (Codex) login required."
+        logging_health = load_logging_health(paths)
 
         npm_status = "installed" if shutil.which("npm") else "missing"
         codex_install_status = "installed" if shutil.which("codex") else "missing"
@@ -180,6 +186,7 @@ class DefaultAppShellBackend:
             f"{Colors.muted}Codex CLI:{Colors.reset} {codex_install_status}",
             f"{Colors.muted}Telegram token:{Colors.reset} {token_status}",
             f"{Colors.muted}Telegram pairing:{Colors.reset} {describe_pairing(auth)}",
+            f"{Colors.muted}Logging:{Colors.reset} {'degraded' if logging_health.get('state') == 'degraded' else 'healthy'}",
         ]
         if inspection.exists and inspection.metadata:
             lock_line = f"pid={inspection.metadata.pid} mode={inspection.metadata.mode}"
@@ -214,6 +221,7 @@ class DefaultAppShellBackend:
         items.extend(
             [
                 MenuItem("Open local chat", "local-chat"),
+                MenuItem("View logs", "logs"),
                 MenuItem("Reset Telegram auth", "reset-auth"),
                 MenuItem("Update install", "update"),
                 MenuItem("Uninstall", "uninstall"),
@@ -221,6 +229,21 @@ class DefaultAppShellBackend:
             ]
         )
         return items
+
+    def build_logs_view(self, paths: AppPaths, view: str, *, limit: int = 20) -> list[str]:
+        if view == "recent":
+            args = SimpleNamespace(logs_target="recent", limit=limit, source=None, event_type=None)
+        elif view == "failures":
+            args = SimpleNamespace(logs_target="failures", limit=limit)
+        elif view == "queue":
+            args = SimpleNamespace(logs_target="queue", limit=limit, status="failed")
+        else:
+            raise ValueError(f"Unsupported logs view: {view}")
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            run_logs_command(paths, args)
+        output_lines = [line.rstrip() for line in buffer.getvalue().splitlines()]
+        return output_lines or ["No matching log rows."]
 
     def ensure_service_running(self, paths: AppPaths) -> str | None:
         manager = current_service_manager()
@@ -612,6 +635,8 @@ class AppShell:
             return result
         if action == "local-chat":
             return self._run_local_chat_flow()
+        if action == "logs":
+            return self._run_logs_flow()
         result = self.backend.perform_action(self.paths, action)
         if result != "exit" and pause:
             self.ui.pause("Press Enter to return to Tele Cli...")
@@ -641,6 +666,36 @@ class AppShell:
         finally:
             self.ui.begin()
         return None
+
+    def _run_logs_flow(self) -> str | None:
+        views = [
+            ("recent", "Recent Events"),
+            ("failures", "Recent Failures"),
+            ("queue", "Queue Failures"),
+        ]
+        selection = 0
+        while True:
+            key_name, title = views[selection]
+            log_lines = self.backend.build_logs_view(self.paths, key_name, limit=12)
+            footer = [
+                "",
+                f"{Colors.muted}Use left/right or up/down to switch views. Press q to return.{Colors.reset}",
+            ]
+            self.ui.render(
+                self.ui.print_header()
+                + self.ui.panel(
+                    f"Logs: {title}",
+                    log_lines + footer,
+                    width=92,
+                )
+            )
+            key = self.ui.read_key()
+            if key in {"left", "up"}:
+                selection = (selection - 1) % len(views)
+            elif key in {"right", "down"}:
+                selection = (selection + 1) % len(views)
+            elif key in {"q", "esc"}:
+                return None
 
     def _resolve_setup_recovery(self) -> SetupRecoveryChoices | str | None:
         choices = SetupRecoveryChoices()
