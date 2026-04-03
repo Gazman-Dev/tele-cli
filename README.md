@@ -55,6 +55,10 @@ tele-cli menu
 tele-cli setup
 tele-cli service
 tele-cli update
+tele-cli logs recent
+tele-cli logs failures
+tele-cli logs trace <trace_id>
+tele-cli logs queue --status failed
 tele-cli uninstall
 tele-cli reset-auth
 tele-cli complete-pairing
@@ -138,6 +142,15 @@ Tele Cli stores state under `~/.tele-cli` by default. The exact contents evolve 
 - `system/`
 
 The SQLite database now holds runtime state, sessions, events, approvals, Telegram queue data, and workspace metadata.
+
+For debugging, use:
+
+```bash
+tele-cli logs recent
+tele-cli logs failures
+tele-cli logs trace <trace_id>
+tele-cli logs queue --status failed
+```
 
 ## Codex Runtime Defaults
 

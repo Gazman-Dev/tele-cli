@@ -9,6 +9,7 @@ from core.models import AuthState
 from core.paths import build_paths
 from integrations.telegram import TelegramClient
 from local_chat import run_local_chat
+from logs_command import run_logs_command
 from runtime.service import reset_auth, run_service
 from setup.admin import run_uninstall, run_update
 from setup.setup_flow import complete_pending_pairing, run_setup
@@ -37,6 +38,19 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("update")
     subparsers.add_parser("uninstall")
     subparsers.add_parser("complete-pairing")
+    logs_parser = subparsers.add_parser("logs")
+    logs_subparsers = logs_parser.add_subparsers(dest="logs_target", required=True)
+    logs_recent = logs_subparsers.add_parser("recent")
+    logs_recent.add_argument("--limit", type=int, default=20)
+    logs_recent.add_argument("--source", default=None)
+    logs_recent.add_argument("--event-type", dest="event_type", default=None)
+    logs_failures = logs_subparsers.add_parser("failures")
+    logs_failures.add_argument("--limit", type=int, default=20)
+    logs_trace = logs_subparsers.add_parser("trace")
+    logs_trace.add_argument("trace_id")
+    logs_queue = logs_subparsers.add_parser("queue")
+    logs_queue.add_argument("--limit", type=int, default=20)
+    logs_queue.add_argument("--status", default=None)
     telegram_parser = subparsers.add_parser("telegram")
     telegram_subparsers = telegram_parser.add_subparsers(dest="telegram_group", required=True)
     session_parser = telegram_subparsers.add_parser("session", aliases=["channel"])
@@ -95,6 +109,8 @@ def main() -> None:
         if not auth or not auth.bot_token:
             raise SystemExit("Telegram bot token is not configured.")
         complete_pending_pairing(paths, auth, TelegramClient(auth.bot_token))
+    elif args.command == "logs":
+        run_logs_command(paths, args)
     elif args.command == "telegram":
         run_telegram_command(paths, args)
     elif args.command == "chat":

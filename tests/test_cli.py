@@ -36,6 +36,10 @@ class CliTests(unittest.TestCase):
         args = parser.parse_args(["complete-pairing"])
         self.assertEqual(args.command, "complete-pairing")
 
+        args = parser.parse_args(["logs", "recent"])
+        self.assertEqual(args.command, "logs")
+        self.assertEqual(args.logs_target, "recent")
+
         args = parser.parse_args(["chat"])
         self.assertEqual(args.command, "chat")
         self.assertEqual(args.session_name, "main")
@@ -140,6 +144,16 @@ class CliTests(unittest.TestCase):
             main()
 
         run_telegram_command_mock.assert_called_once()
+
+    def test_main_routes_logs_command(self) -> None:
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(sys, "argv", ["tele-cli", "logs", "recent"]),
+            patch("cli.run_logs_command") as run_logs_command_mock,
+        ):
+            main()
+
+        run_logs_command_mock.assert_called_once()
 
     def test_main_runs_update_directly_without_tty(self) -> None:
         with (
