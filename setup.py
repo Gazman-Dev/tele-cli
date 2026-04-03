@@ -11,7 +11,7 @@ setup(
         "runtime": ["resources/*.md", "resources/defaults/*.md"],
         "storage": ["migrations/*.sql"],
     },
-    py_modules=["cli", "app_shell", "app_meta", "local_chat", "telegram_command"],
+    py_modules=["cli", "app_shell", "app_meta", "local_chat", "telegram_command", "logs_command"],
     python_requires=">=3.9",
     entry_points={
         "console_scripts": [

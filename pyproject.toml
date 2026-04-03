@@ -15,7 +15,7 @@ tele-cli-ux-demo = "demo_ui:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["cli", "app_shell", "app_meta", "local_chat", "telegram_command"]
+py-modules = ["cli", "app_shell", "app_meta", "local_chat", "telegram_command", "logs_command"]
 
 [tool.setuptools.package-data]
 runtime = ["resources/*.md", "resources/defaults/*.md"]
