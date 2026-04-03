@@ -29,6 +29,7 @@ from integrations.telegram import (
 from setup.setup_flow import complete_pending_pairing
 from storage.operations import ServiceRunStore, TraceStore
 from storage.db import StorageManager
+from storage.log_maintenance import prune_logs
 from storage.runtime_state_store import (
     load_codex_server_state,
     save_codex_server_state,
@@ -4101,8 +4102,10 @@ def run_service(
     runtime = ServiceRuntime(runtime_state)
     run_store = ServiceRunStore(paths)
     run_store.start(run_id=runtime_state.session_id, pid=getattr(metadata, "pid", None))
-    recorder = Recorder(paths.terminal_log)
-    performance = PerformanceTracker(paths.performance_log)
+    prune_logs(paths, run_id=runtime_state.session_id)
+    log_trace_store = TraceStore(paths, run_id=runtime_state.session_id)
+    recorder = Recorder(paths.terminal_log, trace_store=log_trace_store)
+    performance = PerformanceTracker(paths.performance_log, trace_store=log_trace_store)
     debug = DebugMirror()
     telegram = TelegramClient(auth.bot_token)
     install_delivery_manager(paths, telegram, run_id=runtime_state.session_id)

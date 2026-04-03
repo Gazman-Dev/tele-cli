@@ -43,6 +43,7 @@ from runtime.telegram_html import (
     to_telegram_html,
 )
 from storage.runtime_state_store import load_codex_server_state, save_codex_server_state
+from storage.operations import TraceStore
 from tests.fakes.fake_app_server import FakeAppServer, InMemoryJsonRpcTransport
 from tests.fakes.fake_telegram import FakeTelegramClient
 
@@ -1969,7 +1970,7 @@ class ServiceFlowTests(unittest.TestCase):
             paired_at="now",
         )
         telegram = FakeTelegramClient()
-        performance = PerformanceTracker(self.paths.performance_log)
+        performance = PerformanceTracker(self.paths.performance_log, trace_store=TraceStore(self.paths))
         update = {"update_id": 50, "message": {"chat": {"id": 22}, "from": {"id": 11}, "text": "hello"}}
         codex = FakeCodex()
 
@@ -2028,6 +2029,8 @@ class ServiceFlowTests(unittest.TestCase):
         reply_started = next(event for event in db_events if event["event_type"] == "ai.reply.started")
         reply_finished = next(event for event in db_events if event["event_type"] == "ai.reply.finished")
         trace_completed = next(event for event in db_events if event["event_type"] == "trace.completed")
+        perf_message = next(event for event in db_events if event["event_type"] == "telegram_message_received")
+        perf_send = next(event for event in db_events if event["event_type"] == "telegram_send_completed")
         self.assertEqual(trace_started["source_event_id"], "50")
         self.assertEqual(bound["source_event_id"], "50")
         self.assertEqual(trace_started["trace_id"], bound["trace_id"])
@@ -2035,6 +2038,8 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(request_started["trace_id"], reply_started["trace_id"])
         self.assertEqual(reply_started["trace_id"], reply_finished["trace_id"])
         self.assertEqual(reply_finished["trace_id"], trace_completed["trace_id"])
+        self.assertEqual(perf_message["source"], "performance")
+        self.assertEqual(perf_send["source"], "performance")
 
     def test_drain_codex_notifications_reads_nested_turn_id_and_thread_fallback_text(self) -> None:
         auth = AuthState(

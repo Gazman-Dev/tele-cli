@@ -6,18 +6,44 @@ from pathlib import Path
 from typing import Any
 
 from core.models import utc_now
+from storage.operations import TraceStore
 from storage.telegram_queue import active_delivery_manager
 
 
 class PerformanceTracker:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, trace_store: TraceStore | None = None, mirror_to_file: bool = True):
         self.path = path
+        self.trace_store = trace_store
+        self.mirror_to_file = mirror_to_file
         self._turns: dict[str, dict[str, Any]] = {}
 
     def log(self, event: str, **fields: Any) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"timestamp": utc_now(), "event": event, **fields}, sort_keys=True) + "\n")
+        if self.trace_store is not None:
+            trace_id = fields.get("trace_id")
+            session_id = fields.get("session_id")
+            thread_id = fields.get("thread_id")
+            turn_id = fields.get("turn_id")
+            chat_id = fields.get("chat_id")
+            topic_id = fields.get("topic_id")
+            message_group_id = fields.get("message_group_id")
+            telegram_message_id = fields.get("telegram_message_id")
+            self.trace_store.log_event(
+                source="performance",
+                event_type=event,
+                trace_id=trace_id if isinstance(trace_id, str) else None,
+                session_id=session_id if isinstance(session_id, str) else None,
+                thread_id=thread_id if isinstance(thread_id, str) else None,
+                turn_id=turn_id if isinstance(turn_id, str) else None,
+                chat_id=chat_id if isinstance(chat_id, int) else None,
+                topic_id=topic_id if isinstance(topic_id, int) else None,
+                message_group_id=message_group_id if isinstance(message_group_id, str) else None,
+                telegram_message_id=telegram_message_id if isinstance(telegram_message_id, int) else None,
+                payload=fields,
+            )
+        if self.mirror_to_file:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"timestamp": utc_now(), "event": event, **fields}, sort_keys=True) + "\n")
 
     def mark_notification_received(self, method: str, params: dict[str, Any]) -> None:
         item = params.get("item") if isinstance(params.get("item"), dict) else {}

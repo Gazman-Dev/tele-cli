@@ -22,6 +22,7 @@ This directory is organized by area so runtime behavior, UX behavior, storage de
 ## Storage
 
 - `storage/storage_overview.md`
+- `storage/logging_spec.md`
 
 ## SQLite Migration
 
