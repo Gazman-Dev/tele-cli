@@ -69,6 +69,24 @@ class SessionStore:
             },
         )
 
+    def _log_replaced_session_event(self, previous: SessionRecord, replacement: SessionRecord, *, reason: str) -> None:
+        self.trace_store.log_event(
+            source="session",
+            event_type="session.replaced",
+            session_id=replacement.session_id,
+            thread_id=replacement.thread_id,
+            turn_id=replacement.active_turn_id or replacement.last_completed_turn_id,
+            chat_id=replacement.transport_chat_id,
+            topic_id=replacement.transport_topic_id,
+            payload={
+                "reason": reason,
+                "replaced_session_id": previous.session_id,
+                "replacement_session_id": replacement.session_id,
+                "transport": replacement.transport,
+                "channel": replacement.transport_channel,
+            },
+        )
+
     @staticmethod
     def _stabilize_session(updated_session: SessionRecord, existing_session: SessionRecord | None = None) -> SessionRecord:
         stabilized = SessionRecord.from_dict(updated_session.to_dict())
@@ -394,11 +412,13 @@ class SessionStore:
         normalized_visible_name = (visible_topic_name or "").strip() or None
         with _SESSION_STORE_LOCK:
             state = self.load()
+            replaced_sessions: list[SessionRecord] = []
             for session in state.sessions:
                 if self._matches_transport(session, auth, topic_id):
                     session.attached = False
                     self.save_session(session)
                     self._log_detached_session_event(session, reason="new_session_requested")
+                    replaced_sessions.append(SessionRecord.from_dict(session.to_dict()))
             refreshed = self.load()
             self._delete_prunable_session_ids([s.session_id for s in refreshed.sessions if self.is_prunable_detached(s)])
             session = SessionRecord(
@@ -413,6 +433,8 @@ class SessionStore:
             self.workspace_manager.ensure_session_workspace(session, visible_topic_name=normalized_visible_name)
             self._touch_short_memory(session.session_id)
             self._log_session_event("session.created", session, payload={"reason": "explicit_new"})
+            for previous in replaced_sessions:
+                self._log_replaced_session_event(previous, session, reason="explicit_new")
             return session
 
     def get_or_create_local_session(self, channel: str) -> SessionRecord:
@@ -449,11 +471,13 @@ class SessionStore:
             raise ValueError("Local channel name is required.")
         with _SESSION_STORE_LOCK:
             state = self.load()
+            replaced_sessions: list[SessionRecord] = []
             for session in state.sessions:
                 if self._matches_local_channel(session, normalized):
                     session.attached = False
                     self.save_session(session)
                     self._log_detached_session_event(session, reason="new_session_requested")
+                    replaced_sessions.append(SessionRecord.from_dict(session.to_dict()))
             refreshed = self.load()
             self._delete_prunable_session_ids([s.session_id for s in refreshed.sessions if self.is_prunable_detached(s)])
             session = SessionRecord(
@@ -467,6 +491,8 @@ class SessionStore:
             self.workspace_manager.ensure_session_workspace(session)
             self._touch_short_memory(session.session_id)
             self._log_session_event("session.created", session, payload={"reason": "explicit_new"})
+            for previous in replaced_sessions:
+                self._log_replaced_session_event(previous, session, reason="explicit_new")
             return session
 
     def list_local_sessions(self, channel: str) -> list[SessionRecord]:

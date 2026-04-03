@@ -440,8 +440,9 @@ class StorageManager:
 def ensure_storage(paths: AppPaths) -> None:
     database_path = paths.database.resolve()
     with _MIGRATION_GUARD:
-        if database_path in _INITIALIZED_DATABASES:
+        if database_path in _INITIALIZED_DATABASES and database_path.exists():
             return
+        _INITIALIZED_DATABASES.discard(database_path)
         paths.root.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(paths.database, timeout=5.0)
         try:

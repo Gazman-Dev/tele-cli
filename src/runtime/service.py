@@ -30,6 +30,7 @@ from setup.setup_flow import complete_pending_pairing
 from storage.operations import ServiceRunStore, TraceStore
 from storage.db import StorageManager
 from storage.log_maintenance import prune_logs
+from storage.logging_health import load_logging_health, mark_logging_degraded
 from storage.runtime_state_store import (
     load_codex_server_state,
     save_codex_server_state,
@@ -802,6 +803,7 @@ def build_status_message(
     model: str | None = None,
     reasoning: str | None = None,
 ) -> str:
+    logging_state = load_logging_health(session_store.paths) if session_store is not None else {"state": "healthy"}
     session_lines: list[str] = []
     if session_store is not None and auth.telegram_chat_id:
         sessions = session_store.list_telegram_sessions(auth, topic_id)
@@ -826,6 +828,7 @@ def build_status_message(
         f"service={runtime_state.service_state}\n"
         f"telegram={runtime_state.telegram_state}\n"
         f"codex={runtime_state.codex_state}\n"
+        f"logging={'DEGRADED' if logging_state.get('state') == 'degraded' else 'HEALTHY'}\n"
         f"pairing={describe_pairing(auth)}"
         + (f"\nmodel={model}" if model else "")
         + (f"\nreasoning={reasoning}" if reasoning else "")
@@ -3131,6 +3134,7 @@ def handle_authorized_message(
             category="status",
         )
         return
+    tracked_session = None
     session_id: str | None = None
     recovered_from_stale_turn = False
     trace_store = TraceStore(paths, run_id=runtime_state.session_id) if paths is not None else None
@@ -4107,7 +4111,10 @@ def run_service(
     runtime = ServiceRuntime(runtime_state)
     run_store = ServiceRunStore(paths)
     run_store.start(run_id=runtime_state.session_id, pid=getattr(metadata, "pid", None))
-    prune_logs(paths, run_id=runtime_state.session_id)
+    try:
+        prune_logs(paths, run_id=runtime_state.session_id)
+    except Exception as exc:
+        mark_logging_degraded(paths, operation="prune_logs", error=str(exc), source="storage", event_type="logging.pruned")
     log_trace_store = TraceStore(paths, run_id=runtime_state.session_id)
     log_trace_store.log_event(source="service", event_type="service.starting")
     recorder = Recorder(paths.terminal_log, trace_store=log_trace_store)

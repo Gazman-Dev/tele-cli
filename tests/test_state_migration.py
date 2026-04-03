@@ -18,6 +18,7 @@ from runtime.approval_store import ApprovalRecord, ApprovalStore
 from runtime.session_store import SessionStore
 from runtime.telegram_update_store import TelegramUpdateStore
 from storage.db import StorageManager
+from storage.logging_health import load_logging_health
 from storage.log_maintenance import LogRetentionPolicy, prune_logs
 from storage.operations import ServiceRunStore, TraceStore
 from storage.runtime_state_store import (
@@ -349,6 +350,42 @@ class SqliteMigrationTests(unittest.TestCase):
             self.assertIn("session.created", event_types)
             self.assertIn("session.reused", event_types)
             self.assertIn("session.detached", event_types)
+            self.assertIn("session.replaced", event_types)
+
+    def test_trace_store_marks_logging_degraded_when_sqlite_unavailable_and_recovers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            trace_store = TraceStore(paths, run_id="run-1")
+            paths.database.unlink(missing_ok=True)
+            paths.database.mkdir(parents=True, exist_ok=True)
+            trace_store.log_event(source="service", event_type="service.started", payload={"x": 1})
+
+            degraded = load_logging_health(paths)
+            self.assertEqual(degraded["state"], "degraded")
+            self.assertEqual(degraded["event_type"], "service.started")
+            self.assertTrue(paths.logging_emergency_log.exists())
+
+            paths.database.rmdir()
+            ServiceRunStore(paths).start(run_id="run-1", pid=123)
+            trace_store.log_event(source="service", event_type="service.started", payload={"x": 2})
+
+            recovered = load_logging_health(paths)
+            self.assertEqual(recovered["state"], "healthy")
+
+            with closing(sqlite3.connect(paths.database)) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT event_type, payload_json
+                    FROM events
+                    WHERE event_type IN ('service.started', 'service.degraded', 'service.recovered')
+                    ORDER BY event_id ASC
+                    """
+                ).fetchall()
+
+            event_types = [str(row[0]) for row in rows]
+            self.assertIn("service.started", event_types)
+            self.assertIn("service.degraded", event_types)
+            self.assertIn("service.recovered", event_types)
 
     def test_prune_logs_deletes_old_completed_event_data_and_rotates_mirrors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

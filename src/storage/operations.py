@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import socket
 import uuid
 from typing import Any
@@ -12,6 +13,7 @@ from core.process import process_exists
 
 from .artifacts import ArtifactStore
 from .db import StorageManager
+from .logging_health import clear_logging_degraded, mark_logging_degraded
 from .payloads import GENERAL_PAYLOAD_LIMIT_BYTES, PREVIEW_LIMIT_BYTES, json_dumps, preview_text, truncate_utf8_bytes
 
 
@@ -21,71 +23,79 @@ class ServiceRunStore:
         self.storage = StorageManager(paths)
 
     def start(self, *, run_id: str, pid: int | None = None) -> None:
-        with self.storage.transaction() as connection:
-            connection.execute(
-                """
-                INSERT INTO service_runs(run_id, started_at, version, pid, hostname, state_dir, exit_reason)
-                VALUES (?, ?, ?, ?, ?, ?, NULL)
-                ON CONFLICT(run_id) DO NOTHING
-                """,
-                (run_id, utc_now(), APP_VERSION, pid, socket.gethostname(), str(self.paths.root)),
-            )
-            stale_run_ids = {
-                str(row["claimed_by_run_id"])
-                for row in connection.execute(
+        try:
+            with self.storage.transaction() as connection:
+                connection.execute(
                     """
-                    SELECT DISTINCT q.claimed_by_run_id
-                    FROM telegram_outbound_queue q
-                    WHERE q.status = 'claimed'
-                      AND q.claimed_by_run_id IS NOT NULL
-                      AND q.claimed_by_run_id != ?
+                    INSERT INTO service_runs(run_id, started_at, version, pid, hostname, state_dir, exit_reason)
+                    VALUES (?, ?, ?, ?, ?, ?, NULL)
+                    ON CONFLICT(run_id) DO NOTHING
                     """,
-                    (run_id,),
-                ).fetchall()
-                if row["claimed_by_run_id"] is not None
-            }
-            dead_run_ids: set[str] = set()
-            for stale_run_id in stale_run_ids:
-                run_row = connection.execute(
-                    "SELECT pid, stopped_at, exit_reason FROM service_runs WHERE run_id = ?",
-                    (stale_run_id,),
-                ).fetchone()
-                if run_row is None:
-                    dead_run_ids.add(stale_run_id)
-                    continue
-                if run_row["stopped_at"] is not None or run_row["exit_reason"] is not None:
-                    dead_run_ids.add(stale_run_id)
-                    continue
-                stale_pid = run_row["pid"]
-                if isinstance(stale_pid, int) and stale_pid > 0 and not process_exists(stale_pid):
-                    dead_run_ids.add(stale_run_id)
-            connection.execute(
-                """
-                UPDATE telegram_outbound_queue
-                SET status = 'queued', claimed_by_run_id = NULL, claimed_at = NULL
-                WHERE status = 'claimed' AND claimed_by_run_id IS NULL
-                """
-            )
-            for stale_run_id in dead_run_ids:
+                    (run_id, utc_now(), APP_VERSION, pid, socket.gethostname(), str(self.paths.root)),
+                )
+                stale_run_ids = {
+                    str(row["claimed_by_run_id"])
+                    for row in connection.execute(
+                        """
+                        SELECT DISTINCT q.claimed_by_run_id
+                        FROM telegram_outbound_queue q
+                        WHERE q.status = 'claimed'
+                          AND q.claimed_by_run_id IS NOT NULL
+                          AND q.claimed_by_run_id != ?
+                        """,
+                        (run_id,),
+                    ).fetchall()
+                    if row["claimed_by_run_id"] is not None
+                }
+                dead_run_ids: set[str] = set()
+                for stale_run_id in stale_run_ids:
+                    run_row = connection.execute(
+                        "SELECT pid, stopped_at, exit_reason FROM service_runs WHERE run_id = ?",
+                        (stale_run_id,),
+                    ).fetchone()
+                    if run_row is None:
+                        dead_run_ids.add(stale_run_id)
+                        continue
+                    if run_row["stopped_at"] is not None or run_row["exit_reason"] is not None:
+                        dead_run_ids.add(stale_run_id)
+                        continue
+                    stale_pid = run_row["pid"]
+                    if isinstance(stale_pid, int) and stale_pid > 0 and not process_exists(stale_pid):
+                        dead_run_ids.add(stale_run_id)
                 connection.execute(
                     """
                     UPDATE telegram_outbound_queue
                     SET status = 'queued', claimed_by_run_id = NULL, claimed_at = NULL
-                    WHERE status = 'claimed' AND claimed_by_run_id = ?
-                    """,
-                    (stale_run_id,),
+                    WHERE status = 'claimed' AND claimed_by_run_id IS NULL
+                    """
                 )
+                for stale_run_id in dead_run_ids:
+                    connection.execute(
+                        """
+                        UPDATE telegram_outbound_queue
+                        SET status = 'queued', claimed_by_run_id = NULL, claimed_at = NULL
+                        WHERE status = 'claimed' AND claimed_by_run_id = ?
+                        """,
+                        (stale_run_id,),
+                    )
+        except sqlite3.Error as exc:
+            mark_logging_degraded(self.paths, operation="service_run_start", error=str(exc))
+            return
 
     def stop(self, *, run_id: str, exit_reason: str) -> None:
-        with self.storage.transaction() as connection:
-            connection.execute(
-                """
-                UPDATE service_runs
-                SET stopped_at = ?, exit_reason = ?
-                WHERE run_id = ?
-                """,
-                (utc_now(), exit_reason, run_id),
-            )
+        try:
+            with self.storage.transaction() as connection:
+                connection.execute(
+                    """
+                    UPDATE service_runs
+                    SET stopped_at = ?, exit_reason = ?
+                    WHERE run_id = ?
+                    """,
+                    (utc_now(), exit_reason, run_id),
+                )
+        except sqlite3.Error as exc:
+            mark_logging_degraded(self.paths, operation="service_run_stop", error=str(exc))
+            return
 
 
 class TraceStore:
@@ -108,25 +118,34 @@ class TraceStore:
         source_event_id: str | None = None,
     ) -> str:
         trace_id = str(uuid.uuid4())
-        with self.storage.transaction() as connection:
-            connection.execute(
-                """
-                INSERT INTO traces(
-                    trace_id, session_id, thread_id, turn_id, parent_trace_id, chat_id, topic_id,
-                    user_text_preview, started_at, completed_at, outcome
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
-                """,
-                (
-                    trace_id,
-                    session_id,
-                    thread_id,
-                    turn_id,
-                    parent_trace_id,
-                    chat_id,
-                    topic_id,
-                    preview_text(user_text),
-                    utc_now(),
-                ),
+        try:
+            with self.storage.transaction() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO traces(
+                        trace_id, session_id, thread_id, turn_id, parent_trace_id, chat_id, topic_id,
+                        user_text_preview, started_at, completed_at, outcome
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+                    """,
+                    (
+                        trace_id,
+                        session_id,
+                        thread_id,
+                        turn_id,
+                        parent_trace_id,
+                        chat_id,
+                        topic_id,
+                        preview_text(user_text),
+                        utc_now(),
+                    ),
+                )
+        except sqlite3.Error as exc:
+            mark_logging_degraded(
+                self.paths,
+                operation="start_trace",
+                error=str(exc),
+                source="service",
+                event_type="trace.started",
             )
         self.log_event(
             source="service",
@@ -147,8 +166,18 @@ class TraceStore:
             return
         assignments = ", ".join(f"{key} = ?" for key in fields)
         values = list(fields.values()) + [trace_id]
-        with self.storage.transaction() as connection:
-            connection.execute(f"UPDATE traces SET {assignments} WHERE trace_id = ?", values)
+        try:
+            with self.storage.transaction() as connection:
+                connection.execute(f"UPDATE traces SET {assignments} WHERE trace_id = ?", values)
+        except sqlite3.Error as exc:
+            mark_logging_degraded(
+                self.paths,
+                operation="update_trace",
+                error=str(exc),
+                source="service",
+                event_type="trace.updated",
+            )
+            return
 
     def complete_trace(self, trace_id: str, *, outcome: str, thread_id: str | None = None, turn_id: str | None = None) -> None:
         fields: dict[str, Any] = {"completed_at": utc_now(), "outcome": outcome}
@@ -183,75 +212,158 @@ class TraceStore:
         payload: Any | None = None,
         handled: bool = True,
     ) -> None:
-        effective_run_id = self.run_id
-        if effective_run_id is not None:
-            with self.storage.read_connection() as connection:
-                run_row = connection.execute("SELECT 1 FROM service_runs WHERE run_id = ?", (effective_run_id,)).fetchone()
-            if run_row is None:
-                effective_run_id = None
-        if session_id is not None:
-            with self.storage.read_connection() as connection:
-                session_row = connection.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-            if session_row is None:
-                session_id = None
-        if trace_id is not None:
-            with self.storage.read_connection() as connection:
-                trace_row = connection.execute("SELECT 1 FROM traces WHERE trace_id = ?", (trace_id,)).fetchone()
-            if trace_row is None:
-                trace_id = None
-        payload_json: str | None = None
-        payload_preview: str | None = None
-        artifact_id: str | None = None
         created_artifact: dict[str, object] | None = None
         try:
-            with self.storage.transaction() as connection:
-                if payload is not None:
-                    payload_json = json_dumps(payload)
-                    if len(payload_json.encode("utf-8")) > GENERAL_PAYLOAD_LIMIT_BYTES:
-                        payload_preview = truncate_utf8_bytes(payload_json, PREVIEW_LIMIT_BYTES)
-                        created_artifact = self.artifacts.write_text(
-                            kind=self._artifact_kind(source, event_type),
-                            text=payload_json,
-                            suffix=".json",
-                            connection=connection,
+            effective_run_id = self.run_id
+            if effective_run_id is not None:
+                with self.storage.read_connection() as connection:
+                    run_row = connection.execute("SELECT 1 FROM service_runs WHERE run_id = ?", (effective_run_id,)).fetchone()
+                if run_row is None:
+                    effective_run_id = None
+            if session_id is not None:
+                with self.storage.read_connection() as connection:
+                    session_row = connection.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+                if session_row is None:
+                    session_id = None
+            if trace_id is not None:
+                with self.storage.read_connection() as connection:
+                    trace_row = connection.execute("SELECT 1 FROM traces WHERE trace_id = ?", (trace_id,)).fetchone()
+                if trace_row is None:
+                    trace_id = None
+            payload_json: str | None = None
+            payload_preview: str | None = None
+            artifact_id: str | None = None
+            try:
+                with self.storage.transaction() as connection:
+                    if payload is not None:
+                        payload_json = json_dumps(payload)
+                        if len(payload_json.encode("utf-8")) > GENERAL_PAYLOAD_LIMIT_BYTES:
+                            payload_preview = truncate_utf8_bytes(payload_json, PREVIEW_LIMIT_BYTES)
+                            created_artifact = self.artifacts.write_text(
+                                kind=self._artifact_kind(source, event_type),
+                                text=payload_json,
+                                suffix=".json",
+                                connection=connection,
+                            )
+                            artifact_id = str(created_artifact["artifact_id"])
+                            payload_json = None
+                        else:
+                            payload_preview = truncate_utf8_bytes(payload_json, PREVIEW_LIMIT_BYTES)
+                    connection.execute(
+                        """
+                        INSERT INTO events(
+                            trace_id, run_id, source, event_type, received_at, handled_at,
+                            session_id, thread_id, turn_id, item_id, source_event_id, chat_id, topic_id,
+                            message_group_id, telegram_message_id, payload_json, payload_preview, artifact_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            trace_id,
+                            effective_run_id,
+                            source,
+                            event_type,
+                            utc_now(),
+                            utc_now() if handled else None,
+                            session_id,
+                            thread_id,
+                            turn_id,
+                            item_id,
+                            source_event_id,
+                            chat_id,
+                            topic_id,
+                            message_group_id,
+                            telegram_message_id,
+                            payload_json,
+                            payload_preview,
+                            artifact_id,
+                        ),
+                    )
+                    recovered = clear_logging_degraded(self.paths)
+                    if recovered is not None:
+                        self._insert_event_row(
+                            connection,
+                            run_id=effective_run_id,
+                            source="service",
+                            event_type="service.degraded",
+                            payload_json=json_dumps(
+                                {
+                                    "reason": "logging_sqlite_unavailable",
+                                    "degraded_at": recovered.get("degraded_at"),
+                                    "error": recovered.get("error"),
+                                    "operation": recovered.get("operation"),
+                                    "source": recovered.get("source"),
+                                    "event_type": recovered.get("event_type"),
+                                }
+                            ),
                         )
-                        artifact_id = str(created_artifact["artifact_id"])
-                        payload_json = None
-                    else:
-                        payload_preview = truncate_utf8_bytes(payload_json, PREVIEW_LIMIT_BYTES)
-                connection.execute(
-                    """
-                    INSERT INTO events(
-                        trace_id, run_id, source, event_type, received_at, handled_at,
-                        session_id, thread_id, turn_id, item_id, source_event_id, chat_id, topic_id,
-                        message_group_id, telegram_message_id, payload_json, payload_preview, artifact_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        trace_id,
-                        effective_run_id,
-                        source,
-                        event_type,
-                        utc_now(),
-                        utc_now() if handled else None,
-                        session_id,
-                        thread_id,
-                        turn_id,
-                        item_id,
-                        source_event_id,
-                        chat_id,
-                        topic_id,
-                        message_group_id,
-                        telegram_message_id,
-                        payload_json,
-                        payload_preview,
-                        artifact_id,
-                    ),
-                )
-        except Exception:
-            if created_artifact is not None:
-                self.artifacts.delete(created_artifact)
-            raise
+                        self._insert_event_row(
+                            connection,
+                            run_id=effective_run_id,
+                            source="service",
+                            event_type="service.recovered",
+                            payload_json=json_dumps(
+                                {
+                                    "reason": "logging_sqlite_recovered",
+                                    "degraded_at": recovered.get("degraded_at"),
+                                    "error": recovered.get("error"),
+                                    "operation": recovered.get("operation"),
+                                }
+                            ),
+                        )
+            except Exception:
+                if created_artifact is not None:
+                    self.artifacts.delete(created_artifact)
+                raise
+        except sqlite3.Error as exc:
+            mark_logging_degraded(
+                self.paths,
+                operation="log_event",
+                error=str(exc),
+                source=source,
+                event_type=event_type,
+            )
+            return
+
+    @staticmethod
+    def _insert_event_row(
+        connection,
+        *,
+        run_id: str | None,
+        source: str,
+        event_type: str,
+        payload_json: str | None = None,
+    ) -> None:
+        now = utc_now()
+        payload_preview = truncate_utf8_bytes(payload_json, PREVIEW_LIMIT_BYTES) if payload_json else None
+        connection.execute(
+            """
+            INSERT INTO events(
+                trace_id, run_id, source, event_type, received_at, handled_at,
+                session_id, thread_id, turn_id, item_id, source_event_id, chat_id, topic_id,
+                message_group_id, telegram_message_id, payload_json, payload_preview, artifact_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                None,
+                run_id,
+                source,
+                event_type,
+                now,
+                now,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                payload_json,
+                payload_preview,
+                None,
+            ),
+        )
 
     @staticmethod
     def _artifact_kind(source: str, event_type: str) -> str:

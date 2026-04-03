@@ -23,6 +23,8 @@ class AppPaths:
     sleep_state: Path
     terminal_log: Path
     performance_log: Path
+    logging_health: Path
+    logging_emergency_log: Path
 
 
 def default_state_dir() -> Path:
@@ -51,4 +53,6 @@ def build_paths(state_dir: Optional[Path | str] = None) -> AppPaths:
         sleep_state=root / "sleep_state.json",
         terminal_log=root / "terminal.log",
         performance_log=root / "performance.log",
+        logging_health=root / "logging_health.json",
+        logging_emergency_log=root / "logging_emergency.log",
     )

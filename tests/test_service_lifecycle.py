@@ -10,6 +10,7 @@ from core.paths import build_paths
 from runtime.approval_store import ApprovalRecord, ApprovalStore
 from runtime.control import classify_service_conflict, handle_service_conflict
 from runtime.service import build_status_message, handle_authorized_message
+from storage.logging_health import mark_logging_degraded
 
 
 class ImmediateDeliveryManager:
@@ -184,8 +185,31 @@ class ServiceLifecycleTests(unittest.TestCase):
         self.assertIn("service=RUNNING", status)
         self.assertIn("telegram=RUNNING", status)
         self.assertIn("codex=AUTH_REQUIRED", status)
+        self.assertIn("logging=HEALTHY", status)
         self.assertIn("pairing=paired user=11 default_chat=22", status)
         self.assertIn("stale_approvals=1", status)
+
+    def test_status_message_reports_logging_degraded(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        paths = build_paths(Path.cwd() / ".test_state" / "service_lifecycle_logging_status")
+        runtime_state = RuntimeState(
+            session_id="1",
+            service_state="RUNNING",
+            codex_state="RUNNING",
+            telegram_state="RUNNING",
+            recorder_state="RUNNING",
+            debug_state="RUNNING",
+        )
+        from runtime.session_store import SessionStore
+
+        mark_logging_degraded(paths, operation="log_event", error="database is locked", source="service", event_type="service.started")
+        status = build_status_message(auth, runtime_state, SessionStore(paths))
+        self.assertIn("logging=DEGRADED", status)
 
     def test_status_command_works_without_codex(self) -> None:
         auth = AuthState(
