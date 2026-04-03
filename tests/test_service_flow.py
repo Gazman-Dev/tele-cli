@@ -18,6 +18,7 @@ from runtime.app_server_runtime import make_app_server_start_fn
 from runtime.performance import PerformanceTracker
 from runtime.runtime import ServiceRuntime
 from runtime.service import (
+    _cancel_queued_live_progress_operations,
     bootstrap_paired_codex,
     clear_thinking_message,
     dispatch_queued_user_inputs,
@@ -3554,6 +3555,112 @@ class ServiceFlowTests(unittest.TestCase):
         assert refreshed is not None
         self.assertEqual(telegram.deletes, [(22, 7), (22, 8)])
         self.assertEqual(refreshed.thinking_message_ids, [])
+
+    def test_cancel_queued_live_progress_operations_removes_stale_progress_and_typing(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.current_trace_id = "trace-1"
+        store.save_session(session)
+
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self.paths.database) as connection:
+            connection.executemany(
+                """
+                INSERT INTO telegram_outbound_queue(
+                    queue_id, created_at, available_at, status, op_type, chat_id, topic_id, session_id, trace_id,
+                    message_group_id, telegram_message_id, dedupe_key, priority, disable_notification, payload_json,
+                    attempt_count, last_error, claimed_by_run_id, claimed_at, completed_at
+                ) VALUES (?, ?, ?, 'queued', ?, ?, NULL, ?, ?, ?, NULL, ?, ?, 0, '{}', 0, NULL, NULL, NULL, NULL)
+                """,
+                [
+                    (
+                        "q-progress",
+                        now,
+                        now,
+                        "edit_message",
+                        22,
+                        session.session_id,
+                        session.current_trace_id,
+                        f"{session.session_id}:live_progress:old",
+                        f"{session.session_id}:live_progress:old:chunk:0",
+                        100,
+                    ),
+                    (
+                        "q-typing",
+                        now,
+                        now,
+                        "typing",
+                        22,
+                        session.session_id,
+                        session.current_trace_id,
+                        f"{session.session_id}:typing",
+                        f"{session.session_id}:typing",
+                        10,
+                    ),
+                    (
+                        "q-final",
+                        now,
+                        now,
+                        "edit_message",
+                        22,
+                        session.session_id,
+                        session.current_trace_id,
+                        f"{session.session_id}:final_output:turn-1",
+                        f"{session.session_id}:final_output:turn-1:chunk:0",
+                        100,
+                    ),
+                ],
+            )
+
+        _cancel_queued_live_progress_operations(self.paths, session, include_typing=True)
+
+        with sqlite3.connect(self.paths.database) as connection:
+            remaining = connection.execute(
+                "SELECT op_type, message_group_id FROM telegram_outbound_queue WHERE status = 'queued' ORDER BY created_at"
+            ).fetchall()
+        self.assertEqual(remaining, [("edit_message", f"{session.session_id}:final_output:turn-1")])
+
+    def test_maybe_send_typing_indicator_uses_deduped_high_priority_typing(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.last_user_message_at = (datetime.now(timezone.utc) - timedelta(seconds=20)).isoformat()
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        with patch("runtime.service.queue_telegram_typing") as queue_typing:
+            sent_at = maybe_send_typing_indicator(
+                self.paths,
+                auth,
+                telegram,
+                store,
+                interval_seconds=4.0,
+                last_sent_at=None,
+                performance=None,
+            )
+
+        self.assertIsNotNone(sent_at)
+        queue_typing.assert_called_once()
+        _, kwargs = queue_typing.call_args
+        self.assertEqual(kwargs["message_group_id"], f"{session.session_id}:typing")
+        self.assertEqual(kwargs["dedupe_key"], f"{session.session_id}:typing")
+        self.assertEqual(kwargs["priority"], 10)
 
     def test_drain_codex_notifications_surfaces_reasoning_text_before_answer(self) -> None:
         auth = AuthState(

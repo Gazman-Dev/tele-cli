@@ -659,7 +659,9 @@ def queue_telegram_typing(
             topic_id=topic_id,
             session_id=context.get("session_id"),
             trace_id=context.get("trace_id"),
-            priority=int(context.get("priority", 200)),
+            message_group_id=context.get("message_group_id"),
+            dedupe_key=context.get("dedupe_key"),
+            priority=int(context.get("priority", 10)),
         )
     else:
         manager.enqueue_and_wait(
@@ -669,7 +671,9 @@ def queue_telegram_typing(
             topic_id=topic_id,
             session_id=context.get("session_id"),
             trace_id=context.get("trace_id"),
-            priority=int(context.get("priority", 200)),
+            message_group_id=context.get("message_group_id"),
+            dedupe_key=context.get("dedupe_key"),
+            priority=int(context.get("priority", 10)),
         )
         completed_inline = True
     if performance is not None:

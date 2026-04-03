@@ -652,6 +652,33 @@ def _message_group_queue_state(paths: AppPaths, *, message_group_id: str) -> dic
     return {key: int(row[key] or 0) for key in row.keys()}
 
 
+def _cancel_queued_live_progress_operations(paths: AppPaths, session, *, include_typing: bool) -> None:
+    session_id = getattr(session, "session_id", None)
+    if not isinstance(session_id, str) or not session_id:
+        return
+    storage = StorageManager(paths)
+    with storage.transaction() as connection:
+        connection.execute(
+            """
+            DELETE FROM telegram_outbound_queue
+            WHERE status = 'queued'
+              AND session_id = ?
+              AND message_group_id LIKE ?
+            """,
+            (session_id, f"{session_id}:live_progress:%"),
+        )
+        if include_typing:
+            connection.execute(
+                """
+                DELETE FROM telegram_outbound_queue
+                WHERE status = 'queued'
+                  AND session_id = ?
+                  AND op_type = 'typing'
+                """,
+                (session_id,),
+            )
+
+
 def reconcile_pending_final_deliveries(
     paths: AppPaths,
     auth: AuthState,
@@ -2569,6 +2596,7 @@ def flush_buffer(
     )
     thinking_html = render_collapsed_thinking_html(_thinking_history_entries(session))
     final_html = answer_html if not thinking_html else f"{thinking_html}\n\n{answer_html}"
+    _cancel_queued_live_progress_operations(session_store.paths, session, include_typing=True)
     rendered_attempts = [
         ("formatted_html", _build_final_rendered_chunks(answer_html=answer_html, thinking_html=thinking_html)),
         (
@@ -2808,12 +2836,16 @@ def maybe_send_typing_indicator(
     if last_sent_at is not None and (now - last_sent_at).total_seconds() < effective_interval:
         return last_sent_at
     if hasattr(telegram, "send_typing"):
+        typing_group_id = f"{current.session_id}:typing"
         queue_telegram_typing(
             target_chat_id,
             topic_id=current.transport_topic_id,
             performance=performance,
             session_id=current.session_id,
             trace_id=getattr(current, "current_trace_id", None),
+            message_group_id=typing_group_id,
+            dedupe_key=typing_group_id,
+            priority=10,
         )
         return now
     return last_sent_at
@@ -3343,6 +3375,7 @@ def handle_authorized_message(
                 )
             return
         if tracked_session.active_turn_id and tracked_session.thread_id and not is_stale_active_turn(tracked_session):
+            _cancel_queued_live_progress_operations(paths, tracked_session, include_typing=True)
             thinking_segment_snapshot = _capture_thinking_segment_snapshot(tracked_session)
             _archive_visible_thinking_segment(tracked_session)
         if not tracked_session.active_turn_id:
