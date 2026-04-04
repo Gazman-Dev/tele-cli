@@ -9,9 +9,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from core.models import AuthState
 from core.paths import build_paths
 from integrations.telegram import TelegramError
 from runtime import service as service_module  # Preload runtime/storage graph before importing the queue module.
+from runtime.session_store import SessionStore
 from storage.operations import ServiceRunStore
 from storage.telegram_queue import TelegramDeliveryManager
 from tests.fakes.fake_telegram import FakeTelegramClient
@@ -362,6 +364,90 @@ class TelegramQueueTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual([str(row[0]) for row in rows], ["send_message", "edit_message"])
         self.assertEqual([int(row[1]) for row in rows], [1, 1])
+
+    def test_stale_live_progress_row_is_skipped_after_final_delivery_starts(self) -> None:
+        telegram = FakeTelegramClient()
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=123, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.active_turn_id = "turn-1"
+        session.current_trace_id = "trace-1"
+        session.status = "RUNNING_TURN"
+        session.last_user_message_at = datetime.now(timezone.utc).isoformat()
+        store.save_session(session)
+        stale_group = f"{session.session_id}:live_progress:trace-1:{session.last_user_message_at}"
+
+        manager.enqueue(
+            op_type="send_message",
+            payload={"text": "Thinking..."},
+            chat_id=123,
+            session_id=session.session_id,
+            message_group_id=stale_group,
+            dedupe_key=f"{stale_group}:chunk:0",
+        )
+
+        session.status = "DELIVERING_FINAL"
+        session.active_turn_id = None
+        store.save_session(session)
+        self._expire_pause_and_queue()
+        result = manager.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["skip_reason"], "session_status:DELIVERING_FINAL")
+        self.assertEqual(telegram.messages, [])
+        with closing(sqlite3.connect(self.paths.database)) as connection:
+            status_row = connection.execute(
+                "SELECT status FROM telegram_outbound_queue WHERE queue_id = ?",
+                (result["queue_id"],),
+            ).fetchone()
+            event_row = connection.execute(
+                """
+                SELECT payload_json
+                FROM events
+                WHERE event_type = 'telegram.queue.skipped_stale'
+                ORDER BY event_id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        self.assertEqual(str(status_row[0]), "completed")
+        self.assertIsNotNone(event_row)
+        self.assertEqual(json.loads(str(event_row[0]))["reason"], "session_status:DELIVERING_FINAL")
+
+    def test_stale_typing_row_is_skipped_after_turn_finishes(self) -> None:
+        telegram = FakeTelegramClient()
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+        auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=123, paired_at="now")
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.active_turn_id = "turn-1"
+        session.current_trace_id = "trace-1"
+        session.status = "RUNNING_TURN"
+        session.last_user_message_at = datetime.now(timezone.utc).isoformat()
+        store.save_session(session)
+
+        manager.enqueue(
+            op_type="typing",
+            payload={},
+            chat_id=123,
+            session_id=session.session_id,
+            message_group_id=f"{session.session_id}:typing",
+            dedupe_key=f"{session.session_id}:typing",
+        )
+
+        session.status = "ACTIVE"
+        session.active_turn_id = None
+        store.save_session(session)
+        self._expire_pause_and_queue()
+        result = manager.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["skip_reason"], "session_status:ACTIVE")
+        self.assertEqual(telegram.typing_actions, [])
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ _RATE_LIMIT_STATE_KEY = "telegram_delivery_backoff"
 _MAX_RATE_LIMIT_BACKOFF_SECONDS = 3600
 _INITIAL_RATE_LIMIT_BACKOFF_SECONDS = 2
 _QUEUE_THROTTLE_SECONDS = 0.05
+_LIVE_PROGRESS_ACTIVE_STATUSES = {"RUNNING_TURN", "INTERRUPTED", "RECOVERING_TURN"}
 
 
 def install_delivery_manager(paths: AppPaths, telegram: TelegramClient, *, run_id: str) -> None:
@@ -342,6 +343,17 @@ class TelegramDeliveryManager:
             telegram_message_id=row["telegram_message_id"],
             payload={"queue_id": row["queue_id"], "op_type": row["op_type"]},
         )
+        stale_reason = self._skip_claimed_row_if_stale(row)
+        if stale_reason is not None:
+            self._wake_event.set()
+            return {
+                "queue_id": row["queue_id"],
+                "status": "completed",
+                "result": None,
+                "error": None,
+                "skipped": True,
+                "skip_reason": stale_reason,
+            }
         result: Any = None
         error_text: str | None = None
         final_status = "completed"
@@ -503,6 +515,90 @@ class TelegramDeliveryManager:
             "result": result,
             "error": error_text,
         }
+
+    def _skip_claimed_row_if_stale(self, row) -> str | None:
+        reason = self._stale_row_reason(row)
+        if reason is None:
+            return None
+        with self.storage.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE telegram_outbound_queue
+                SET status = 'completed',
+                    completed_at = ?,
+                    last_error = NULL,
+                    claimed_by_run_id = NULL
+                WHERE queue_id = ?
+                """,
+                (utc_now(), row["queue_id"]),
+            )
+        self.traces.log_event(
+            source="telegram_outbound",
+            event_type="telegram.queue.skipped_stale",
+            trace_id=row["trace_id"],
+            session_id=row["session_id"],
+            chat_id=row["chat_id"],
+            topic_id=row["topic_id"],
+            message_group_id=row["message_group_id"],
+            telegram_message_id=row["telegram_message_id"],
+            payload={
+                "queue_id": row["queue_id"],
+                "op_type": row["op_type"],
+                "reason": reason,
+            },
+        )
+        return reason
+
+    def _stale_row_reason(self, row) -> str | None:
+        session_id = row["session_id"]
+        if not isinstance(session_id, str) or not session_id:
+            return None
+        op_type = str(row["op_type"] or "")
+        message_group_id = str(row["message_group_id"] or "")
+        if op_type != "typing" and not message_group_id.startswith(f"{session_id}:live_progress:"):
+            return None
+        with self.storage.read_connection() as connection:
+            session_row = connection.execute(
+                """
+                SELECT attached, status, active_turn_id, last_completed_turn_id, current_trace_id, last_user_message_at
+                FROM sessions
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if session_row is None:
+            return "session_missing"
+        if not bool(session_row["attached"]):
+            return "session_detached"
+        if op_type == "typing":
+            if str(session_row["status"] or "") not in _LIVE_PROGRESS_ACTIVE_STATUSES:
+                return f"session_status:{session_row['status']}"
+            active_turn_id = session_row["active_turn_id"]
+            if not isinstance(active_turn_id, str) or not active_turn_id:
+                return "no_active_turn"
+            current_trace_id = session_row["current_trace_id"]
+            if isinstance(row["trace_id"], str) and row["trace_id"]:
+                if not isinstance(current_trace_id, str) or current_trace_id != row["trace_id"]:
+                    return "trace_advanced"
+            return None
+        if str(session_row["status"] or "") not in _LIVE_PROGRESS_ACTIVE_STATUSES:
+            return f"session_status:{session_row['status']}"
+        expected_group_id = self._live_progress_group_id(session_id, session_row)
+        if message_group_id != expected_group_id:
+            return "group_replaced"
+        return None
+
+    @staticmethod
+    def _live_progress_group_id(session_id: str, session_row) -> str:
+        base = (
+            session_row["current_trace_id"]
+            or session_row["active_turn_id"]
+            or session_row["last_completed_turn_id"]
+            or "session"
+        )
+        timestamp = str(session_row["last_user_message_at"] or "").strip()
+        trace_token = f"{base}:{timestamp}" if timestamp else str(base)
+        return f"{session_id}:live_progress:{trace_token}"
 
     def is_paused(self) -> bool:
         with self.storage.read_connection() as connection:
