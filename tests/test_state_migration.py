@@ -427,6 +427,53 @@ class SqliteMigrationTests(unittest.TestCase):
             self.assertIn("service.degraded", event_types)
             self.assertIn("service.recovered", event_types)
 
+    def test_trace_store_falls_back_to_unlinked_event_when_foreign_keys_are_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            trace_store = TraceStore(paths, run_id="run-1")
+            auth = AuthState(bot_token="token", telegram_user_id=11, telegram_chat_id=22, paired_at="now")
+            session = SessionStore(paths).get_or_create_telegram_session(auth)
+            trace_id = trace_store.start_trace(
+                session_id=session.session_id,
+                chat_id=22,
+                topic_id=None,
+                user_text="hello",
+            )
+
+            with closing(sqlite3.connect(paths.database)) as connection:
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute("DELETE FROM events WHERE trace_id = ? OR session_id = ?", (trace_id, session.session_id))
+                connection.execute("DELETE FROM traces WHERE trace_id = ?", (trace_id,))
+                connection.execute("DELETE FROM sessions WHERE session_id = ?", (session.session_id,))
+                connection.execute("DELETE FROM service_runs WHERE run_id = 'run-1'")
+                connection.commit()
+
+            trace_store.log_event(
+                source="service",
+                event_type="service.started",
+                trace_id=trace_id,
+                session_id=session.session_id,
+                payload={"x": 1},
+            )
+
+            with closing(sqlite3.connect(paths.database)) as connection:
+                row = connection.execute(
+                    """
+                    SELECT trace_id, run_id, session_id, payload_json
+                    FROM events
+                    WHERE event_type = 'service.started'
+                    ORDER BY event_id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertIsNone(row[0])
+            self.assertIsNone(row[1])
+            self.assertIsNone(row[2])
+            self.assertEqual(row[3], '{"x":1}')
+
     def test_prune_logs_deletes_old_completed_event_data_and_rotates_mirrors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))

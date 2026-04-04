@@ -215,21 +215,6 @@ class TraceStore:
         created_artifact: dict[str, object] | None = None
         try:
             effective_run_id = self.run_id
-            if effective_run_id is not None:
-                with self.storage.read_connection() as connection:
-                    run_row = connection.execute("SELECT 1 FROM service_runs WHERE run_id = ?", (effective_run_id,)).fetchone()
-                if run_row is None:
-                    effective_run_id = None
-            if session_id is not None:
-                with self.storage.read_connection() as connection:
-                    session_row = connection.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-                if session_row is None:
-                    session_id = None
-            if trace_id is not None:
-                with self.storage.read_connection() as connection:
-                    trace_row = connection.execute("SELECT 1 FROM traces WHERE trace_id = ?", (trace_id,)).fetchone()
-                if trace_row is None:
-                    trace_id = None
             payload_json: str | None = None
             payload_preview: str | None = None
             artifact_id: str | None = None
@@ -249,34 +234,25 @@ class TraceStore:
                             payload_json = None
                         else:
                             payload_preview = truncate_utf8_bytes(payload_json, PREVIEW_LIMIT_BYTES)
-                    connection.execute(
-                        """
-                        INSERT INTO events(
-                            trace_id, run_id, source, event_type, received_at, handled_at,
-                            session_id, thread_id, turn_id, item_id, source_event_id, chat_id, topic_id,
-                            message_group_id, telegram_message_id, payload_json, payload_preview, artifact_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            trace_id,
-                            effective_run_id,
-                            source,
-                            event_type,
-                            utc_now(),
-                            utc_now() if handled else None,
-                            session_id,
-                            thread_id,
-                            turn_id,
-                            item_id,
-                            source_event_id,
-                            chat_id,
-                            topic_id,
-                            message_group_id,
-                            telegram_message_id,
-                            payload_json,
-                            payload_preview,
-                            artifact_id,
-                        ),
+                    self._insert_event_with_fallback(
+                        connection,
+                        trace_id=trace_id,
+                        run_id=effective_run_id,
+                        source=source,
+                        event_type=event_type,
+                        handled=handled,
+                        session_id=session_id,
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        item_id=item_id,
+                        source_event_id=source_event_id,
+                        chat_id=chat_id,
+                        topic_id=topic_id,
+                        message_group_id=message_group_id,
+                        telegram_message_id=telegram_message_id,
+                        payload_json=payload_json,
+                        payload_preview=payload_preview,
+                        artifact_id=artifact_id,
                     )
                     recovered = clear_logging_degraded(self.paths)
                     if recovered is not None:
@@ -328,13 +304,27 @@ class TraceStore:
     def _insert_event_row(
         connection,
         *,
+        trace_id: str | None = None,
         run_id: str | None,
         source: str,
         event_type: str,
+        handled: bool = True,
+        session_id: str | None = None,
+        thread_id: str | None = None,
+        turn_id: str | None = None,
+        item_id: str | None = None,
+        source_event_id: str | None = None,
+        chat_id: int | None = None,
+        topic_id: int | None = None,
+        message_group_id: str | None = None,
+        telegram_message_id: int | None = None,
         payload_json: str | None = None,
+        payload_preview: str | None = None,
+        artifact_id: str | None = None,
     ) -> None:
         now = utc_now()
-        payload_preview = truncate_utf8_bytes(payload_json, PREVIEW_LIMIT_BYTES) if payload_json else None
+        if payload_preview is None and payload_json is not None:
+            payload_preview = truncate_utf8_bytes(payload_json, PREVIEW_LIMIT_BYTES)
         connection.execute(
             """
             INSERT INTO events(
@@ -344,26 +334,85 @@ class TraceStore:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                None,
+                trace_id,
                 run_id,
                 source,
                 event_type,
                 now,
-                now,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                now if handled else None,
+                session_id,
+                thread_id,
+                turn_id,
+                item_id,
+                source_event_id,
+                chat_id,
+                topic_id,
+                message_group_id,
+                telegram_message_id,
                 payload_json,
                 payload_preview,
-                None,
+                artifact_id,
             ),
         )
+
+    @classmethod
+    def _insert_event_with_fallback(
+        cls,
+        connection,
+        *,
+        trace_id: str | None,
+        run_id: str | None,
+        source: str,
+        event_type: str,
+        handled: bool,
+        session_id: str | None,
+        thread_id: str | None,
+        turn_id: str | None,
+        item_id: str | None,
+        source_event_id: str | None,
+        chat_id: int | None,
+        topic_id: int | None,
+        message_group_id: str | None,
+        telegram_message_id: int | None,
+        payload_json: str | None,
+        payload_preview: str | None,
+        artifact_id: str | None,
+    ) -> None:
+        attempts = (
+            {"trace_id": trace_id, "run_id": run_id, "session_id": session_id},
+            {"trace_id": trace_id, "run_id": None, "session_id": session_id},
+            {"trace_id": trace_id, "run_id": None, "session_id": None},
+            {"trace_id": None, "run_id": None, "session_id": session_id},
+            {"trace_id": None, "run_id": None, "session_id": None},
+        )
+        last_error: sqlite3.IntegrityError | None = None
+        for refs in attempts:
+            try:
+                cls._insert_event_row(
+                    connection,
+                    trace_id=refs["trace_id"],
+                    run_id=refs["run_id"],
+                    source=source,
+                    event_type=event_type,
+                    handled=handled,
+                    session_id=refs["session_id"],
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    item_id=item_id,
+                    source_event_id=source_event_id,
+                    chat_id=chat_id,
+                    topic_id=topic_id,
+                    message_group_id=message_group_id,
+                    telegram_message_id=telegram_message_id,
+                    payload_json=payload_json,
+                    payload_preview=payload_preview,
+                    artifact_id=artifact_id,
+                )
+                return
+            except sqlite3.IntegrityError as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
 
     @staticmethod
     def _artifact_kind(source: str, event_type: str) -> str:
