@@ -4207,6 +4207,66 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIsNone(updated.streaming_message_id)
         self.assertEqual(updated.last_delivered_output_text, "Final answer")
 
+    def test_drain_codex_notifications_ignores_late_live_output_after_turn_completion(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.last_completed_turn_id = "turn-1"
+        session.status = "ACTIVE"
+        session.last_delivered_output_text = "Final answer"
+        store.save_session(session)
+
+        class Notification:
+            def __init__(self, method: str, params: dict):
+                self.method = method
+                self.params = params
+
+        telegram = FakeTelegramClient()
+        codex = FakeCodex()
+        codex.pending_notifications.extend(
+            [
+                Notification(
+                    "item/started",
+                    {
+                        "threadId": "thread-1",
+                        "item": {"id": "cmd-1", "type": "commandExecution", "command": "adb -s emulator-5554 shell pidof com.app"},
+                    },
+                ),
+                Notification(
+                    "assistant/message.partial",
+                    {
+                        "threadId": "thread-1",
+                        "text": "topResumedActivity|ResumedActivity|com.example/.MainActivity",
+                    },
+                ),
+                Notification(
+                    "thread/status/changed",
+                    {
+                        "threadId": "thread-1",
+                        "status": {"type": "active", "activeFlags": ["running"]},
+                    },
+                ),
+            ]
+        )
+
+        handled = drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
+
+        self.assertEqual(handled, 3)
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.last_delivered_output_text, "Final answer")
+        self.assertEqual(updated.thinking_message_text, "")
+        self.assertEqual(updated.thinking_message_ids, [])
+        self.assertEqual(updated.streaming_message_id, None)
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(telegram.edits, [])
+
     def test_commentary_stream_keeps_only_latest_pending_update_until_min_interval(self) -> None:
         auth = AuthState(
             bot_token="token",

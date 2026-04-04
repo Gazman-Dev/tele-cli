@@ -2429,6 +2429,16 @@ def _session_accepts_turn_notification(session, turn_id: str | None) -> bool:
     return True
 
 
+def _session_accepts_live_output_notification(session, turn_id: str | None) -> bool:
+    active_turn_id = getattr(session, "active_turn_id", None)
+    if not isinstance(active_turn_id, str) or not active_turn_id:
+        completed_turn_id = getattr(session, "last_completed_turn_id", None)
+        return not (isinstance(completed_turn_id, str) and completed_turn_id)
+    if not turn_id:
+        return True
+    return active_turn_id == turn_id
+
+
 def resolve_notification_session(
     session_store: SessionStore,
     auth: AuthState,
@@ -3853,6 +3863,9 @@ def drain_codex_notifications(
         if performance is not None:
             performance.mark_notification_received(method, params)
         session = resolve_notification_session(session_store, auth, params)
+        live_output_allowed = (
+            session is not None and _session_accepts_live_output_notification(session, extract_turn_id(params))
+        )
         trace_store.log_event(
             source="app_server",
             event_type="app_server.notification",
@@ -3867,6 +3880,8 @@ def drain_codex_notifications(
         )
         thinking_delta = extract_thinking_delta(method, params)
         if session is not None and thinking_delta is not None:
+            if not live_output_allowed:
+                continue
             thinking_source_key = derive_thinking_source_key(
                 method,
                 params,
@@ -3905,6 +3920,10 @@ def drain_codex_notifications(
             text = None if agent_message_phase == "commentary" else extract_assistant_text(params)
             thinking_text = extract_thinking_text(params)
             activity_text = extract_activity_text(method, params)
+            if session is not None and not live_output_allowed and (
+                commentary_text or text or thinking_text or activity_text
+            ):
+                continue
             if session is not None and commentary_text:
                 reply_started = performance.mark_reply_started(session, trigger=method) if performance is not None else True
                 if reply_started and getattr(session, "current_trace_id", None):
@@ -4021,7 +4040,7 @@ def drain_codex_notifications(
             continue
         if session is not None:
             status_text = extract_event_driven_status(method, params)
-            if status_text:
+            if status_text and live_output_allowed:
                 status_source_key = derive_thinking_source_key(
                     method,
                     params,
@@ -4052,6 +4071,8 @@ def drain_codex_notifications(
             text = extract_assistant_text(params)
             session = resolve_notification_session(session_store, auth, params)
             if session is not None:
+                if not _session_accepts_live_output_notification(session, extract_turn_id(params)):
+                    continue
                 if text:
                     reply_started = performance.mark_reply_started(session, trigger=method) if performance is not None else True
                     if reply_started and getattr(session, "current_trace_id", None):
