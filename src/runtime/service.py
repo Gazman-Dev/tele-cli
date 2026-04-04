@@ -90,6 +90,12 @@ SERVICE_LOOP_YIELD_SECONDS = 0.01
 SERVICE_STARTUP_WAIT_SECONDS = 0.01
 SERVICE_THREAD_JOIN_TIMEOUT_SECONDS = 0.05
 SERVICE_STARTUP_PRUNE_DELAY_SECONDS = 10.0
+NOISY_NOTIFICATION_EVENT_METHODS = {
+    "assistant/message.delta",
+    "item/agentMessage/delta",
+    "codex/event/agent_message_delta",
+    "codex/event/agent_message_content_delta",
+}
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -4039,18 +4045,19 @@ def drain_codex_notifications(
         live_output_allowed = (
             session is not None and _session_accepts_live_output_notification(session, extract_turn_id(params))
         )
-        trace_store.log_event(
-            source="app_server",
-            event_type="app_server.notification",
-            trace_id=getattr(session, "current_trace_id", None) if session is not None else None,
-            session_id=session.session_id if session is not None else None,
-            thread_id=params.get("threadId"),
-            turn_id=params.get("turnId"),
-            chat_id=session.transport_chat_id if session is not None else auth.telegram_chat_id,
-            topic_id=session.transport_topic_id if session is not None else None,
-            item_id=params.get("itemId"),
-            payload=notification_record,
-        )
+        if method not in NOISY_NOTIFICATION_EVENT_METHODS:
+            trace_store.log_event(
+                source="app_server",
+                event_type="app_server.notification",
+                trace_id=getattr(session, "current_trace_id", None) if session is not None else None,
+                session_id=session.session_id if session is not None else None,
+                thread_id=params.get("threadId"),
+                turn_id=params.get("turnId"),
+                chat_id=session.transport_chat_id if session is not None else auth.telegram_chat_id,
+                topic_id=session.transport_topic_id if session is not None else None,
+                item_id=params.get("itemId"),
+                payload=notification_record,
+            )
         thinking_delta = extract_thinking_delta(method, params)
         if session is not None and thinking_delta is not None:
             if not live_output_allowed:

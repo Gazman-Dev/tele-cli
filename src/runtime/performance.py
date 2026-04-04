@@ -10,6 +10,14 @@ from storage.operations import TraceStore
 from storage.telegram_queue import active_delivery_manager
 
 
+_NOISY_NOTIFICATION_METHODS = {
+    "assistant/message.delta",
+    "item/agentMessage/delta",
+    "codex/event/agent_message_delta",
+    "codex/event/agent_message_content_delta",
+}
+
+
 class PerformanceTracker:
     def __init__(self, path: Path, *, trace_store: TraceStore | None = None, mirror_to_file: bool = True):
         self.path = path
@@ -55,6 +63,8 @@ class PerformanceTracker:
                 )
 
     def mark_notification_received(self, method: str, params: dict[str, Any]) -> None:
+        if method in _NOISY_NOTIFICATION_METHODS:
+            return
         item = params.get("item") if isinstance(params.get("item"), dict) else {}
         snippet = None
         for candidate in (
