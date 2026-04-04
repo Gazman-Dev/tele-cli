@@ -79,8 +79,10 @@ _AGENT_MESSAGE_TEXTS: dict[str, str] = {}
 _THINKING_SOURCE_LAST_SENT_AT: dict[str, float] = {}
 COMMENTARY_STREAM_MIN_INTERVAL_SECONDS = 1.0
 DEFAULT_THINKING_STREAM_MIN_INTERVAL_SECONDS = 1.0
+DEFAULT_THINKING_PLACEHOLDER_DELAY_SECONDS = 2.0
 _COMMAND_ACTIVITY_PREFIX = "__tele_cli_command__:"
 MIN_LIVE_THINKING_LENGTH = 12
+THINKING_PLACEHOLDER_SOURCE_KEY = "status:thinking-placeholder"
 CODEX_NOTIFICATION_QUEUE_MAX_SIZE = 128
 CODEX_NOTIFICATION_POLL_IDLE_SECONDS = 0.02
 SERVICE_LOOP_YIELD_SECONDS = 0.01
@@ -2120,6 +2122,29 @@ def _is_meaningful_live_thinking_text(text: str | None) -> bool:
     return False
 
 
+def _drop_placeholder_thinking_state(session) -> None:
+    if THINKING_PLACEHOLDER_SOURCE_KEY in session.thinking_live_texts:
+        session.thinking_live_texts.pop(THINKING_PLACEHOLDER_SOURCE_KEY, None)
+    if THINKING_PLACEHOLDER_SOURCE_KEY in session.thinking_sent_texts:
+        session.thinking_sent_texts.pop(THINKING_PLACEHOLDER_SOURCE_KEY, None)
+    if THINKING_PLACEHOLDER_SOURCE_KEY in session.thinking_history_by_source:
+        session.thinking_history_by_source.pop(THINKING_PLACEHOLDER_SOURCE_KEY, None)
+    session.thinking_history_order = [
+        entry for entry in session.thinking_history_order if entry != THINKING_PLACEHOLDER_SOURCE_KEY
+    ]
+    session.thinking_history_text = "\n".join(_thinking_history_entries(session))
+
+
+def _should_render_thinking_placeholder(session) -> bool:
+    if not session.last_user_message_at:
+        return False
+    started_at = parse_utc_timestamp(session.last_user_message_at)
+    if started_at is None:
+        return False
+    elapsed = max((datetime.now(timezone.utc) - started_at).total_seconds(), 0.0)
+    return elapsed >= DEFAULT_THINKING_PLACEHOLDER_DELAY_SECONDS
+
+
 def set_visible_thinking_message(
     auth: AuthState,
     telegram: TelegramClient,
@@ -2131,17 +2156,20 @@ def set_visible_thinking_message(
     source_key: str | None = None,
     performance: PerformanceTracker | None = None,
     min_interval_seconds: float = DEFAULT_THINKING_STREAM_MIN_INTERVAL_SECONDS,
+    allow_placeholder: bool = False,
 ) -> None:
     ensure_thinking_message(auth, telegram, session, text=text, performance=performance)
     target_chat_id = session.transport_chat_id or auth.telegram_chat_id
     if not session.attached or not target_chat_id:
         session_store.save_session(session)
         return
+    effective_source = source_key or f"misc:{uuid.uuid4()}"
+    if effective_source != THINKING_PLACEHOLDER_SOURCE_KEY:
+        _drop_placeholder_thinking_state(session)
     current_text = session.thinking_message_text.strip()
-    if not _is_meaningful_live_thinking_text(current_text):
+    if not allow_placeholder and not _is_meaningful_live_thinking_text(current_text):
         session_store.save_session(session)
         return
-    effective_source = source_key or f"misc:{uuid.uuid4()}"
     _record_thinking_history(session, effective_source, current_text)
     previous_text = session.thinking_sent_texts.get(effective_source, "").strip()
     if previous_text == current_text:
@@ -2253,9 +2281,30 @@ def maybe_refresh_thinking_message(
             continue
         if is_stale_active_turn(session):
             continue
-        if not session.thinking_live_texts:
+        non_placeholder_live_entries = {
+            key: value
+            for key, value in session.thinking_live_texts.items()
+            if key != THINKING_PLACEHOLDER_SOURCE_KEY
+        }
+        if not non_placeholder_live_entries:
+            if not _should_render_thinking_placeholder(session):
+                continue
+            set_visible_thinking_message(
+                auth,
+                telegram,
+                recorder,
+                session_store,
+                session,
+                text=default_thinking_text(session),
+                source_key=THINKING_PLACEHOLDER_SOURCE_KEY,
+                performance=performance,
+                allow_placeholder=True,
+            )
             continue
+        _drop_placeholder_thinking_state(session)
         for source_key, source_text in list(session.thinking_live_texts.items()):
+            if source_key == THINKING_PLACEHOLDER_SOURCE_KEY:
+                continue
             if not source_text.strip():
                 continue
             set_visible_thinking_message(

@@ -3537,6 +3537,70 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.edits, [])
         self.assertEqual(updated.thinking_message_text, "Thinking")
 
+    def test_maybe_refresh_thinking_message_sends_visible_placeholder_after_delay(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.last_user_message_at = (datetime.now(timezone.utc) - timedelta(seconds=3)).isoformat()
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        maybe_refresh_thinking_message(
+            self.paths,
+            auth,
+            telegram,
+            store,
+            recorder=self.recorder,
+        )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.messages, [(22, updated.thinking_message_text)])
+        self.assertTrue(is_default_thinking_text(updated.last_thinking_sent_text))
+        self.assertEqual(updated.thinking_sent_texts["status:thinking-placeholder"], updated.last_thinking_sent_text)
+
+    def test_maybe_refresh_thinking_message_drops_placeholder_when_real_commentary_arrives(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.active_turn_id = "turn-1"
+        session.status = "RUNNING_TURN"
+        session.last_user_message_at = (datetime.now(timezone.utc) - timedelta(seconds=3)).isoformat()
+        session.thinking_live_texts = {"status:thinking-placeholder": "Thinking..", "commentary:msg-1": "Checking logs"}
+        session.thinking_sent_texts = {"status:thinking-placeholder": "Thinking.."}
+        session.thinking_history_order = ["status:thinking-placeholder"]
+        session.thinking_history_by_source = {"status:thinking-placeholder": "Thinking.."}
+        store.save_session(session)
+        telegram = FakeTelegramClient()
+
+        maybe_refresh_thinking_message(
+            self.paths,
+            auth,
+            telegram,
+            store,
+            recorder=self.recorder,
+        )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(telegram.messages, [(22, "Checking logs")])
+        self.assertNotIn("status:thinking-placeholder", updated.thinking_live_texts)
+        self.assertNotIn("status:thinking-placeholder", updated.thinking_sent_texts)
+        self.assertNotIn("status:thinking-placeholder", updated.thinking_history_by_source)
+        self.assertEqual(updated.thinking_message_text, "Checking logs")
+
     def test_maybe_refresh_thinking_message_skips_stale_active_turn(self) -> None:
         auth = AuthState(
             bot_token="token",
