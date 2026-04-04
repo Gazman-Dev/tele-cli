@@ -30,6 +30,46 @@ from storage.runtime_state_store import (
 
 
 class SqliteMigrationTests(unittest.TestCase):
+    def test_storage_transaction_retries_when_begin_immediate_is_locked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            storage = StorageManager(paths)
+
+            class FakeConnection:
+                def __init__(self, begin_errors: int):
+                    self.begin_errors = begin_errors
+                    self.closed = False
+                    self.row_factory = None
+                    self.commit_calls = 0
+                    self.rollback_calls = 0
+
+                def execute(self, sql: str, *args, **kwargs):
+                    if sql == "BEGIN IMMEDIATE" and self.begin_errors > 0:
+                        self.begin_errors -= 1
+                        raise sqlite3.OperationalError("database is locked")
+                    return self
+
+                def close(self) -> None:
+                    self.closed = True
+
+                def commit(self) -> None:
+                    self.commit_calls += 1
+
+                def rollback(self) -> None:
+                    self.rollback_calls += 1
+
+            first = FakeConnection(begin_errors=1)
+            second = FakeConnection(begin_errors=0)
+
+            with patch("storage.db._connect_with_retry", side_effect=[first, second]), patch("storage.db.time.sleep"):
+                with storage.transaction() as connection:
+                    self.assertIs(connection, second)
+                    connection.execute("SELECT 1")
+
+            self.assertTrue(first.closed)
+            self.assertEqual(second.commit_calls, 1)
+            self.assertEqual(second.rollback_calls, 0)
+
     def test_storage_initialization_creates_database_and_schema_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_paths(Path(tmp))

@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,9 @@ from .payloads import GENERAL_PAYLOAD_LIMIT_BYTES, json_dumps, preview_text
 _MIGRATION_GUARD = threading.RLock()
 _INITIALIZED_DATABASES: set[Path] = set()
 _BOOTSTRAP_STATE_KEY = "sqlite_bootstrap"
+_SQLITE_CONNECT_TIMEOUT_SECONDS = 30.0
+_SQLITE_BUSY_TIMEOUT_MS = 30000
+_SQLITE_LOCK_RETRY_SECONDS = (0.05, 0.1, 0.2, 0.5, 1.0)
 _REQUIRED_TABLES = (
     "service_runs",
     "app_state",
@@ -67,7 +71,29 @@ def _configure_connection(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA synchronous = NORMAL")
     connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA busy_timeout = 5000")
+    connection.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
+
+
+def _is_sqlite_lock_error(exc: sqlite3.Error) -> bool:
+    message = str(exc).lower()
+    return "database is locked" in message or "database table is locked" in message
+
+
+def _connect_with_retry(database: Path) -> sqlite3.Connection:
+    last_error: sqlite3.Error | None = None
+    for delay_seconds in (0.0, *_SQLITE_LOCK_RETRY_SECONDS):
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        try:
+            connection = sqlite3.connect(database, timeout=_SQLITE_CONNECT_TIMEOUT_SECONDS)
+            _configure_connection(connection)
+            return connection
+        except sqlite3.Error as exc:
+            last_error = exc
+            if not _is_sqlite_lock_error(exc):
+                raise
+    assert last_error is not None
+    raise last_error
 
 
 def _legacy_json_path(paths: AppPaths, filename: str) -> Path:
@@ -411,9 +437,7 @@ class StorageManager:
 
     def connect(self) -> sqlite3.Connection:
         self.paths.root.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.paths.database, timeout=5.0)
-        _configure_connection(connection)
-        return connection
+        return _connect_with_retry(self.paths.database)
 
     @contextmanager
     def read_connection(self) -> Iterator[sqlite3.Connection]:
@@ -425,16 +449,36 @@ class StorageManager:
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:
-        connection = self.connect()
+        last_error: sqlite3.Error | None = None
+        connection: sqlite3.Connection | None = None
+        began = False
         try:
-            connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            for delay_seconds in (0.0, *_SQLITE_LOCK_RETRY_SECONDS):
+                if delay_seconds > 0:
+                    time.sleep(delay_seconds)
+                connection = self.connect()
+                try:
+                    connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+                    began = True
+                    break
+                except sqlite3.Error as exc:
+                    connection.close()
+                    connection = None
+                    last_error = exc
+                    if not _is_sqlite_lock_error(exc):
+                        raise
+            if not began:
+                assert last_error is not None
+                raise last_error
             yield connection
             connection.commit()
         except Exception:
-            connection.rollback()
+            if connection is not None:
+                connection.rollback()
             raise
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
 
 
 def ensure_storage(paths: AppPaths) -> None:
@@ -444,9 +488,8 @@ def ensure_storage(paths: AppPaths) -> None:
             return
         _INITIALIZED_DATABASES.discard(database_path)
         paths.root.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(paths.database, timeout=5.0)
+        connection = _connect_with_retry(paths.database)
         try:
-            _configure_connection(connection)
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
