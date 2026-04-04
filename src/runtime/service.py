@@ -682,12 +682,12 @@ def _cancel_queued_live_progress_operations(paths: AppPaths, session, *, include
 def reconcile_pending_final_deliveries(
     paths: AppPaths,
     auth: AuthState,
+    telegram: TelegramClient,
     recorder: Recorder,
     session_store: SessionStore,
     *,
     performance: PerformanceTracker | None = None,
 ) -> None:
-    del performance
     for session in session_store.list_telegram_sessions(auth):
         if session.status != "DELIVERING_FINAL":
             continue
@@ -715,6 +715,7 @@ def reconcile_pending_final_deliveries(
             continue
         if queue_state["total_count"] <= 0 or queue_state["completed_count"] <= 0:
             continue
+        clear_thinking_message(auth, telegram, session_store, session, performance=performance)
         recorder.record("assistant", final_text)
         session.streaming_message_id = None
         session.streaming_message_ids = []
@@ -2651,13 +2652,13 @@ def flush_buffer(
             )
     if not delivered:
         raise TelegramError("All Telegram HTML delivery attempts failed.")
-    clear_thinking_message(auth, telegram, session_store, session, performance=performance)
     if queue_only and delivery_manager_supports_background_queue():
         session.streaming_output_text = text
         session.streaming_phase = "finalizing"
         session.status = "DELIVERING_FINAL"
         session_store.save_session(session)
         return
+    clear_thinking_message(auth, telegram, session_store, session, performance=performance)
     recorder.record("assistant", text)
     session.streaming_message_id = None
     session.streaming_message_ids = []
@@ -4535,6 +4536,7 @@ def run_service(
                 reconcile_pending_final_deliveries(
                     paths,
                     auth,
+                    telegram,
                     recorder,
                     session_store,
                     performance=performance,
@@ -4628,6 +4630,7 @@ def run_service(
             reconcile_pending_final_deliveries(
                 paths,
                 auth,
+                telegram,
                 recorder,
                 session_store,
                 performance=performance,

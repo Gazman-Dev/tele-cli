@@ -34,6 +34,7 @@ from runtime.service import (
     maybe_refresh_thinking_message,
     maybe_send_typing_indicator,
     process_telegram_update,
+    reconcile_pending_final_deliveries,
     extract_login_callback_url,
     replay_login_callback,
 )
@@ -2659,6 +2660,82 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIsNotNone(current)
         assert current is not None
         self.assertEqual(current.session_id, session.session_id)
+
+    def test_queue_only_final_delivery_defers_thinking_cleanup_until_reconciled(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.pending_output_text = "Final answer from Codex"
+        session.streaming_output_text = "Final answer from Codex"
+        session.thinking_message_ids = [7, 8]
+        session.status = "ACTIVE"
+        store.save_session(session)
+
+        with patch("runtime.service.delivery_manager_supports_background_queue", return_value=True), patch(
+            "runtime.service._sync_telegram_message_chunks",
+            return_value=None,
+        ), patch("runtime.service.clear_thinking_message") as clear_thinking:
+            flush_buffer(
+                session.session_id,
+                auth,
+                FakeTelegramClient(),
+                self.recorder,
+                store,
+                mark_agent=True,
+                queue_only=True,
+            )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.status, "DELIVERING_FINAL")
+        self.assertEqual(updated.thinking_message_ids, [7, 8])
+        clear_thinking.assert_not_called()
+
+    def test_reconcile_pending_final_deliveries_cleans_thinking_after_final_delivery(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.last_completed_turn_id = "turn-1"
+        session.status = "DELIVERING_FINAL"
+        session.pending_output_text = "Final answer from Codex"
+        session.streaming_output_text = "Final answer from Codex"
+        session.thinking_message_ids = [7, 8]
+        store.save_session(session)
+
+        with patch(
+            "runtime.service._message_group_queue_state",
+            return_value={
+                "total_count": 1,
+                "queued_count": 0,
+                "claimed_count": 0,
+                "completed_count": 1,
+                "failed_count": 0,
+            },
+        ), patch("runtime.service.clear_thinking_message") as clear_thinking:
+            reconcile_pending_final_deliveries(
+                self.paths,
+                auth,
+                FakeTelegramClient(),
+                self.recorder,
+                store,
+            )
+
+        clear_thinking.assert_called_once()
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.status, "ACTIVE")
+        self.assertEqual(updated.last_delivered_output_text, "Final answer from Codex")
+        self.assertEqual(updated.pending_output_text, "")
 
     def test_duplicate_partial_flush_with_same_text_is_ignored(self) -> None:
         auth = AuthState(
