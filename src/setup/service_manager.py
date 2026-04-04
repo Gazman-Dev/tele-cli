@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Callable, Protocol
 
 
@@ -65,6 +66,10 @@ class ServiceManager(Protocol):
         raise NotImplementedError
 
 
+SERVICE_STATE_WAIT_TIMEOUT_SECONDS = 15.0
+SERVICE_STATE_WAIT_POLL_SECONDS = 0.5
+
+
 def analyze_service_registrations(
     registrations: list[ServiceRegistration],
     service_name: str,
@@ -102,6 +107,37 @@ def choose_canonical_registration(
         ),
     )
     return ranked[0]
+
+
+def _wait_for_service_running_state(
+    manager: ServiceManager,
+    desired: ServiceRegistration,
+    *,
+    should_be_running: bool,
+    timeout_seconds: float = SERVICE_STATE_WAIT_TIMEOUT_SECONDS,
+    poll_seconds: float = SERVICE_STATE_WAIT_POLL_SECONDS,
+) -> ServiceRegistrationAnalysis:
+    deadline = time.monotonic() + timeout_seconds
+    last_analysis = analyze_service_registrations(
+        manager.list_registrations(),
+        desired.service_name,
+        desired.state_dir,
+    )
+    while True:
+        canonical = last_analysis.canonical
+        if last_analysis.has_duplicates:
+            return last_analysis
+        if canonical is not None and canonical.running == should_be_running:
+            return last_analysis
+        if time.monotonic() >= deadline:
+            state_name = "running" if should_be_running else "stopped"
+            raise RuntimeError(f"Service {desired.service_name} did not reach {state_name} state.")
+        time.sleep(poll_seconds)
+        last_analysis = analyze_service_registrations(
+            manager.list_registrations(),
+            desired.service_name,
+            desired.state_dir,
+        )
 
 
 def ensure_service_registration(
@@ -189,15 +225,18 @@ def perform_service_update(
     canonical = analysis.canonical
     if canonical is not None and canonical.running:
         manager.stop(canonical.service_name)
+        _wait_for_service_running_state(manager, desired, should_be_running=False)
     apply_update()
     manager.install(desired)
     if desired.running:
         manager.start(desired.service_name)
-    refreshed = analyze_service_registrations(
-        manager.list_registrations(),
-        desired.service_name,
-        desired.state_dir,
-    )
+        refreshed = _wait_for_service_running_state(manager, desired, should_be_running=True)
+    else:
+        refreshed = analyze_service_registrations(
+            manager.list_registrations(),
+            desired.service_name,
+            desired.state_dir,
+        )
     return ServiceUpdateResult(
         action="updated" if canonical is not None else "installed",
         analysis=refreshed,

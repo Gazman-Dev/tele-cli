@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from setup.service_manager import (
     ServiceRegistration,
@@ -12,6 +13,46 @@ from setup.service_manager import (
     repair_duplicate_registrations,
 )
 from tests.fakes.fake_service_manager import FakeServiceManager
+
+
+class DelayedTransitionServiceManager(FakeServiceManager):
+    def __init__(self) -> None:
+        super().__init__()
+        self._pending_running: dict[str, tuple[bool, int]] = {}
+
+    def current_running(self, service_name: str) -> bool:
+        for registration in self._registrations:
+            if registration.service_name == service_name:
+                return registration.running
+        raise KeyError(service_name)
+
+    def stop(self, service_name: str) -> None:
+        self.calls.append(("stop", service_name))
+        self._pending_running[service_name] = (False, 2)
+
+    def start(self, service_name: str) -> None:
+        self.calls.append(("start", service_name))
+        self._pending_running[service_name] = (True, 2)
+
+    def list_registrations(self) -> list[ServiceRegistration]:
+        for service_name, (target_running, remaining_checks) in list(self._pending_running.items()):
+            if remaining_checks <= 0:
+                self._replace(
+                    service_name,
+                    lambda registration: ServiceRegistration(
+                        manager=registration.manager,
+                        service_name=registration.service_name,
+                        executable=registration.executable,
+                        state_dir=registration.state_dir,
+                        environment_path=registration.environment_path,
+                        enabled=True,
+                        running=target_running,
+                    ),
+                )
+                self._pending_running.pop(service_name, None)
+            else:
+                self._pending_running[service_name] = (target_running, remaining_checks - 1)
+        return super().list_registrations()
 
 
 class InstallerLifecycleTests(unittest.TestCase):
@@ -329,6 +370,74 @@ class InstallerLifecycleTests(unittest.TestCase):
         registrations = manager.list_registrations()
         self.assertEqual(registrations[0].executable, "/usr/local/bin/tele-cli")
         self.assertTrue(registrations[0].running)
+
+    def test_perform_service_update_waits_for_service_stop_before_updating(self) -> None:
+        manager = DelayedTransitionServiceManager()
+        manager.install(
+            ServiceRegistration(
+                manager="systemd",
+                service_name="tele-cli",
+                executable="/usr/bin/python -m tele_cli",
+                state_dir="/srv/tele-cli",
+                enabled=True,
+                running=True,
+            )
+        )
+        manager.calls.clear()
+        applied: list[str] = []
+
+        with patch("setup.service_manager.time.sleep", return_value=None):
+            result = perform_service_update(
+                manager,
+                ServiceRegistration(
+                    manager="systemd",
+                    service_name="tele-cli",
+                    executable="/usr/local/bin/tele-cli",
+                    state_dir="/srv/tele-cli",
+                    enabled=True,
+                    running=True,
+                ),
+                lambda: applied.append("stopped" if not manager.current_running("tele-cli") else "running"),
+            )
+
+        self.assertEqual(applied, ["stopped"])
+        self.assertEqual(result.action, "updated")
+        self.assertTrue(result.analysis.canonical is not None and result.analysis.canonical.running)
+
+    def test_perform_service_update_waits_for_service_restart_before_returning(self) -> None:
+        manager = DelayedTransitionServiceManager()
+        manager.install(
+            ServiceRegistration(
+                manager="systemd",
+                service_name="tele-cli",
+                executable="/usr/bin/python -m tele_cli",
+                state_dir="/srv/tele-cli",
+                enabled=True,
+                running=True,
+            )
+        )
+        manager.calls.clear()
+
+        with patch("setup.service_manager.time.sleep", return_value=None):
+            result = perform_service_update(
+                manager,
+                ServiceRegistration(
+                    manager="systemd",
+                    service_name="tele-cli",
+                    executable="/usr/local/bin/tele-cli",
+                    state_dir="/srv/tele-cli",
+                    enabled=True,
+                    running=True,
+                ),
+                lambda: None,
+            )
+
+        self.assertEqual(result.action, "updated")
+        self.assertTrue(result.analysis.canonical is not None and result.analysis.canonical.running)
+        self.assertEqual(
+            manager.calls,
+            [("stop", "tele-cli"), ("install", "tele-cli"), ("start", "tele-cli")],
+        )
 
     def test_perform_service_update_requires_repair_when_duplicates_exist(self) -> None:
         manager = FakeServiceManager()
