@@ -4554,7 +4554,6 @@ def run_service(
     runtime = ServiceRuntime(runtime_state)
     run_store = ServiceRunStore(paths)
     run_store.start(run_id=runtime_state.session_id, pid=getattr(metadata, "pid", None))
-    start_async_log_prune(paths, run_id=runtime_state.session_id)
     log_trace_store = TraceStore(paths, run_id=runtime_state.session_id)
     log_trace_store.log_event(source="service", event_type="service.starting")
     recorder = Recorder(paths.terminal_log, trace_store=log_trace_store)
