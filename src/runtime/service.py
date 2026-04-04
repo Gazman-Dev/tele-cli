@@ -682,6 +682,48 @@ def _delete_failed_message_group_rows(paths: AppPaths, *, message_group_id: str)
         )
 
 
+def _abandon_failed_final_delivery(
+    paths: AppPaths,
+    session_store: SessionStore,
+    session,
+    *,
+    reason: str,
+) -> None:
+    append_recovery_event(
+        paths,
+        f"final_delivery_abandoned session_id={session.session_id} reason={reason}",
+        trace_id=getattr(session, "current_trace_id", None),
+        session_id=session.session_id,
+        thread_id=session.thread_id,
+        turn_id=session.last_completed_turn_id,
+        chat_id=session.transport_chat_id,
+        topic_id=session.transport_topic_id,
+    )
+    session.attached = False
+    session.status = "ACTIVE"
+    session.pending_output_text = ""
+    session.pending_output_updated_at = None
+    session.streaming_output_text = ""
+    session.streaming_phase = ""
+    session.streaming_message_id = None
+    session.streaming_message_ids = []
+    session.thinking_message_id = None
+    session.thinking_message_ids = []
+    session.thinking_live_message_ids = {}
+    session.thinking_live_texts = {}
+    session.thinking_sent_texts = {}
+    session.thinking_message_text = ""
+    session.thinking_history_text = ""
+    session.thinking_history_order = []
+    session.thinking_history_by_source = {}
+    session.last_thinking_sent_text = ""
+    session.current_trace_id = None
+    session_store.save_session(session)
+    pruned = session_store.prune_detached_sessions()
+    if pruned:
+        append_recovery_event(paths, f"detached_sessions_pruned count={pruned}")
+
+
 def _cancel_queued_live_progress_operations(paths: AppPaths, session, *, include_typing: bool) -> None:
     session_id = getattr(session, "session_id", None)
     if not isinstance(session_id, str) or not session_id:
@@ -731,33 +773,41 @@ def reconcile_pending_final_deliveries(
         if queue_state["failed_count"]:
             failed_errors = _message_group_failed_errors(paths, message_group_id=message_group_id)
             if any(is_topic_closed_error(TelegramError(error)) for error in failed_errors):
-                append_recovery_event(
-                    paths,
-                    (
-                        "final_delivery_retrying_without_topic "
-                        f"session_id={session.session_id} topic_id={session.transport_topic_id}"
-                    ),
-                    trace_id=getattr(session, "current_trace_id", None),
-                    session_id=session.session_id,
-                    thread_id=session.thread_id,
-                    turn_id=session.last_completed_turn_id,
-                    chat_id=session.transport_chat_id,
-                    topic_id=session.transport_topic_id,
-                )
                 _delete_failed_message_group_rows(paths, message_group_id=message_group_id)
-                session.transport_topic_id = None
-                session_store.save_session(session)
-                flush_buffer(
-                    session.session_id,
-                    auth,
-                    telegram,
-                    recorder,
-                    session_store,
-                    mark_agent=True,
-                    stream_format=True,
-                    queue_only=True,
-                    performance=performance,
-                )
+                if session.transport_topic_id is not None:
+                    append_recovery_event(
+                        paths,
+                        (
+                            "final_delivery_retrying_without_topic "
+                            f"session_id={session.session_id} topic_id={session.transport_topic_id}"
+                        ),
+                        trace_id=getattr(session, "current_trace_id", None),
+                        session_id=session.session_id,
+                        thread_id=session.thread_id,
+                        turn_id=session.last_completed_turn_id,
+                        chat_id=session.transport_chat_id,
+                        topic_id=session.transport_topic_id,
+                    )
+                    session.transport_topic_id = None
+                    session_store.save_session(session)
+                    flush_buffer(
+                        session.session_id,
+                        auth,
+                        telegram,
+                        recorder,
+                        session_store,
+                        mark_agent=True,
+                        stream_format=True,
+                        queue_only=True,
+                        performance=performance,
+                    )
+                else:
+                    _abandon_failed_final_delivery(
+                        paths,
+                        session_store,
+                        session,
+                        reason="topic_closed_without_recoverable_topic",
+                    )
                 continue
             append_recovery_event(
                 paths,
