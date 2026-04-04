@@ -527,6 +527,9 @@ class SessionStore:
             (auth.telegram_chat_id, topic_id),
         )
 
+    def list_all_telegram_sessions(self) -> list[SessionRecord]:
+        return self._select_sessions("WHERE transport = 'telegram' ORDER BY created_at, session_id")
+
     def get_active_telegram_session(self, auth: AuthState, topic_id: int | None = None) -> SessionRecord | None:
         sessions = list(reversed(self.list_telegram_sessions(auth, topic_id)))
         for session in sessions:

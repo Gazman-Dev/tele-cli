@@ -2836,6 +2836,55 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertIsNone(updated.transport_topic_id)
         self.assertEqual(updated.status, "DELIVERING_FINAL")
 
+    def test_reconcile_pending_final_deliveries_scans_all_telegram_sessions(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(
+            AuthState(
+                bot_token="token",
+                telegram_user_id=11,
+                telegram_chat_id=44,
+                paired_at="now",
+            )
+        )
+        session.thread_id = "thread-1"
+        session.last_completed_turn_id = "turn-1"
+        session.status = "DELIVERING_FINAL"
+        session.pending_output_text = "Final answer from Codex"
+        session.streaming_output_text = "Final answer from Codex"
+        store.save_session(session)
+
+        with patch(
+            "runtime.service._message_group_queue_state",
+            return_value={
+                "total_count": 1,
+                "queued_count": 0,
+                "claimed_count": 0,
+                "completed_count": 0,
+                "failed_count": 1,
+            },
+        ), patch(
+            "runtime.service._message_group_failed_errors",
+            return_value=["{'ok': False, 'error_code': 400, 'description': 'Bad Request: TOPIC_CLOSED'}"],
+        ), patch("runtime.service._delete_failed_message_group_rows") as delete_failed, patch(
+            "runtime.service.flush_buffer"
+        ) as flush_buffer:
+            reconcile_pending_final_deliveries(
+                self.paths,
+                auth,
+                FakeTelegramClient(),
+                self.recorder,
+                store,
+            )
+
+        delete_failed.assert_called_once()
+        flush_buffer.assert_called_once()
+
     def test_duplicate_partial_flush_with_same_text_is_ignored(self) -> None:
         auth = AuthState(
             bot_token="token",

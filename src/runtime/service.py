@@ -718,7 +718,7 @@ def reconcile_pending_final_deliveries(
     *,
     performance: PerformanceTracker | None = None,
 ) -> None:
-    for session in session_store.list_telegram_sessions(auth):
+    for session in session_store.list_all_telegram_sessions():
         if session.status != "DELIVERING_FINAL":
             continue
         final_text = session.pending_output_text.strip() or session.streaming_output_text.strip()
