@@ -25,6 +25,7 @@ _MAX_RATE_LIMIT_BACKOFF_SECONDS = 3600
 _INITIAL_RATE_LIMIT_BACKOFF_SECONDS = 2
 _QUEUE_THROTTLE_SECONDS = 0.05
 _LIVE_PROGRESS_ACTIVE_STATUSES = {"RUNNING_TURN", "INTERRUPTED", "RECOVERING_TURN"}
+_UNTRACED_QUEUE_OP_TYPES = {"typing"}
 
 
 def install_delivery_manager(paths: AppPaths, telegram: TelegramClient, *, run_id: str) -> None:
@@ -157,17 +158,18 @@ class TelegramDeliveryManager:
             if artifact_ref is not None:
                 self.artifacts.delete(artifact_ref)
             raise
-        self.traces.log_event(
-            source="telegram_outbound",
-            event_type="telegram.queue.enqueued",
-            trace_id=trace_id,
-            session_id=session_id,
-            chat_id=chat_id,
-            topic_id=topic_id,
-            message_group_id=message_group_id,
-            telegram_message_id=telegram_message_id,
-            payload={"queue_id": queue_id, "op_type": op_type},
-        )
+        if self._should_trace_op(op_type):
+            self.traces.log_event(
+                source="telegram_outbound",
+                event_type="telegram.queue.enqueued",
+                trace_id=trace_id,
+                session_id=session_id,
+                chat_id=chat_id,
+                topic_id=topic_id,
+                message_group_id=message_group_id,
+                telegram_message_id=telegram_message_id,
+                payload={"queue_id": queue_id, "op_type": op_type},
+            )
         self._wake_event.set()
         return queue_id
 
@@ -332,17 +334,18 @@ class TelegramDeliveryManager:
                 """,
                 (self.run_id, utc_now(), row["queue_id"]),
             )
-        self.traces.log_event(
-            source="telegram_outbound",
-            event_type="telegram.queue.claimed",
-            trace_id=row["trace_id"],
-            session_id=row["session_id"],
-            chat_id=row["chat_id"],
-            topic_id=row["topic_id"],
-            message_group_id=row["message_group_id"],
-            telegram_message_id=row["telegram_message_id"],
-            payload={"queue_id": row["queue_id"], "op_type": row["op_type"]},
-        )
+        if self._should_trace_row(row):
+            self.traces.log_event(
+                source="telegram_outbound",
+                event_type="telegram.queue.claimed",
+                trace_id=row["trace_id"],
+                session_id=row["session_id"],
+                chat_id=row["chat_id"],
+                topic_id=row["topic_id"],
+                message_group_id=row["message_group_id"],
+                telegram_message_id=row["telegram_message_id"],
+                payload={"queue_id": row["queue_id"], "op_type": row["op_type"]},
+            )
         stale_reason = self._skip_claimed_row_if_stale(row)
         if stale_reason is not None:
             self._wake_event.set()
@@ -453,18 +456,19 @@ class TelegramDeliveryManager:
                         chunk_index=chunk_index,
                         telegram_message_id=message_id,
                     )
-            self.traces.log_event(
-                source="telegram_outbound",
-                event_type=self._api_event_type(row["op_type"], success=True),
-                trace_id=row["trace_id"],
-                session_id=row["session_id"],
-                chat_id=row["chat_id"],
-                topic_id=row["topic_id"],
-                message_group_id=row["message_group_id"],
-                telegram_message_id=message_id if message_id is not None else row["telegram_message_id"],
-                payload={"queue_id": row["queue_id"], "op_type": row["op_type"]},
-            )
-        if final_status == "queued" and error_text is not None:
+            if self._should_trace_row(row):
+                self.traces.log_event(
+                    source="telegram_outbound",
+                    event_type=self._api_event_type(row["op_type"], success=True),
+                    trace_id=row["trace_id"],
+                    session_id=row["session_id"],
+                    chat_id=row["chat_id"],
+                    topic_id=row["topic_id"],
+                    message_group_id=row["message_group_id"],
+                    telegram_message_id=message_id if message_id is not None else row["telegram_message_id"],
+                    payload={"queue_id": row["queue_id"], "op_type": row["op_type"]},
+                )
+        if final_status == "queued" and error_text is not None and self._should_trace_row(row):
             with self.storage.read_connection() as connection:
                 paused_until = self._load_paused_until(connection)
                 backoff_seconds = self._load_backoff_seconds(connection)
@@ -485,7 +489,7 @@ class TelegramDeliveryManager:
                     "backoff_seconds": backoff_seconds,
                 },
             )
-        if final_status != "completed":
+        if final_status != "completed" and self._should_trace_row(row):
             self.traces.log_event(
                 source="telegram_outbound",
                 event_type=self._api_event_type(row["op_type"], success=False),
@@ -497,17 +501,18 @@ class TelegramDeliveryManager:
                 telegram_message_id=row["telegram_message_id"],
                 payload={"queue_id": row["queue_id"], "op_type": row["op_type"], "error": error_text},
             )
-        self.traces.log_event(
-            source="telegram_outbound",
-            event_type=f"telegram.queue.{final_status}",
-            trace_id=row["trace_id"],
-            session_id=row["session_id"],
-            chat_id=row["chat_id"],
-            topic_id=row["topic_id"],
-            message_group_id=row["message_group_id"],
-            telegram_message_id=row["telegram_message_id"],
-            payload={"queue_id": row["queue_id"], "op_type": row["op_type"], "error": error_text},
-        )
+        if self._should_trace_row(row):
+            self.traces.log_event(
+                source="telegram_outbound",
+                event_type=f"telegram.queue.{final_status}",
+                trace_id=row["trace_id"],
+                session_id=row["session_id"],
+                chat_id=row["chat_id"],
+                topic_id=row["topic_id"],
+                message_group_id=row["message_group_id"],
+                telegram_message_id=row["telegram_message_id"],
+                payload={"queue_id": row["queue_id"], "op_type": row["op_type"], "error": error_text},
+            )
         self._wake_event.set()
         return {
             "queue_id": row["queue_id"],
@@ -532,22 +537,31 @@ class TelegramDeliveryManager:
                 """,
                 (utc_now(), row["queue_id"]),
             )
-        self.traces.log_event(
-            source="telegram_outbound",
-            event_type="telegram.queue.skipped_stale",
-            trace_id=row["trace_id"],
-            session_id=row["session_id"],
-            chat_id=row["chat_id"],
-            topic_id=row["topic_id"],
-            message_group_id=row["message_group_id"],
-            telegram_message_id=row["telegram_message_id"],
-            payload={
-                "queue_id": row["queue_id"],
-                "op_type": row["op_type"],
-                "reason": reason,
-            },
-        )
+        if self._should_trace_row(row):
+            self.traces.log_event(
+                source="telegram_outbound",
+                event_type="telegram.queue.skipped_stale",
+                trace_id=row["trace_id"],
+                session_id=row["session_id"],
+                chat_id=row["chat_id"],
+                topic_id=row["topic_id"],
+                message_group_id=row["message_group_id"],
+                telegram_message_id=row["telegram_message_id"],
+                payload={
+                    "queue_id": row["queue_id"],
+                    "op_type": row["op_type"],
+                    "reason": reason,
+                },
+            )
         return reason
+
+    @staticmethod
+    def _should_trace_op(op_type: str) -> bool:
+        return op_type not in _UNTRACED_QUEUE_OP_TYPES
+
+    @classmethod
+    def _should_trace_row(cls, row) -> bool:
+        return cls._should_trace_op(str(row["op_type"] or ""))
 
     def _stale_row_reason(self, row) -> str | None:
         session_id = row["session_id"]

@@ -16,6 +16,11 @@ _NOISY_NOTIFICATION_METHODS = {
     "codex/event/agent_message_delta",
     "codex/event/agent_message_content_delta",
 }
+_NOISY_PERFORMANCE_EVENTS = {
+    "telegram_typing_started",
+    "telegram_typing_queued",
+    "telegram_typing_completed",
+}
 
 
 class PerformanceTracker:
@@ -26,6 +31,8 @@ class PerformanceTracker:
         self._turns: dict[str, dict[str, Any]] = {}
 
     def log(self, event: str, **fields: Any) -> None:
+        if event in _NOISY_PERFORMANCE_EVENTS:
+            return
         if self.trace_store is not None:
             trace_id = fields.get("trace_id")
             session_id = fields.get("session_id")

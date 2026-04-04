@@ -862,9 +862,10 @@ def reconcile_pending_final_deliveries(
         session.thinking_live_texts = {}
         session.thinking_sent_texts = {}
         session.status = "ACTIVE"
-        session_store.mark_delivered_output(session, final_text)
-        session_store.mark_agent_message(session)
-        session_store.consume_pending_output(session)
+        session.last_delivered_output_text = final_text
+        session.last_agent_message_at = utc_now()
+        session.pending_output_text = ""
+        session.pending_output_updated_at = None
         session_store.save_session(session)
         pruned = session_store.prune_detached_sessions()
         if pruned:
@@ -2350,7 +2351,7 @@ def set_visible_thinking_message(
     session.thinking_message_text = rendered
     if effective_source.startswith("commentary:"):
         session.streaming_phase = "commentary"
-    session_store.mark_agent_message(session)
+    session.last_agent_message_at = utc_now()
     session_store.save_session(session)
 
 
@@ -2771,9 +2772,11 @@ def flush_buffer(
         session.last_thinking_sent_text = ""
         session.thinking_live_texts = {}
         session.thinking_sent_texts = {}
-        session_store.mark_delivered_output(session, text)
-        session_store.mark_agent_message(session)
-        session_store.consume_pending_output(session)
+        session.last_delivered_output_text = text
+        session.last_agent_message_at = utc_now()
+        session.pending_output_text = ""
+        session.pending_output_updated_at = None
+        session_store.save_session(session)
         recorder.record("assistant", text)
         return
 
@@ -2843,14 +2846,15 @@ def flush_buffer(
     session.streaming_output_text = ""
     session.streaming_phase = ""
     session.last_thinking_sent_text = ""
-    session_store.mark_delivered_output(session, text)
-    session_store.mark_agent_message(session)
+    session.last_delivered_output_text = text
+    session.last_agent_message_at = utc_now()
     session.thinking_history_text = ""
     session.thinking_history_order = []
     session.thinking_history_by_source = {}
     session.thinking_message_text = ""
+    session.pending_output_text = ""
+    session.pending_output_updated_at = None
     session_store.save_session(session)
-    session_store.consume_pending_output(session)
     pruned = session_store.prune_detached_sessions()
     if pruned:
         append_recovery_event(session_store.paths, f"detached_sessions_pruned count={pruned}")
@@ -4076,7 +4080,6 @@ def drain_codex_notifications(
                 source_key=thinking_source_key,
                 performance=performance,
             )
-            session_store.save_session(session)
             set_visible_thinking_message(
                 auth,
                 telegram,
@@ -4384,7 +4387,8 @@ def drain_codex_notifications(
                     session_store.save_session(session)
                 else:
                     if final_stream_text and final_stream_text != session.last_delivered_output_text:
-                        session_store.mark_delivered_output(session, final_stream_text)
+                        session.last_delivered_output_text = final_stream_text
+                        session.last_agent_message_at = utc_now()
                         recorder.record("assistant", final_stream_text)
                     clear_thinking_message(auth, telegram, session_store, session, performance=performance)
                     if final_stream_text and final_stream_text != session.last_delivered_output_text:
