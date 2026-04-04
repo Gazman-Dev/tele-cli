@@ -4355,10 +4355,10 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(updated.streaming_output_text, "Hello")
-        self.assertEqual(updated.pending_output_text, "")
-        self.assertEqual(updated.thinking_message_text, "")
-        self.assertEqual(telegram.edits, [(22, 1, "Hello")])
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(updated.pending_output_text, "Hello")
+        self.assertEqual(updated.thinking_message_text, "Thinking...")
+        self.assertEqual(telegram.edits, [])
 
     def test_drain_codex_notifications_streams_commentary_agent_message_deltas(self) -> None:
         auth = AuthState(
@@ -4416,7 +4416,7 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(updated.thinking_message_text, "I am using a skill.")
         self.assertEqual(telegram.edits, [(22, 1, "I am using a skill.")])
 
-    def test_drain_codex_notifications_replaces_commentary_with_final_answer(self) -> None:
+    def test_drain_codex_notifications_buffers_final_answer_delta_until_completion(self) -> None:
         auth = AuthState(
             bot_token="token",
             telegram_user_id=11,
@@ -4447,10 +4447,11 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(updated.streaming_output_text, "Final answer")
-        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(updated.pending_output_text, "Final answer")
         self.assertEqual(updated.streaming_phase, "answer")
-        self.assertEqual(telegram.edits, [(22, 1, "Final answer")])
+        self.assertEqual(telegram.edits, [])
+        self.assertEqual(telegram.messages, [])
 
     def test_status_after_answer_is_appended_to_same_in_progress_message(self) -> None:
         auth = AuthState(
@@ -4763,10 +4764,10 @@ class ServiceFlowTests(unittest.TestCase):
         drain_codex_notifications(self.paths, auth, telegram, self.recorder, codex)
 
         updated = store.get_or_create_telegram_session(auth)
-        self.assertEqual(updated.thinking_message_text, "")
-        self.assertEqual(updated.streaming_output_text, "Collecting release notes and grouping changes by date.")
-        self.assertEqual(updated.pending_output_text, "")
-        self.assertEqual(telegram.edits, [(22, 1, "Collecting release notes and grouping changes by date.")])
+        self.assertEqual(updated.thinking_message_text, "Thinking...")
+        self.assertEqual(updated.streaming_output_text, "")
+        self.assertEqual(updated.pending_output_text, "Collecting release notes and grouping changes by date.")
+        self.assertEqual(telegram.edits, [])
 
     def test_extract_assistant_text_reads_structured_text_object(self) -> None:
         text = extract_assistant_text(

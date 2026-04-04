@@ -4169,7 +4169,7 @@ def drain_codex_notifications(
                         session_store.save_session(session)
                     else:
                         session_store.append_pending_output(session, payload)
-                    if method == "item/agentMessage/delta":
+                    if method == "assistant/message.partial":
                         maybe_stream_partial_output(
                             auth,
                             telegram,
