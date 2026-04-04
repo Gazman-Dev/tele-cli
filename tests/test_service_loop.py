@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,7 +17,7 @@ from integrations.telegram import TelegramError
 from runtime.approval_store import ApprovalRecord, ApprovalStore
 from runtime.app_server_runtime import make_app_server_start_fn
 from runtime.runtime import ServiceRuntime
-from runtime.service import maintain_codex_runtime, run_service
+from runtime.service import maintain_codex_runtime, run_service, start_async_log_prune
 from runtime.session_store import SessionStore
 from runtime.telegram_update_store import TelegramUpdateStore
 from storage.runtime_state_store import load_runtime_state
@@ -118,6 +119,24 @@ class CrashingTelegramClient(SequentialTelegramClient):
 
 
 class ServiceLoopTests(unittest.TestCase):
+    def test_start_async_log_prune_runs_pruning_in_background(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_paths(Path(tmp))
+            started = threading.Event()
+            release = threading.Event()
+
+            def fake_prune(*args, **kwargs):
+                started.set()
+                release.wait(timeout=1.0)
+
+            with patch("runtime.service.prune_logs", side_effect=fake_prune):
+                thread = start_async_log_prune(paths, run_id="run-1", delay_seconds=0.0)
+                self.assertTrue(thread.is_alive())
+                self.assertTrue(started.wait(timeout=1.0))
+                release.set()
+                thread.join(timeout=1.0)
+                self.assertFalse(thread.is_alive())
+
     def _run_service_once(self, paths, telegram, start_fn, app_lock, sleep_side_effect=KeyboardInterrupt()) -> None:
         with (
             patch("runtime.service.TelegramClient", return_value=telegram),

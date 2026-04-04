@@ -89,6 +89,7 @@ CODEX_NOTIFICATION_POLL_IDLE_SECONDS = 0.02
 SERVICE_LOOP_YIELD_SECONDS = 0.01
 SERVICE_STARTUP_WAIT_SECONDS = 0.01
 SERVICE_THREAD_JOIN_TIMEOUT_SECONDS = 0.05
+SERVICE_STARTUP_PRUNE_DELAY_SECONDS = 10.0
 
 
 def service_tick_seconds(config: Config) -> float:
@@ -96,6 +97,20 @@ def service_tick_seconds(config: Config) -> float:
     if configured == 0.0:
         return 0.05
     return max(min(configured, 0.1), 0.01)
+
+
+def start_async_log_prune(paths: AppPaths, *, run_id: str | None = None, delay_seconds: float = SERVICE_STARTUP_PRUNE_DELAY_SECONDS) -> threading.Thread:
+    def worker() -> None:
+        if delay_seconds > 0:
+            threading.Event().wait(delay_seconds)
+        try:
+            prune_logs(paths, run_id=run_id)
+        except Exception as exc:
+            mark_logging_degraded(paths, operation="prune_logs", error=str(exc), source="storage", event_type="logging.pruned")
+
+    thread = threading.Thread(target=worker, name="log-prune", daemon=True)
+    thread.start()
+    return thread
 
 
 def build_app_server_notification_record(method: str, params: dict) -> dict:
@@ -4528,10 +4543,7 @@ def run_service(
     runtime = ServiceRuntime(runtime_state)
     run_store = ServiceRunStore(paths)
     run_store.start(run_id=runtime_state.session_id, pid=getattr(metadata, "pid", None))
-    try:
-        prune_logs(paths, run_id=runtime_state.session_id)
-    except Exception as exc:
-        mark_logging_degraded(paths, operation="prune_logs", error=str(exc), source="storage", event_type="logging.pruned")
+    start_async_log_prune(paths, run_id=runtime_state.session_id)
     log_trace_store = TraceStore(paths, run_id=runtime_state.session_id)
     log_trace_store.log_event(source="service", event_type="service.starting")
     recorder = Recorder(paths.terminal_log, trace_store=log_trace_store)
