@@ -730,9 +730,7 @@ def reconcile_pending_final_deliveries(
             continue
         if queue_state["failed_count"]:
             failed_errors = _message_group_failed_errors(paths, message_group_id=message_group_id)
-            if session.transport_topic_id is not None and any(
-                is_topic_closed_error(TelegramError(error)) for error in failed_errors
-            ):
+            if any(is_topic_closed_error(TelegramError(error)) for error in failed_errors):
                 append_recovery_event(
                     paths,
                     (
