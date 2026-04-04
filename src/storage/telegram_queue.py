@@ -10,7 +10,7 @@ from typing import Any
 
 from core.models import utc_now
 from core.paths import AppPaths
-from integrations.telegram import TelegramClient
+from integrations.telegram import TelegramClient, TelegramError, is_topic_closed_error
 
 from .artifacts import ArtifactStore
 from .db import StorageManager
@@ -660,7 +660,7 @@ class TelegramDeliveryManager:
             payload = resolved if isinstance(resolved, dict) else {}
         op_type = row["op_type"]
         if op_type == "send_message":
-            return self._invoke_telegram(
+            return self._invoke_topic_aware_telegram(
                 self.telegram.send_message,
                 int(row["chat_id"]),
                 str(payload["text"]),
@@ -679,9 +679,9 @@ class TelegramDeliveryManager:
         if op_type == "delete_message":
             return self.telegram.delete_message(int(row["chat_id"]), int(payload["message_id"]))
         if op_type == "typing":
-            return self._invoke_telegram(self.telegram.send_typing, int(row["chat_id"]), topic_id=row["topic_id"])
+            return self._invoke_topic_aware_telegram(self.telegram.send_typing, int(row["chat_id"]), topic_id=row["topic_id"])
         if op_type == "send_photo":
-            return self._invoke_telegram(
+            return self._invoke_topic_aware_telegram(
                 self.telegram.send_photo,
                 int(row["chat_id"]),
                 Path(str(payload["photo_path"])),
@@ -691,7 +691,7 @@ class TelegramDeliveryManager:
                 disable_notification=bool(row["disable_notification"]),
             )
         if op_type == "send_document":
-            return self._invoke_telegram(
+            return self._invoke_topic_aware_telegram(
                 self.telegram.send_document,
                 int(row["chat_id"]),
                 Path(str(payload["document_path"])),
@@ -715,6 +715,18 @@ class TelegramDeliveryManager:
                 except TypeError:
                     continue
             raise
+
+    @classmethod
+    def _invoke_topic_aware_telegram(cls, func, *args, **kwargs) -> Any:
+        topic_id = kwargs.get("topic_id")
+        try:
+            return cls._invoke_telegram(func, *args, **kwargs)
+        except TelegramError as exc:
+            if topic_id is None or not is_topic_closed_error(exc):
+                raise
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["topic_id"] = None
+            return cls._invoke_telegram(func, *args, **retry_kwargs)
 
     @staticmethod
     def _parse_timestamp(value: str | None) -> datetime | None:

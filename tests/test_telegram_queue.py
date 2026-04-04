@@ -90,6 +90,31 @@ class CallbackTelegram(FakeTelegramClient):
         )
 
 
+class TopicClosedThenFallbackTelegram(FakeTelegramClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.topic_failures = 0
+
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        topic_id: int | None = None,
+        parse_mode: str | None = None,
+        disable_notification: bool = False,
+    ) -> dict:
+        if topic_id is not None:
+            self.topic_failures += 1
+            raise TelegramError("{'ok': False, 'error_code': 400, 'description': 'Bad Request: TOPIC_CLOSED'}")
+        return super().send_message(
+            chat_id,
+            text,
+            topic_id=topic_id,
+            parse_mode=parse_mode,
+            disable_notification=disable_notification,
+        )
+
+
 class TelegramQueueTests(unittest.TestCase):
     def setUp(self) -> None:
         self.paths = build_paths(Path.cwd() / ".test_state" / "telegram_queue" / str(uuid.uuid4()))
@@ -277,6 +302,24 @@ class TelegramQueueTests(unittest.TestCase):
         self.assertEqual(result["status"], "queued")
         state = self._read_app_state(_RATE_LIMIT_STATE_KEY)
         self.assertEqual(state["backoff_seconds"], 2)
+
+    def test_send_message_falls_back_when_topic_is_closed(self) -> None:
+        telegram = TopicClosedThenFallbackTelegram()
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+        manager.start()
+        self.addCleanup(manager.stop)
+
+        result = manager.enqueue_and_wait(
+            op_type="send_message",
+            payload={"text": "hello"},
+            chat_id=321,
+            topic_id=99,
+        )
+
+        self.assertEqual(result["message_id"], 1)
+        self.assertEqual(telegram.topic_failures, 1)
+        self.assertEqual(telegram.messages, [(321, "hello")])
 
     def test_unpaused_queue_uses_throttle_window_to_keep_only_latest_chunk(self) -> None:
         telegram = FakeTelegramClient()

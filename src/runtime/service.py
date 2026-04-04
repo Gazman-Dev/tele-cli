@@ -24,6 +24,7 @@ from integrations.telegram import (
     describe_pairing,
     has_pending_pairing,
     is_auth_paired,
+    is_topic_closed_error,
     register_pairing_request,
 )
 from setup.setup_flow import complete_pending_pairing
@@ -654,6 +655,33 @@ def _message_group_queue_state(paths: AppPaths, *, message_group_id: str) -> dic
     return {key: int(row[key] or 0) for key in row.keys()}
 
 
+def _message_group_failed_errors(paths: AppPaths, *, message_group_id: str) -> list[str]:
+    storage = StorageManager(paths)
+    with storage.read_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT last_error
+            FROM telegram_outbound_queue
+            WHERE message_group_id = ? AND status = 'failed'
+            ORDER BY created_at, queue_id
+            """,
+            (message_group_id,),
+        ).fetchall()
+    return [str(row["last_error"] or "") for row in rows]
+
+
+def _delete_failed_message_group_rows(paths: AppPaths, *, message_group_id: str) -> None:
+    storage = StorageManager(paths)
+    with storage.transaction() as connection:
+        connection.execute(
+            """
+            DELETE FROM telegram_outbound_queue
+            WHERE message_group_id = ? AND status = 'failed'
+            """,
+            (message_group_id,),
+        )
+
+
 def _cancel_queued_live_progress_operations(paths: AppPaths, session, *, include_typing: bool) -> None:
     session_id = getattr(session, "session_id", None)
     if not isinstance(session_id, str) or not session_id:
@@ -701,6 +729,38 @@ def reconcile_pending_final_deliveries(
         if queue_state["queued_count"] or queue_state["claimed_count"]:
             continue
         if queue_state["failed_count"]:
+            failed_errors = _message_group_failed_errors(paths, message_group_id=message_group_id)
+            if session.transport_topic_id is not None and any(
+                is_topic_closed_error(TelegramError(error)) for error in failed_errors
+            ):
+                append_recovery_event(
+                    paths,
+                    (
+                        "final_delivery_retrying_without_topic "
+                        f"session_id={session.session_id} topic_id={session.transport_topic_id}"
+                    ),
+                    trace_id=getattr(session, "current_trace_id", None),
+                    session_id=session.session_id,
+                    thread_id=session.thread_id,
+                    turn_id=session.last_completed_turn_id,
+                    chat_id=session.transport_chat_id,
+                    topic_id=session.transport_topic_id,
+                )
+                _delete_failed_message_group_rows(paths, message_group_id=message_group_id)
+                session.transport_topic_id = None
+                session_store.save_session(session)
+                flush_buffer(
+                    session.session_id,
+                    auth,
+                    telegram,
+                    recorder,
+                    session_store,
+                    mark_agent=True,
+                    stream_format=True,
+                    queue_only=True,
+                    performance=performance,
+                )
+                continue
             append_recovery_event(
                 paths,
                 (
