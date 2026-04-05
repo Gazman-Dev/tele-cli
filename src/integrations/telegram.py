@@ -28,6 +28,11 @@ def is_message_not_modified_error(exc: Exception) -> bool:
     return "message is not modified" in str(exc).lower()
 
 
+def is_message_not_found_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "message to delete not found" in message or "message can't be deleted" in message
+
+
 class TelegramClient:
     def __init__(self, token: str):
         self.token = token

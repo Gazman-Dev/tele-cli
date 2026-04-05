@@ -10,7 +10,13 @@ from typing import Any
 
 from core.models import utc_now
 from core.paths import AppPaths
-from integrations.telegram import TelegramClient, TelegramError, is_message_not_modified_error, is_topic_closed_error
+from integrations.telegram import (
+    TelegramClient,
+    TelegramError,
+    is_message_not_found_error,
+    is_message_not_modified_error,
+    is_topic_closed_error,
+)
 
 from .artifacts import ArtifactStore
 from .db import StorageManager
@@ -363,7 +369,13 @@ class TelegramDeliveryManager:
         try:
             result = self._execute_row(row)
         except Exception as exc:
-            if str(row["op_type"]) == "edit_message" and is_message_not_modified_error(exc):
+            if (
+                str(row["op_type"]) == "edit_message"
+                and is_message_not_modified_error(exc)
+            ) or (
+                str(row["op_type"]) == "delete_message"
+                and is_message_not_found_error(exc)
+            ):
                 result = {"message_id": int(row["telegram_message_id"])} if row["telegram_message_id"] is not None else None
                 final_status = "completed"
                 error_text = None
@@ -389,7 +401,7 @@ class TelegramDeliveryManager:
                         topic_id=row["topic_id"],
                         message_group_id=row["message_group_id"],
                         telegram_message_id=row["telegram_message_id"],
-                        payload={"queue_id": row["queue_id"], "op_type": row["op_type"], "noop": "message_not_modified"},
+                        payload={"queue_id": row["queue_id"], "op_type": row["op_type"], "noop": str(exc)},
                     )
             else:
                 retry_after = TelegramClient._retry_delay_from_error(exc)

@@ -24,6 +24,7 @@ from integrations.telegram import (
     describe_pairing,
     has_pending_pairing,
     is_auth_paired,
+    is_message_not_found_error,
     is_message_not_modified_error,
     is_topic_closed_error,
     register_pairing_request,
@@ -704,6 +705,11 @@ def _delete_failed_message_group_rows(paths: AppPaths, *, message_group_id: str)
         )
 
 
+def _is_ignorable_final_delivery_error(error: str) -> bool:
+    exc = TelegramError(error)
+    return is_message_not_modified_error(exc) or is_message_not_found_error(exc)
+
+
 def _abandon_failed_final_delivery(
     paths: AppPaths,
     session_store: SessionStore,
@@ -794,7 +800,7 @@ def reconcile_pending_final_deliveries(
             continue
         if queue_state["failed_count"]:
             failed_errors = _message_group_failed_errors(paths, message_group_id=message_group_id)
-            if failed_errors and all(is_message_not_modified_error(TelegramError(error)) for error in failed_errors):
+            if failed_errors and all(_is_ignorable_final_delivery_error(error) for error in failed_errors):
                 _delete_failed_message_group_rows(paths, message_group_id=message_group_id)
                 queue_state["failed_count"] = 0
                 queue_state["completed_count"] = max(queue_state["completed_count"], 1)

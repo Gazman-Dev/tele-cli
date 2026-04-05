@@ -4622,6 +4622,64 @@ class ServiceFlowTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(int(remaining[0]), 0)
 
+    def test_reconcile_pending_final_deliveries_settles_delete_not_found_failures(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.last_completed_turn_id = "turn-1"
+        session.current_trace_id = "trace-1"
+        session.status = "DELIVERING_FINAL"
+        session.pending_output_text = "Final answer"
+        session.streaming_output_text = "Final answer"
+        store.save_session(session)
+
+        message_group_id = "group-final-delete"
+        with closing(sqlite3.connect(self.paths.database)) as connection:
+            connection.execute(
+                """
+                INSERT INTO telegram_outbound_queue(
+                    queue_id, created_at, available_at, status, op_type, chat_id, topic_id, session_id, trace_id,
+                    message_group_id, telegram_message_id, dedupe_key, priority, disable_notification, payload_json,
+                    attempt_count, last_error, claimed_by_run_id, claimed_at, completed_at
+                ) VALUES (?, ?, ?, 'failed', 'delete_message', ?, NULL, ?, ?, ?, ?, ?, 100, 0, ?, 1, ?, NULL, NULL, ?)
+                """,
+                (
+                    "queue-delete",
+                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
+                    22,
+                    session.session_id,
+                    session.current_trace_id,
+                    message_group_id,
+                    7,
+                    "delete-key",
+                    json.dumps({"message_id": 7}),
+                    "{'ok': False, 'error_code': 400, 'description': 'Bad Request: message to delete not found'}",
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            connection.commit()
+
+        with patch("runtime.service._message_group_id_for_role", return_value=message_group_id):
+            reconcile_pending_final_deliveries(
+                self.paths,
+                auth,
+                FakeTelegramClient(),
+                self.recorder,
+                store,
+            )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.status, "ACTIVE")
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.last_delivered_output_text, "Final answer")
+
     def test_commentary_stream_keeps_only_latest_pending_update_until_min_interval(self) -> None:
         auth = AuthState(
             bot_token="token",
