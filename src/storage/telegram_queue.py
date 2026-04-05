@@ -10,7 +10,7 @@ from typing import Any
 
 from core.models import utc_now
 from core.paths import AppPaths
-from integrations.telegram import TelegramClient, TelegramError, is_topic_closed_error
+from integrations.telegram import TelegramClient, TelegramError, is_message_not_modified_error, is_topic_closed_error
 
 from .artifacts import ArtifactStore
 from .db import StorageManager
@@ -363,59 +363,88 @@ class TelegramDeliveryManager:
         try:
             result = self._execute_row(row)
         except Exception as exc:
-            retry_after = TelegramClient._retry_delay_from_error(exc)
-            with self.storage.transaction() as connection:
-                current = connection.execute(
-                    "SELECT attempt_count FROM telegram_outbound_queue WHERE queue_id = ?",
-                    (row["queue_id"],),
-                ).fetchone()
-                attempt_count = int(current["attempt_count"]) if current is not None else 0
-                next_attempt = attempt_count + 1
-                error_text = str(exc)
-                if retry_after is not None:
-                    pause_until, backoff_seconds = self._advance_global_pause(
-                        connection,
-                        retry_after=retry_after,
-                    )
-                    final_status = "queued"
+            if str(row["op_type"]) == "edit_message" and is_message_not_modified_error(exc):
+                result = {"message_id": int(row["telegram_message_id"])} if row["telegram_message_id"] is not None else None
+                final_status = "completed"
+                error_text = None
+                with self.storage.transaction() as connection:
                     connection.execute(
                         """
                         UPDATE telegram_outbound_queue
-                        SET status = 'queued',
-                            attempt_count = ?,
-                            last_error = ?,
-                            available_at = ?,
-                            claimed_by_run_id = NULL,
-                            claimed_at = NULL
-                        WHERE queue_id = ?
-                        """,
-                        (next_attempt, error_text, pause_until, row["queue_id"]),
-                    )
-                    connection.execute(
-                        """
-                        UPDATE telegram_outbound_queue
-                        SET available_at = CASE
-                            WHEN available_at < ? THEN ?
-                            ELSE available_at
-                        END
-                        WHERE status = 'queued'
-                        """,
-                        (pause_until, pause_until),
-                    )
-                else:
-                    final_status = "failed"
-                    connection.execute(
-                        """
-                        UPDATE telegram_outbound_queue
-                        SET status = 'failed',
-                            attempt_count = ?,
-                            last_error = ?,
+                        SET status = 'completed',
                             completed_at = ?,
-                            claimed_by_run_id = NULL
+                            last_error = NULL
                         WHERE queue_id = ?
                         """,
-                        (next_attempt, error_text, utc_now(), row["queue_id"]),
+                        (utc_now(), row["queue_id"]),
                     )
+                    self._clear_global_pause(connection)
+                if self._should_trace_row(row):
+                    self.traces.log_event(
+                        source="telegram_outbound",
+                        event_type=self._api_event_type(row["op_type"], success=True),
+                        trace_id=row["trace_id"],
+                        session_id=row["session_id"],
+                        chat_id=row["chat_id"],
+                        topic_id=row["topic_id"],
+                        message_group_id=row["message_group_id"],
+                        telegram_message_id=row["telegram_message_id"],
+                        payload={"queue_id": row["queue_id"], "op_type": row["op_type"], "noop": "message_not_modified"},
+                    )
+            else:
+                retry_after = TelegramClient._retry_delay_from_error(exc)
+                with self.storage.transaction() as connection:
+                    current = connection.execute(
+                        "SELECT attempt_count FROM telegram_outbound_queue WHERE queue_id = ?",
+                        (row["queue_id"],),
+                    ).fetchone()
+                    attempt_count = int(current["attempt_count"]) if current is not None else 0
+                    next_attempt = attempt_count + 1
+                    error_text = str(exc)
+                    if retry_after is not None:
+                        pause_until, backoff_seconds = self._advance_global_pause(
+                            connection,
+                            retry_after=retry_after,
+                        )
+                        final_status = "queued"
+                        connection.execute(
+                            """
+                            UPDATE telegram_outbound_queue
+                            SET status = 'queued',
+                                attempt_count = ?,
+                                last_error = ?,
+                                available_at = ?,
+                                claimed_by_run_id = NULL,
+                                claimed_at = NULL
+                            WHERE queue_id = ?
+                            """,
+                            (next_attempt, error_text, pause_until, row["queue_id"]),
+                        )
+                        connection.execute(
+                            """
+                            UPDATE telegram_outbound_queue
+                            SET available_at = CASE
+                                WHEN available_at < ? THEN ?
+                                ELSE available_at
+                            END
+                            WHERE status = 'queued'
+                            """,
+                            (pause_until, pause_until),
+                        )
+                    else:
+                        final_status = "failed"
+                        connection.execute(
+                            """
+                            UPDATE telegram_outbound_queue
+                            SET status = 'failed',
+                                attempt_count = ?,
+                                last_error = ?,
+                                completed_at = ?,
+                                claimed_by_run_id = NULL
+                            WHERE queue_id = ?
+                            """,
+                            (next_attempt, error_text, utc_now(), row["queue_id"]),
+                        )
         else:
             with self.storage.transaction() as connection:
                 message_id = None

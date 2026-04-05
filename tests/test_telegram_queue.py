@@ -115,6 +115,13 @@ class TopicClosedThenFallbackTelegram(FakeTelegramClient):
         )
 
 
+class MessageNotModifiedTelegram(FakeTelegramClient):
+    def edit_message_text(self, chat_id: int, message_id: int, text: str, parse_mode: str | None = None) -> dict:
+        raise TelegramError(
+            "{'ok': False, 'error_code': 400, 'description': 'Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message'}"
+        )
+
+
 class TelegramQueueTests(unittest.TestCase):
     def setUp(self) -> None:
         self.paths = build_paths(Path.cwd() / ".test_state" / "telegram_queue" / str(uuid.uuid4()))
@@ -491,6 +498,32 @@ class TelegramQueueTests(unittest.TestCase):
         self.assertTrue(result["skipped"])
         self.assertEqual(result["skip_reason"], "session_status:ACTIVE")
         self.assertEqual(telegram.typing_actions, [])
+
+    def test_message_not_modified_edit_is_treated_as_completed(self) -> None:
+        telegram = MessageNotModifiedTelegram()
+        manager = TelegramDeliveryManager(self.paths, telegram, run_id="run-1")
+        ServiceRunStore(self.paths).start(run_id="run-1", pid=1)
+
+        manager.enqueue(
+            op_type="edit_message",
+            payload={"message_id": 9, "text": "same"},
+            chat_id=321,
+            telegram_message_id=9,
+            dedupe_key="group:chunk:0",
+            message_group_id="group",
+        )
+        self._expire_pause_and_queue()
+        result = manager.process_next()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "completed")
+        with closing(sqlite3.connect(self.paths.database)) as connection:
+            row = connection.execute(
+                "SELECT status, last_error FROM telegram_outbound_queue WHERE dedupe_key = ?",
+                ("group:chunk:0",),
+            ).fetchone()
+        self.assertEqual(str(row[0]), "completed")
+        self.assertIsNone(row[1])
 
 
 if __name__ == "__main__":

@@ -24,6 +24,10 @@ def is_topic_closed_error(exc: Exception) -> bool:
     return "TOPIC_CLOSED" in str(exc)
 
 
+def is_message_not_modified_error(exc: Exception) -> bool:
+    return "message is not modified" in str(exc).lower()
+
+
 class TelegramClient:
     def __init__(self, token: str):
         self.token = token
