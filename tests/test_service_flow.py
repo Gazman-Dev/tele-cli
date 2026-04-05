@@ -4556,6 +4556,72 @@ class ServiceFlowTests(unittest.TestCase):
         self.assertEqual(telegram.messages, [])
         self.assertEqual(telegram.edits, [])
 
+    def test_reconcile_pending_final_deliveries_settles_message_not_modified_failures(self) -> None:
+        auth = AuthState(
+            bot_token="token",
+            telegram_user_id=11,
+            telegram_chat_id=22,
+            paired_at="now",
+        )
+        store = SessionStore(self.paths)
+        session = store.get_or_create_telegram_session(auth)
+        session.thread_id = "thread-1"
+        session.last_completed_turn_id = "turn-1"
+        session.current_trace_id = "trace-1"
+        session.status = "DELIVERING_FINAL"
+        session.pending_output_text = "Final answer"
+        session.streaming_output_text = "Final answer"
+        session.streaming_message_id = 7
+        session.streaming_message_ids = [7]
+        store.save_session(session)
+
+        message_group_id = "group-final"
+        with closing(sqlite3.connect(self.paths.database)) as connection:
+            connection.execute(
+                """
+                INSERT INTO telegram_outbound_queue(
+                    queue_id, created_at, available_at, status, op_type, chat_id, topic_id, session_id, trace_id,
+                    message_group_id, telegram_message_id, dedupe_key, priority, disable_notification, payload_json,
+                    attempt_count, last_error, claimed_by_run_id, claimed_at, completed_at
+                ) VALUES (?, ?, ?, 'failed', 'edit_message', ?, NULL, ?, ?, ?, ?, ?, 100, 0, ?, 1, ?, NULL, NULL, ?)
+                """,
+                (
+                    "queue-1",
+                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
+                    22,
+                    session.session_id,
+                    session.current_trace_id,
+                    message_group_id,
+                    7,
+                    "dedupe",
+                    json.dumps({"message_id": 7, "text": "Final answer", "parse_mode": "HTML"}),
+                    "{'ok': False, 'error_code': 400, 'description': 'Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message'}",
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            connection.commit()
+
+        with patch("runtime.service._message_group_id_for_role", return_value=message_group_id):
+            reconcile_pending_final_deliveries(
+                self.paths,
+                auth,
+                FakeTelegramClient(),
+                self.recorder,
+                store,
+            )
+
+        updated = store.get_or_create_telegram_session(auth)
+        self.assertEqual(updated.status, "ACTIVE")
+        self.assertEqual(updated.pending_output_text, "")
+        self.assertEqual(updated.last_delivered_output_text, "Final answer")
+        with closing(sqlite3.connect(self.paths.database)) as connection:
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM telegram_outbound_queue WHERE message_group_id = ?",
+                (message_group_id,),
+            ).fetchone()
+        self.assertEqual(int(remaining[0]), 0)
+
     def test_commentary_stream_keeps_only_latest_pending_update_until_min_interval(self) -> None:
         auth = AuthState(
             bot_token="token",

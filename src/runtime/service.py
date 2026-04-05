@@ -24,6 +24,7 @@ from integrations.telegram import (
     describe_pairing,
     has_pending_pairing,
     is_auth_paired,
+    is_message_not_modified_error,
     is_topic_closed_error,
     register_pairing_request,
 )
@@ -793,7 +794,12 @@ def reconcile_pending_final_deliveries(
             continue
         if queue_state["failed_count"]:
             failed_errors = _message_group_failed_errors(paths, message_group_id=message_group_id)
-            if any(is_topic_closed_error(TelegramError(error)) for error in failed_errors):
+            if failed_errors and all(is_message_not_modified_error(TelegramError(error)) for error in failed_errors):
+                _delete_failed_message_group_rows(paths, message_group_id=message_group_id)
+                queue_state["failed_count"] = 0
+                queue_state["completed_count"] = max(queue_state["completed_count"], 1)
+                queue_state["total_count"] = max(queue_state["total_count"], 1)
+            elif any(is_topic_closed_error(TelegramError(error)) for error in failed_errors):
                 _delete_failed_message_group_rows(paths, message_group_id=message_group_id)
                 if session.transport_topic_id is not None:
                     append_recovery_event(
@@ -830,20 +836,21 @@ def reconcile_pending_final_deliveries(
                         reason="topic_closed_without_recoverable_topic",
                     )
                 continue
-            append_recovery_event(
-                paths,
-                (
-                    "final_delivery_waiting_for_retry "
-                    f"session_id={session.session_id} failed_count={queue_state['failed_count']}"
-                ),
-                trace_id=getattr(session, "current_trace_id", None),
-                session_id=session.session_id,
-                thread_id=session.thread_id,
-                turn_id=session.last_completed_turn_id,
-                chat_id=session.transport_chat_id,
-                topic_id=session.transport_topic_id,
-            )
-            continue
+            if queue_state["failed_count"]:
+                append_recovery_event(
+                    paths,
+                    (
+                        "final_delivery_waiting_for_retry "
+                        f"session_id={session.session_id} failed_count={queue_state['failed_count']}"
+                    ),
+                    trace_id=getattr(session, "current_trace_id", None),
+                    session_id=session.session_id,
+                    thread_id=session.thread_id,
+                    turn_id=session.last_completed_turn_id,
+                    chat_id=session.transport_chat_id,
+                    topic_id=session.transport_topic_id,
+                )
+                continue
         if queue_state["total_count"] <= 0 or queue_state["completed_count"] <= 0:
             continue
         clear_thinking_message(auth, telegram, session_store, session, performance=performance)
